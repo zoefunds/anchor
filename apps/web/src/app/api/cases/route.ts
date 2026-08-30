@@ -22,11 +22,34 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { claim, amount, claimantRef, respondentRef, policyId = DEFAULT_POLICY_ID } = body;
+  const {
+    claim,
+    amount,
+    claimantRef,
+    respondentRef,
+    policyId = DEFAULT_POLICY_ID,
+    settlementChain,
+    settlementContract,
+  } = body;
 
   if (!claim || !amount || !claimantRef || !respondentRef) {
     return NextResponse.json(
       { error: "claim, amount, claimantRef, respondentRef are required" },
+      { status: 400 }
+    );
+  }
+  // Both or neither — a settlement target only makes sense as a pair, and
+  // half-configuring it would silently never dispatch (see
+  // adjudication-service.ts's check) rather than error loudly here.
+  if (Boolean(settlementChain) !== Boolean(settlementContract)) {
+    return NextResponse.json(
+      { error: "settlementChain and settlementContract must be provided together" },
+      { status: 400 }
+    );
+  }
+  if (settlementChain && settlementChain !== "sepolia") {
+    return NextResponse.json(
+      { error: `unsupported settlementChain "${settlementChain}" — only "sepolia" is wired today` },
       { status: 400 }
     );
   }
@@ -49,6 +72,8 @@ export async function POST(req: NextRequest) {
       policyId: policy.id,
       policyVersion: policy.version,
       status: "EVIDENCE_COLLECTION",
+      settlementChain: settlementChain || null,
+      settlementContract: settlementContract || null,
     },
   });
 

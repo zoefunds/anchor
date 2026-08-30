@@ -243,6 +243,17 @@ model Case {
   // GenLayer contract address once deployed for this case
   contractAddress String?
 
+  // Optional cross-chain settlement target. When both are set, a decision
+  // persisting for this case automatically dispatches a DecisionRelay
+  // Hyperlane message to this chain/contract (see
+  // src/lib/hyperlane.ts and adjudication-service.ts) - a case with no
+  // settlement target just stops at the decision, same as before this
+  // existed. Only "sepolia" is supported as a settlement chain today
+  // (see packages/hyperlane-relay's HYPERLANE_MAILBOX/HYPERLANE_DOMAIN
+  // maps for what's actually wired).
+  settlementChain    String?
+  settlementContract String?
+
   evidence  Evidence[]
   // One-to-many, not one-to-one: an appeal produces a fresh Decision
   // rather than overwriting the first, so the full history (original
@@ -304,6 +315,14 @@ model Decision {
   explanation           String?
   appealWindowClosesAt  DateTime?
   createdAt             DateTime @default(now())
+
+  // Set once an auto-dispatched DecisionRelay message goes out for this
+  // decision (see adjudication-service.ts) - null means either the case
+  // has no settlement target configured, or dispatch hasn't run/failed
+  // (see relayError).
+  relayTxHash    String?
+  relayMessageId String?
+  relayError     String?
 
   @@index([caseId])
 }

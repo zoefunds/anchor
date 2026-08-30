@@ -160,15 +160,20 @@ For cross-chain settlement (e.g. the dispute involves a Solana escrow but
 adjudication runs on GenLayer), Anchor has a real, live-proven Hyperlane
 relay path — not a proposal. See `docs/hyperlane-integration.md`,
 `chains/solana/README.md`/`chains/evm/`, and `chains/hyperlane-relayer/README.md`
-for the deployed contracts and dispatch mechanics: a full round trip
-(Solana dispatch -> Hyperlane relay -> `handle()` decode on Sepolia) has
-been proven on-chain, including confirming the destination contract
-correctly parsed the relayed case data. `relayMechanism: "hyperlane"` is
-safe to point real deals at. One caveat: `apps/web`'s adjudication service
-doesn't yet auto-dispatch a `DECISION_RELAY` message when a decision
-persists — that wiring is still manual/scripted, not automatic on every
-decision. Confirm that's been closed before assuming a deal's settlement
-fires without a human triggering the relay.
+for the deployed contracts and dispatch mechanics. A full CaseOriginate
+round trip (Solana dispatch -> Hyperlane relay -> `handle()` decode on
+Sepolia) has been proven delivered on-chain. Separately, `apps/web` now
+auto-dispatches a `DecisionRelay` message the moment a case with a
+`settlementChain`/`settlementContract` configured reaches an ACCEPTED
+decision — no manual trigger needed, proven with a real dispatch tx and
+Hyperlane message ID recorded on the decision. `relayMechanism: "hyperlane"`
+is safe to point real deals at for the dispatch half. One caveat: only
+`settlementChain: "sepolia"` is wired as a destination today (see
+`packages/hyperlane-relay`); a real settlement chain (e.g. an actual
+Solana escrow) needs that destination added, plus working out ISM/
+validator-checkpoint reachability for that specific route — see
+`docs/hyperlane-integration.md`'s "Known gap" note before assuming
+delivery, not just dispatch, is guaranteed.
 
 ## Evidence Schema
 

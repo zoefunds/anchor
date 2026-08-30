@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/lib/genlayer";
 import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
+import { dispatchDecisionForCase } from "@/lib/hyperlane";
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 
@@ -79,7 +80,7 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
     const nextStatus =
       decision.consensus !== "ACCEPTED" ? "UNDETERMINED" : isAppeal ? "FINALIZED" : "APPEAL_WINDOW";
 
-    await prisma.$transaction([
+    const [createdDecision] = await prisma.$transaction([
       prisma.decision.create({
         data: {
           caseId: kase.id,
@@ -107,6 +108,44 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       event: "case.status_changed",
       data: { caseId: kase.id, status: nextStatus },
     });
+
+    // Auto-dispatch: a decided case with a settlement target configured
+    // relays automatically, no separate manual/scripted trigger needed.
+    // Only for a real ACCEPTED verdict — nothing to settle on UNDETERMINED.
+    if (decision.consensus === "ACCEPTED" && kase.settlementChain && kase.settlementContract) {
+      const totalAmountAtto = toAttoAmount(Number(kase.amount));
+      const claimantBps = BigInt(decision.claimantShareBps ?? 0);
+      const respondentBps = BigInt(decision.respondentShareBps ?? 0);
+      try {
+        const { txHash, messageId } = await dispatchDecisionForCase({
+          caseId: kase.id,
+          outcome: decision.outcome,
+          claimantShareBps: decision.claimantShareBps ?? 0,
+          respondentShareBps: decision.respondentShareBps ?? 0,
+          claimantAmountAtto: (totalAmountAtto * claimantBps) / 10000n,
+          respondentAmountAtto: (totalAmountAtto * respondentBps) / 10000n,
+          settlementChain: kase.settlementChain,
+          settlementContract: kase.settlementContract,
+        });
+        await prisma.decision.update({
+          where: { id: createdDecision.id },
+          data: { relayTxHash: txHash, relayMessageId: messageId },
+        });
+        dispatchWebhookEvent({
+          organizationId: kase.organizationId,
+          event: "case.relay_dispatched",
+          data: { caseId: kase.id, txHash, messageId },
+        });
+      } catch (relayErr) {
+        // A failed relay dispatch doesn't undo the decision itself — the
+        // adjudication succeeded and is recorded regardless. Record the
+        // error on the decision so it's visible, but don't fail the job.
+        const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
+        // eslint-disable-next-line no-console
+        console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
+        await prisma.decision.update({ where: { id: createdDecision.id }, data: { relayError: relayMessage } });
+      }
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console

@@ -7,18 +7,35 @@ execution instruction — from GenLayer's side of the system to whichever
 chain actually needs to act on it, and lets case data flow the other
 direction too.
 
-**Status: live, proven end to end.** `chains/evm/contracts/SolanaCaseReceiver.sol`
-and `chains/solana/programs/decision-relay` are deployed and real
-dispatch->relay->handle() round trips have been proven on Sepolia, with a
-self-hosted relayer (`chains/hyperlane-relayer/`) closing the gap the
-shared public testnet4 relayer left open. See
-`chains/hyperlane-relayer/README.md` for the live proof (message IDs,
-destination tx hashes, and the decoded case ID confirming `handle()`
-genuinely parsed the relayed message correctly, not just that Mailbox
-delivery succeeded). Still open: wiring `apps/web/src/lib/adjudication-service.ts`
-to actually dispatch a `DECISION_RELAY` message when a GenLayer decision
-persists — the relay pipeline itself works, but nothing calls it
-automatically yet.
+**Status: live, auto-dispatch wired.** `chains/evm/contracts/SolanaCaseReceiver.sol`,
+`chains/evm/contracts/DecisionRelay.sol`, and `chains/solana/programs/decision-relay`
+are all deployed. Two things are proven separately:
+
+1. **CaseOriginate dispatch->relay->handle()**, Solana -> Sepolia: fully
+   proven, including delivery and correct decode on the destination
+   contract. See `chains/hyperlane-relayer/README.md` for message IDs and
+   tx hashes.
+2. **DecisionRelay auto-dispatch**: `apps/web/src/lib/adjudication-service.ts`
+   now calls `dispatchDecisionForCase` (`src/lib/hyperlane.ts`)
+   automatically whenever a case with a `settlementChain`/`settlementContract`
+   configured reaches an ACCEPTED decision - no manual/scripted trigger
+   needed anymore. Proven live: creating a case with a real settlement
+   target and running it through real GenLayer consensus produced a real
+   Sepolia dispatch transaction and Hyperlane message ID, recorded on the
+   `Decision` row (`relayTxHash`/`relayMessageId`), with zero manual
+   intervention.
+
+**Known gap**: that specific proof used Sepolia as both origin and
+destination (self-dispatch, to keep the test self-contained). Sepolia's
+*default* recipient ISM (used because `DecisionRelay.sol` doesn't
+implement its own `interchainSecurityModule()`) is an aggregation ISM
+requiring 2 sub-ISM checkpoints; the self-hosted relayer could only
+assemble 1, so this particular message's *delivery* (not dispatch) is
+still pending — a different, harder problem than the auto-dispatch
+wiring, which is what was actually missing before. Real settlement
+chains (e.g. an actual Solana escrow) will need either a
+`DecisionRelay`-side custom ISM or full validator-checkpoint reachability
+worked out per destination, same as any other Hyperlane route.
 
 ## Why Hyperlane specifically
 

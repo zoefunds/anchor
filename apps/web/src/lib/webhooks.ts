@@ -9,6 +9,7 @@ export const WEBHOOK_EVENTS = [
   "case.status_changed",
   "case.decided",
   "case.appealed",
+  "case.relay_dispatched",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

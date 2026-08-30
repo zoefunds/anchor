@@ -1,0 +1,10 @@
+{
+  "name": "@anchor/hyperlane-relay",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "dependencies": {
+    "viem": "^2.9.0"
+  }
+}
