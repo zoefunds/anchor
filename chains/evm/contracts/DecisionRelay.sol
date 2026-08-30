@@ -52,6 +52,11 @@ interface ISettlementTarget {
 contract DecisionRelay is IMessageRecipient {
     IMailbox public immutable mailbox;
     address public immutable owner;
+    // Overrides the origin chain's default recipient ISM — see
+    // TrustedRelayerIsm.sol for why (Sepolia's default is an unreachable
+    // 2-of-2 aggregation ISM for this MVP's self-hosted relayer setup)
+    // and the security tradeoff that comes with it.
+    address public immutable customIsm;
 
     // Trusted sender per origin domain — only Anchor's known GenLayer-side
     // relay/originator contract's address (as bytes32) should be accepted.
@@ -71,9 +76,16 @@ contract DecisionRelay is IMessageRecipient {
         _;
     }
 
-    constructor(address _mailbox) {
+    constructor(address _mailbox, address _customIsm) {
         mailbox = IMailbox(_mailbox);
         owner = msg.sender;
+        customIsm = _customIsm;
+    }
+
+    /// Hyperlane's Mailbox calls this on the recipient (if implemented)
+    /// instead of falling back to its own default ISM.
+    function interchainSecurityModule() external view returns (address) {
+        return customIsm;
     }
 
     function setTrustedSender(uint32 domain, bytes32 sender) external onlyOwner {

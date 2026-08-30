@@ -132,8 +132,21 @@ pub fn process_instruction(
     if let Ok(recipient_instruction) = MessageRecipientInstruction::decode(instruction_data) {
         return match recipient_instruction {
             MessageRecipientInstruction::InterchainSecurityModule => {
-                // No custom ISM — returning nothing tells the Mailbox to
-                // use its own default.
+                // "No custom ISM, use the Mailbox's default" must be
+                // communicated as an explicitly Borsh-encoded
+                // Option::<Pubkey>::None via set_return_data - a bare
+                // Ok(()) with no return data at all is NOT the same thing
+                // and errors out relayer-side ("No return data from
+                // InboxGetRecipientIsm instruction"), confirmed against
+                // real Sepolia->Solana Testnet delivery attempts and the
+                // reference implementation in Hyperlane's own
+                // test-send-receiver program (programs/test-send-receiver/
+                // src/program.rs's get_interchain_security_module, pinned
+                // at the same rev as everything else in this file).
+                let none_ism: Option<Pubkey> = None;
+                solana_program::program::set_return_data(
+                    &borsh::to_vec(&none_ism).map_err(|_| ProgramError::BorshIoError)?,
+                );
                 Ok(())
             }
             MessageRecipientInstruction::InterchainSecurityModuleAccountMetas => Ok(()),

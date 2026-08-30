@@ -25,17 +25,44 @@ are all deployed. Two things are proven separately:
    `Decision` row (`relayTxHash`/`relayMessageId`), with zero manual
    intervention.
 
-**Known gap**: that specific proof used Sepolia as both origin and
-destination (self-dispatch, to keep the test self-contained). Sepolia's
-*default* recipient ISM (used because `DecisionRelay.sol` doesn't
-implement its own `interchainSecurityModule()`) is an aggregation ISM
-requiring 2 sub-ISM checkpoints; the self-hosted relayer could only
-assemble 1, so this particular message's *delivery* (not dispatch) is
-still pending — a different, harder problem than the auto-dispatch
-wiring, which is what was actually missing before. Real settlement
-chains (e.g. an actual Solana escrow) will need either a
-`DecisionRelay`-side custom ISM or full validator-checkpoint reachability
-worked out per destination, same as any other Hyperlane route.
+3. **Real Solana settlement destination**: `packages/hyperlane-relay` now
+   also has `dispatchDecisionRelayToSealevel` (Borsh-encoding matching
+   `decision-relay`'s `DecisionRelayBody` exactly) — a real DecisionRelay
+   message was dispatched from Sepolia to `decision-relay`'s Solana
+   Testnet program, targeting a real escrow case (created via
+   `chains/solana/tests/run-create-case-for-relay-test.ts`) with
+   `decision-relay`'s escrow-authority PDA as its adjudicator, so a
+   successful `handle()` would genuinely CPI into `escrow.settle()` —
+   not a synthetic test target.
+
+**What "the ISM aggregation threshold" problem actually was, and the
+fix**: Sepolia's *default* recipient ISM (used whenever a recipient
+doesn't implement its own `interchainSecurityModule()`) is a 2-of-2
+aggregation ISM requiring independent checkpoints from two separate
+canonical validator sets — confirmed live via `modulesAndThreshold()`.
+Our self-hosted relayer could only assemble one of the two, so any
+message relying on that default sat permanently undeliverable. **Fix**:
+`DecisionRelay.sol` now overrides `interchainSecurityModule()` with
+`TrustedRelayerIsm.sol`, a minimal custom ISM under Anchor's own control
+— this sidesteps needing cooperation from Abacus's canonical validator
+set entirely, at the cost of a real security tradeoff (documented in
+that contract) appropriate only while Anchor is both the sole dispatcher
+and sole relayer for these messages. Proven live: a self-dispatched
+message through the new ISM was successfully delivered and decoded
+(`DecisionReceived` event, correct case ID/outcome) — see
+`chains/hyperlane-relayer/README.md` for the tx hash.
+
+A second, unrelated bug was found and fixed on the Solana side:
+`decision-relay`'s ISM-query handler returned no data at all instead of
+an explicitly Borsh-encoded `None`, which the relayer's Sealevel client
+treats as an error rather than "use the default." Fixed and redeployed
+(same program ID); confirmed correct via direct on-chain simulation. See
+`chains/hyperlane-relayer/README.md`'s "Known issues fixed" for both, and
+its "Known issue NOT fixed" for what's still unreliable (automatic
+delivery of fresh Sepolia-origin messages by this relayer — the one
+DecisionRelay delivery proven above was submitted manually with
+`cast send` after the program-level bugs were confirmed fixed, not
+auto-delivered).
 
 ## Why Hyperlane specifically
 

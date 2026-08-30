@@ -1,7 +1,9 @@
 import {
   dispatchDecisionRelay,
+  dispatchDecisionRelayToSealevel,
   HYPERLANE_DOMAIN,
   type DecisionRelayPayload,
+  type SealevelDecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
 import { keccak256, toHex, pad } from "viem";
@@ -34,6 +36,11 @@ export interface DispatchDecisionParams {
   respondentAmountAtto: bigint;
   settlementChain: string;
   settlementContract: string;
+  /** Sealevel-only — see schema.prisma's settlementSolana* fields for why these can't reuse claimantRef/respondentRef/id. */
+  settlementSolanaClaimant?: string | null;
+  settlementSolanaRespondent?: string | null;
+  settlementSolanaEscrowProgram?: string | null;
+  settlementSolanaCaseId?: string | null;
 }
 
 /** caseId is an arbitrary cuid string, doesn't fit bytes32 directly — hash it, same discipline DecisionRelay.sol's caller-side encoding already assumed. */
@@ -41,35 +48,58 @@ function caseIdToBytes32(caseId: string): Hex {
   return keccak256(toHex(caseId));
 }
 
+const SEALEVEL_CHAINS = new Set(["solanatestnet", "solanadevnet"]);
+
 /**
  * Dispatches a DecisionRelay Hyperlane message for a decided case with a
- * settlement target configured. Only "sepolia" is wired as a destination
- * today (matches HYPERLANE_DOMAIN/HYPERLANE_MAILBOX in
- * packages/hyperlane-relay) - anything else throws rather than silently
+ * settlement target configured. "sepolia" dispatches to an EVM
+ * DecisionRelay.sol recipient; "solanatestnet"/"solanadevnet" dispatch to
+ * decision-relay's Sealevel program, which requires the settlementSolana*
+ * fields to be present (validated at case-creation time, see
+ * api/cases/route.ts, but re-checked here since this function is the
+ * actual trust boundary). Anything else throws rather than silently
  * no-opping, so a misconfigured case surfaces immediately instead of
  * quietly never settling.
  */
 export async function dispatchDecisionForCase(params: DispatchDecisionParams): Promise<{ txHash: Hex; messageId: Hex }> {
-  if (params.settlementChain !== "sepolia") {
-    throw new Error(
-      `unsupported settlementChain "${params.settlementChain}" — only "sepolia" is wired today (see packages/hyperlane-relay)`
-    );
+  const config = getRelayConfig();
+
+  if (params.settlementChain === "sepolia") {
+    const payload: DecisionRelayPayload = {
+      caseId: params.caseId,
+      outcome: params.outcome,
+      claimantAmount: params.claimantAmountAtto,
+      respondentAmount: params.respondentAmountAtto,
+      escrowId: pad("0x0", { size: 32 }), // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
+      proofHash: caseIdToBytes32(params.caseId),
+    };
+    return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
   }
-  const destinationDomain = HYPERLANE_DOMAIN.sepolia;
 
-  const payload: DecisionRelayPayload = {
-    caseId: params.caseId,
-    outcome: params.outcome,
-    claimantAmount: params.claimantAmountAtto,
-    respondentAmount: params.respondentAmountAtto,
-    escrowId: pad("0x0", { size: 32 }), // no real per-case escrow id modeled yet — placeholder, see docs/hyperlane-integration.md open question #4
-    proofHash: caseIdToBytes32(params.caseId),
-  };
+  if (SEALEVEL_CHAINS.has(params.settlementChain)) {
+    if (
+      !params.settlementSolanaClaimant ||
+      !params.settlementSolanaRespondent ||
+      !params.settlementSolanaEscrowProgram ||
+      !params.settlementSolanaCaseId
+    ) {
+      throw new Error(
+        `settlementChain "${params.settlementChain}" requires settlementSolanaClaimant/Respondent/EscrowProgram/CaseId to be set on the case`
+      );
+    }
+    const payload: SealevelDecisionRelayPayload = {
+      caseId: params.settlementSolanaCaseId,
+      claimant: params.settlementSolanaClaimant,
+      respondent: params.settlementSolanaRespondent,
+      escrowProgram: params.settlementSolanaEscrowProgram,
+      claimantShareBps: params.claimantShareBps,
+      respondentShareBps: params.respondentShareBps,
+    };
+    const destinationDomain = HYPERLANE_DOMAIN[params.settlementChain === "solanatestnet" ? "solanaTestnet" : "solanaDevnet"];
+    return dispatchDecisionRelayToSealevel(config, destinationDomain, params.settlementContract, payload);
+  }
 
-  return dispatchDecisionRelay(
-    getRelayConfig(),
-    destinationDomain,
-    params.settlementContract as Address,
-    payload
+  throw new Error(
+    `unsupported settlementChain "${params.settlementChain}" — supported: sepolia, solanatestnet, solanadevnet (see packages/hyperlane-relay)`
   );
 }

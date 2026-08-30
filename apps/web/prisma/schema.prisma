@@ -243,16 +243,35 @@ model Case {
   // GenLayer contract address once deployed for this case
   contractAddress String?
 
-  // Optional cross-chain settlement target. When both are set, a decision
-  // persisting for this case automatically dispatches a DecisionRelay
-  // Hyperlane message to this chain/contract (see
-  // src/lib/hyperlane.ts and adjudication-service.ts) - a case with no
-  // settlement target just stops at the decision, same as before this
-  // existed. Only "sepolia" is supported as a settlement chain today
-  // (see packages/hyperlane-relay's HYPERLANE_MAILBOX/HYPERLANE_DOMAIN
-  // maps for what's actually wired).
-  settlementChain    String?
-  settlementContract String?
+  // Optional cross-chain settlement target. When settlementChain +
+  // settlementContract are both set, a decision persisting for this case
+  // automatically dispatches a DecisionRelay Hyperlane message to this
+  // chain/contract (see src/lib/hyperlane.ts and
+  // adjudication-service.ts) - a case with no settlement target just
+  // stops at the decision, same as before this existed. Supported chains:
+  // "sepolia" (EVM DecisionRelay.sol) and "solanatestnet"/"solanadevnet"
+  // (Sealevel decision-relay program) - see packages/hyperlane-relay's
+  // HYPERLANE_MAILBOX/HYPERLANE_DOMAIN maps for what's actually wired.
+  //
+  // The three settlementSolana* fields are Sealevel-only: decision-relay's
+  // handle() needs real on-chain Solana pubkeys (claimant/respondent) and
+  // the escrow program id to CPI into escrow.settle() - Anchor's own
+  // claimantRef/respondentRef are deliberately pseudonymous opaque
+  // strings (see packages/types's privacy note) and can't double as
+  // these. Required together when settlementChain is a Sealevel chain,
+  // unused for "sepolia".
+  settlementChain            String?
+  settlementContract         String?
+  settlementSolanaClaimant   String?
+  settlementSolanaRespondent String?
+  settlementSolanaEscrowProgram String?
+  // The on-chain escrow case_id (e.g. "CASE-RELAY-..."), independent of
+  // this row's own cuid `id` - decision-relay's handle() derives the
+  // escrow case PDA from whatever case_id string is in the dispatched
+  // message, so it must match what escrow.initialize_case() was actually
+  // called with, not Anchor's internal id. Required alongside the other
+  // settlementSolana* fields when settlementChain is a Sealevel chain.
+  settlementSolanaCaseId String?
 
   evidence  Evidence[]
   // One-to-many, not one-to-one: an appeal produces a fresh Decision

@@ -30,6 +30,10 @@ export async function POST(req: NextRequest) {
     policyId = DEFAULT_POLICY_ID,
     settlementChain,
     settlementContract,
+    settlementSolanaClaimant,
+    settlementSolanaRespondent,
+    settlementSolanaEscrowProgram,
+    settlementSolanaCaseId,
   } = body;
 
   if (!claim || !amount || !claimantRef || !respondentRef) {
@@ -38,6 +42,7 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  const SUPPORTED_SETTLEMENT_CHAINS = ["sepolia", "solanatestnet", "solanadevnet"];
   // Both or neither — a settlement target only makes sense as a pair, and
   // half-configuring it would silently never dispatch (see
   // adjudication-service.ts's check) rather than error loudly here.
@@ -47,9 +52,22 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  if (settlementChain && settlementChain !== "sepolia") {
+  if (settlementChain && !SUPPORTED_SETTLEMENT_CHAINS.includes(settlementChain)) {
     return NextResponse.json(
-      { error: `unsupported settlementChain "${settlementChain}" — only "sepolia" is wired today` },
+      { error: `unsupported settlementChain "${settlementChain}" — supported: ${SUPPORTED_SETTLEMENT_CHAINS.join(", ")}` },
+      { status: 400 }
+    );
+  }
+  const isSealevelSettlement = settlementChain === "solanatestnet" || settlementChain === "solanadevnet";
+  if (
+    isSealevelSettlement &&
+    (!settlementSolanaClaimant || !settlementSolanaRespondent || !settlementSolanaEscrowProgram || !settlementSolanaCaseId)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "settlementSolanaClaimant, settlementSolanaRespondent, settlementSolanaEscrowProgram, and settlementSolanaCaseId are required when settlementChain is a Solana chain",
+      },
       { status: 400 }
     );
   }
@@ -74,6 +92,10 @@ export async function POST(req: NextRequest) {
       status: "EVIDENCE_COLLECTION",
       settlementChain: settlementChain || null,
       settlementContract: settlementContract || null,
+      settlementSolanaClaimant: isSealevelSettlement ? settlementSolanaClaimant : null,
+      settlementSolanaRespondent: isSealevelSettlement ? settlementSolanaRespondent : null,
+      settlementSolanaEscrowProgram: isSealevelSettlement ? settlementSolanaEscrowProgram : null,
+      settlementSolanaCaseId: isSealevelSettlement ? settlementSolanaCaseId : null,
     },
   });
 

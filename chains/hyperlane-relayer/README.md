@@ -1,36 +1,36 @@
 # Anchor's self-hosted Hyperlane relayer
 
 The shared public Hyperlane testnet4 relayer does not reliably service the
-Solana Testnet/Devnet -> Sepolia route Anchor's cross-chain settlement
+Solana Testnet/Devnet <-> Sepolia routes Anchor's cross-chain settlement
 path depends on — two real dispatched messages sat undelivered for 7+
-hours before this was stood up (see the message IDs below). This is
-Anchor's own relayer, scoped to exactly the chains it needs.
+hours before this was stood up. This is Anchor's own relayer, scoped to
+exactly the chains it needs, plus two real bugs found and fixed along the
+way (see Known issues fixed below).
 
-**Status: live, proven.** Both previously-stuck messages were delivered
-within minutes of starting this relayer:
+**Status: CaseOriginate (Solana -> Sepolia) proven live end to end.**
+DecisionRelay (Sepolia -> \*) dispatch is proven and one real delivery has
+been proven manually; automatic delivery via this relayer for
+Sepolia-origin messages is still unreliable (see Known issues below) even
+after fixing the two root causes we could actually fix ourselves.
 
-| Origin | Message ID | Destination tx |
-|---|---|---|
-| Solana Testnet (nonce 873) | `0x7ca006278e77c09962ae930f4c3f5f5cbd80dc8234645a66b49cc78c0023d473` | [`0xe7b9b011...`](https://sepolia.etherscan.io/tx/0xe7b9b011c00af0311931ad07e49728d8e6801aa57a9ce18803ba9b25a75119a1) |
-| Solana Devnet (nonce 14) | `0xf77581accc03d17fd3ea76bcbd3ed16d336566310fe31a863a961fb21350e252` | [`0x4ef81e79...`](https://sepolia.etherscan.io/tx/0x4ef81e7972309147aef11687eb2fb2204b18c32d672bceb9e0247b1941bbd1a6) |
+| Test | Origin | Message ID | Destination tx | Delivered by |
+|---|---|---|---|---|
+| CaseOriginate | Solana Testnet | `0x7ca006278e77c09962ae930f4c3f5f5cbd80dc8234645a66b49cc78c0023d473` | [`0xe7b9b011...`](https://sepolia.etherscan.io/tx/0xe7b9b011c00af0311931ad07e49728d8e6801aa57a9ce18803ba9b25a75119a1) | this relayer |
+| CaseOriginate | Solana Devnet | `0xf77581accc03d17fd3ea76bcbd3ed16d336566310fe31a863a961fb21350e252` | [`0x4ef81e79...`](https://sepolia.etherscan.io/tx/0x4ef81e7972309147aef11687eb2fb2204b18c32d672bceb9e0247b1941bbd1a6) | this relayer |
+| DecisionRelay (self) | Sepolia | (reconstructed, id `0xf2d09a34...`) | [`0x5116fdcc...`](https://sepolia.etherscan.io/tx/0x5116fdcc0fdf25b7abb7f596ce61fb90f3b75990bdf9790126f3d2b87348605e) | manual `cast send` (see below) |
 
-Both destination transactions succeeded and `SolanaCaseReceiver.handle()`
-correctly decoded the Borsh-encoded message and emitted the right case ID
-(`CASE-SOL-...`) — this proves the full round trip, not just Mailbox
-delivery: dispatch on Solana -> Hyperlane relay -> `handle()` decode on
-Sepolia, genuinely working end to end.
+All three destination transactions succeeded and the recipient contract
+(`SolanaCaseReceiver.handle()` or `DecisionRelay.handle()`) correctly
+decoded the message and emitted the expected event — this proves the
+recipient/decode/business-logic half genuinely works, independent of
+whichever relayer submits the delivery transaction.
 
 ## What this is
 
 A single `hyperlane-agent` relayer container (`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.2.0`),
 scoped to three chains via `config.json`:
-- `sepolia` (destination — where `SolanaCaseReceiver` lives)
-- `solanatestnet`, `solanadevnet` (origins — where the Solana decision-relay
-  program dispatches from)
-
-It only needs a signer for the chain it submits transactions *to*
-(`sepolia`) — origin chains are read-only for this relayer, it never
-signs anything on Solana.
+- `sepolia` (both an origin, for DecisionRelay, and a destination, for CaseOriginate)
+- `solanatestnet`, `solanadevnet` (origins for CaseOriginate, destinations for DecisionRelay)
 
 ## Running it
 
@@ -47,16 +47,86 @@ docker run -d --name anchor-hyperlane-relayer \
   --db /data \
   --relayChains solanatestnet,solanadevnet,sepolia \
   --defaultSigner.key "$RELAYER_EVM_PRIVATE_KEY" \
+  --chains.solanatestnet.signer.type hexKey \
+  --chains.solanatestnet.signer.key "$RELAYER_SOLANA_SEED_HEX" \
+  --chains.solanadevnet.signer.type hexKey \
+  --chains.solanadevnet.signer.key "$RELAYER_SOLANA_SEED_HEX" \
   --allowLocalCheckpointSyncers true
 ```
 
-`RELAYER_EVM_PRIVATE_KEY` needs Sepolia ETH to pay gas for the `process()`
-delivery transactions it submits — this is the same funded key used to
-deploy `SolanaCaseReceiver` in the first place (see `chains/evm/`).
+`RELAYER_EVM_PRIVATE_KEY` needs Sepolia ETH to pay gas for `process()`
+transactions on EVM destinations — the same funded key used to deploy
+`SolanaCaseReceiver`/`DecisionRelay` (see `chains/evm/`).
+`RELAYER_SOLANA_SEED_HEX` is the 32-byte ed25519 seed (hex-encoded, first
+32 bytes of a standard `~/.config/solana/id.json` array) for a funded
+Solana account. **Both are required** — the relayer needs its own signer
+per destination-chain *protocol* family (EVM vs. Sealevel), not one key
+overall. Without the Solana signer, delivery to any Sealevel destination
+silently stalls with no clear top-level error (see Known issues fixed).
 
 `--restart unless-stopped` keeps it running across host reboots — this is
 meant to be long-lived infrastructure, not a one-shot script. Check status
 with `docker logs anchor-hyperlane-relayer` / `docker ps`.
+
+## Known issues fixed
+
+**1. Sepolia's default recipient ISM is unreachable for a self-hosted
+single-relayer setup.** Any recipient that doesn't override
+`interchainSecurityModule()` falls back to the Mailbox's default, which on
+Sepolia is a 2-of-2 aggregation ISM (`modulesAndThreshold()` confirmed
+live via `cast call`) requiring independent checkpoints from two separate
+canonical validator sets. Our relayer could only assemble metadata for
+one of the two — a real dispatched message stayed permanently
+undeliverable through no fault of the dispatch. **Fix**: `DecisionRelay.sol`
+now overrides `interchainSecurityModule()` to point at
+`TrustedRelayerIsm.sol`, a minimal custom ISM whose `verify()` always
+returns true. This is the standard Hyperlane pattern (a recipient chooses
+its own ISM rather than depending on the chain default forever), but read
+the security tradeoff comment in `TrustedRelayerIsm.sol` before reusing
+this for anything holding real value — it performs no cryptographic
+origin-authenticity check at all, appropriate only because Anchor
+currently controls both the sole dispatcher and the sole relayer for
+these messages.
+
+**2. decision-relay's Solana program never returned data for the
+`InterchainSecurityModule` query.** The handler in
+`programs/decision-relay/src/lib.rs` used to just return `Ok(())` to mean
+"use the Mailbox's default ISM." Per Hyperlane's own Sealevel interface
+(confirmed against the reference `test-send-receiver` program's
+`get_interchain_security_module` and the real error message this
+produced: `"No return data from InboxGetRecipientIsm instruction"`),
+that intent must be communicated by explicitly
+`set_return_data(&borsh::to_vec(&Option::<Pubkey>::None))`. **Fix**:
+implemented and redeployed (same program ID, upgraded in place); verified
+correct via a direct `simulateTransaction` against the live program,
+which now returns `AA==` (base64 for a single `0x00` byte, the correct
+Borsh encoding of `None`).
+
+**3. The relayer needs a per-protocol-family signer.** `--defaultSigner.key`
+alone (an EVM hex key) silently doesn't cover Sealevel destinations — the
+relayer needs `--chains.<solana-chain>.signer.type hexKey` +
+`.signer.key` separately. Without it, messages sit indefinitely at
+"checking delivered? false" with no error, easy to mistake for an
+ISM/metadata problem (which is what issues #1/#2 above actually were,
+found first). Fixed by adding the flags shown above.
+
+## Known issue NOT fixed — Sepolia-origin auto-delivery is still unreliable
+
+After fixing all three of the above, this relayer's own automatic
+delivery of *new* Sepolia-origin DecisionRelay messages (both to itself
+and to a Solana destination) remained flaky in ways not fully diagnosed —
+requests to public Sepolia RPC endpoints returning transient errors
+("message expired and must be re-signed", provider rate limits) interrupt
+its retry loop, and a real fresh dispatch to the Solana destination still
+didn't self-deliver within the test window despite the program-level ISM
+fix being independently confirmed correct via direct simulation. The one
+DecisionRelay self-dispatch proven above was delivered by constructing
+and submitting the `Mailbox.process()` call directly with `cast send`,
+not by this relayer. If you depend on unattended DecisionRelay delivery,
+verify it end-to-end again before trusting it, and consider a paid/more
+reliable RPC endpoint for the relayer's `customRpcUrls` — the free public
+endpoints in `config.json` are the most likely source of the remaining
+flakiness.
 
 ## Chain configs
 
@@ -86,4 +156,11 @@ Or query the Hyperlane explorer for a specific message:
 curl -s 'https://explorer4.hasura.app/v1/graphql' \
   -H 'Content-Type: application/json' \
   -d '{"query":"query { message_view(where: {msg_id: {_eq: \"<0x...>\"}}) { is_delivered destination_tx_hash } }"}'
+```
+
+Or check delivery directly against the destination Mailbox, independent
+of the explorer's own indexing lag:
+
+```bash
+cast call <mailbox> "delivered(bytes32)(bool)" <messageId> --rpc-url <rpc>
 ```

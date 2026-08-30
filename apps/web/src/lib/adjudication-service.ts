@@ -126,6 +126,10 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
           respondentAmountAtto: (totalAmountAtto * respondentBps) / 10000n,
           settlementChain: kase.settlementChain,
           settlementContract: kase.settlementContract,
+          settlementSolanaClaimant: kase.settlementSolanaClaimant,
+          settlementSolanaRespondent: kase.settlementSolanaRespondent,
+          settlementSolanaEscrowProgram: kase.settlementSolanaEscrowProgram,
+          settlementSolanaCaseId: kase.settlementSolanaCaseId,
         });
         await prisma.decision.update({
           where: { id: createdDecision.id },
