@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
 import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
+import { logAction } from "@/lib/audit";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -49,6 +50,16 @@ export async function POST(req: NextRequest) {
       policyVersion: policy.version,
       status: "EVIDENCE_COLLECTION",
     },
+  });
+
+  logAction({
+    organizationId: auth.organizationId,
+    memberId: auth.memberId,
+    apiKeyId: auth.apiKeyId,
+    action: "case.created",
+    targetType: "case",
+    targetId: kase.id,
+    metadata: { policyId: policy.id, claim },
   });
 
   return NextResponse.json(kase, { status: 201 });

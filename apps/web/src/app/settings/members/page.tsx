@@ -10,16 +10,37 @@ interface InviteSummary {
   createdAt: string;
 }
 
+interface MemberSummary {
+  id: string;
+  email: string;
+  role: "OWNER" | "MEMBER";
+  emailVerifiedAt: string | null;
+  createdAt: string;
+}
+
 export default function MembersPage() {
   const [invites, setInvites] = useState<InviteSummary[]>([]);
+  const [members, setMembers] = useState<MemberSummary[]>([]);
+  const [selfId, setSelfId] = useState<string | null>(null);
+  const [selfRole, setSelfRole] = useState<"OWNER" | "MEMBER" | null>(null);
   const [email, setEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
   async function load() {
-    const res = await fetch("/api/invites");
-    if (res.ok) setInvites(await res.json());
+    const [invitesRes, membersRes, meRes] = await Promise.all([
+      fetch("/api/invites"),
+      fetch("/api/members"),
+      fetch("/api/auth/me"),
+    ]);
+    if (invitesRes.ok) setInvites(await invitesRes.json());
+    if (membersRes.ok) setMembers(await membersRes.json());
+    if (meRes.ok) {
+      const me = await meRes.json();
+      setSelfId(me.member.id);
+      setSelfRole(me.member.role);
+    }
   }
 
   useEffect(() => {
@@ -53,6 +74,19 @@ export default function MembersPage() {
     }
   }
 
+  async function handleRemove(id: string) {
+    setError(null);
+    const res = await fetch(`/api/members/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json();
+      setError(body.error ?? "failed to remove member");
+      return;
+    }
+    await load();
+  }
+
+  const isOwner = selfRole === "OWNER";
+
   return (
     <main className="mx-auto max-w-3xl px-8 py-16">
       <div className="flex items-center justify-between">
@@ -62,12 +96,14 @@ export default function MembersPage() {
         >
           ← Docket
         </Link>
-        <Link
-          href="/settings/keys"
-          className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
-        >
-          API keys →
-        </Link>
+        <div className="flex gap-4">
+          <Link href="/settings/webhooks" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
+            Webhooks →
+          </Link>
+          <Link href="/settings/keys" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
+            API keys →
+          </Link>
+        </div>
       </div>
 
       <header className="mt-8 border-b border-line pb-8 dark:border-line-dark">
@@ -76,7 +112,9 @@ export default function MembersPage() {
           Members
         </h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
-          Invite colleagues into your organization. Every member sees the same cases.
+          {isOwner
+            ? "Invite colleagues and manage who has access. Every member sees the same cases."
+            : "Every member of your organization sees the same cases. Only the owner can invite or remove people."}
         </p>
       </header>
 
@@ -88,41 +126,78 @@ export default function MembersPage() {
       {error && <p className="mt-6 text-sm text-status-undetermined">{error}</p>}
 
       <section className="mt-10">
-        <p className="kicker mb-4">Invite a member</p>
-        <form onSubmit={handleInvite} className="flex items-end gap-4">
-          <label className="flex flex-1 flex-col gap-2">
-            <span className="field-label">Email</span>
-            <input
-              className="field-input"
-              type="email"
-              placeholder="teammate@company.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </label>
-          <button className="btn-primary" type="submit" disabled={inviting}>
-            {inviting ? "Sending…" : "Send invite"}
-          </button>
-        </form>
-      </section>
-
-      <section className="mt-12">
-        <p className="kicker mb-4">Pending invites</p>
+        <p className="kicker mb-4">Members</p>
         <div className="border-t border-line dark:border-line-dark">
-          {invites.length === 0 && (
-            <p className="py-8 text-center text-sm text-muted dark:text-muted-dark">No pending invites.</p>
-          )}
-          {invites.map((i) => (
-            <div key={i.id} className="flex items-center justify-between border-b border-line py-4 dark:border-line-dark">
-              <p className="text-sm font-medium">{i.email}</p>
-              <p className="font-mono text-xs text-muted dark:text-muted-dark">
-                expires {new Date(i.expiresAt).toLocaleDateString()}
-              </p>
+          {members.map((m) => (
+            <div key={m.id} className="flex items-center justify-between border-b border-line py-4 dark:border-line-dark">
+              <div>
+                <p className="text-sm font-medium">
+                  {m.email} {m.id === selfId && <span className="text-muted dark:text-muted-dark">(you)</span>}
+                </p>
+                <p className="font-mono text-xs text-muted dark:text-muted-dark">
+                  {m.role.toLowerCase()} · {m.emailVerifiedAt ? "verified" : "unverified"} · joined{" "}
+                  {new Date(m.createdAt).toLocaleDateString()}
+                </p>
+              </div>
+              {isOwner && m.id !== selfId && (
+                <button
+                  onClick={() => handleRemove(m.id)}
+                  className="font-mono text-xs text-muted hover:text-status-undetermined dark:text-muted-dark"
+                >
+                  Remove
+                </button>
+              )}
             </div>
           ))}
         </div>
       </section>
+
+      {isOwner && (
+        <>
+          <section className="mt-12">
+            <p className="kicker mb-4">Invite a member</p>
+            <form onSubmit={handleInvite} className="flex items-end gap-4">
+              <label className="flex flex-1 flex-col gap-2">
+                <span className="field-label">Email</span>
+                <input
+                  className="field-input"
+                  type="email"
+                  placeholder="teammate@company.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </label>
+              <button className="btn-primary" type="submit" disabled={inviting}>
+                {inviting ? "Sending…" : "Send invite"}
+              </button>
+            </form>
+          </section>
+
+          <section className="mt-12">
+            <p className="kicker mb-4">Pending invites</p>
+            <div className="border-t border-line dark:border-line-dark">
+              {invites.length === 0 && (
+                <p className="py-8 text-center text-sm text-muted dark:text-muted-dark">No pending invites.</p>
+              )}
+              {invites.map((i) => (
+                <div key={i.id} className="flex items-center justify-between border-b border-line py-4 dark:border-line-dark">
+                  <p className="text-sm font-medium">{i.email}</p>
+                  <p className="font-mono text-xs text-muted dark:text-muted-dark">
+                    expires {new Date(i.expiresAt).toLocaleDateString()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="mt-12">
+            <Link href="/settings/audit-log" className="text-sm text-seal-500 hover:underline dark:text-seal-400">
+              View audit log →
+            </Link>
+          </section>
+        </>
+      )}
     </main>
   );
 }

@@ -1,26 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requiredEvidenceTypesFor, runAdjudicationJob } from "@/lib/adjudication-service";
+import { requiredEvidenceTypesFor } from "@/lib/adjudication-service";
 import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { logAction } from "@/lib/audit";
+import { dispatchWebhookEvent } from "@/lib/webhooks";
+import { enqueueJob, ensureJobPoller } from "@/lib/jobs";
 
 // POST /api/cases/:id/adjudicate — the Adjudication Builder step: validate
-// evidence completeness against the policy, then hand off to GenLayer in
-// the background and return immediately.
+// evidence completeness against the policy, then hand off to GenLayer via
+// the Job queue and return immediately.
 //
 // Real consensus takes ~1-2 minutes (see genlayer/README.md's integration
-// test timings), so this route no longer blocks the request on it — it
-// transitions the case to ADJUDICATING and returns 202, and the case's
-// status/decision are picked up by polling GET /api/cases/:id.
+// test timings), so this route doesn't block on it — it transitions the
+// case to ADJUDICATING and returns 202; status/decision are picked up by
+// polling GET /api/cases/:id, or by a subscribed webhook.
 //
-// Caveat: `runAdjudicationJob` here is a fire-and-forget promise within
-// the same Node process, not a real job queue — it only survives as long
-// as this server process stays alive, which is fine for `next dev`/a
-// long-lived `next start` server but WILL be killed mid-flight on
-// serverless platforms (Vercel functions, etc.) that terminate the
-// process once the response is sent. Move this to a real queue (BullMQ,
-// SQS, etc.) before deploying anywhere serverless — see the Worker/Case
-// Service split in the root README's architecture notes.
+// The actual run is a DB-backed Job row (src/lib/jobs.ts), not a bare
+// fire-and-forget promise — its state survives this process restarting.
+// It's still processed by an in-process poller in this same server,
+// though, not a separate worker; see the Job model's schema comment for
+// what that does and doesn't buy on serverless.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  ensureJobPoller();
+
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -52,8 +54,21 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     data: { status: "ADJUDICATING" },
   });
 
-  // Deliberately not awaited — see the module-level comment above.
-  void runAdjudicationJob(kase.id);
+  await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: false });
+
+  logAction({
+    organizationId: auth.organizationId,
+    memberId: auth.memberId,
+    apiKeyId: auth.apiKeyId,
+    action: "case.adjudicate_requested",
+    targetType: "case",
+    targetId: kase.id,
+  });
+  dispatchWebhookEvent({
+    organizationId: auth.organizationId,
+    event: "case.status_changed",
+    data: { caseId: kase.id, status: "ADJUDICATING" },
+  });
 
   return NextResponse.json(
     {

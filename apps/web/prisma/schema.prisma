@@ -37,10 +37,17 @@ model Organization {
   name      String
   createdAt DateTime @default(now())
 
-  members Member[]
-  apiKeys ApiKey[]
-  cases   Case[]
-  invites Invite[]
+  members   Member[]
+  apiKeys   ApiKey[]
+  cases     Case[]
+  invites   Invite[]
+  webhooks  Webhook[]
+  auditLogs AuditLog[]
+}
+
+enum MemberRole {
+  OWNER
+  MEMBER
 }
 
 model Member {
@@ -49,10 +56,116 @@ model Member {
   organizationId String
   email        String       @unique
   passwordHash String
+  // The founding member (created via signup) is OWNER; everyone invited
+  // afterward is MEMBER by default. OWNER-only actions: inviting/removing
+  // members, managing webhooks, viewing the audit log.
+  role         MemberRole   @default(OWNER)
+  emailVerifiedAt DateTime?
   createdAt    DateTime     @default(now())
 
-  sessions       Session[]
-  passwordResets PasswordReset[]
+  sessions           Session[]
+  passwordResets     PasswordReset[]
+  emailVerifications EmailVerification[]
+}
+
+// Single-use token proving control of the signup email. Verification is
+// informational today (nothing is blocked on it yet) but the mechanism
+// exists so gating (e.g. requiring it before inviting others) can be
+// turned on later without another migration.
+model EmailVerification {
+  id         String    @id @default(cuid())
+  member     Member    @relation(fields: [memberId], references: [id])
+  memberId   String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([memberId])
+}
+
+// A webhook subscription for one org. The secret is stored in cleartext
+// (unlike Session/ApiKey/Invite tokens) because the org needs to read it
+// back repeatedly to verify delivered signatures — same posture as
+// Stripe's webhook signing secrets.
+model Webhook {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  url            String
+  secret         String
+  // Event names this webhook wants, e.g. "case.status_changed",
+  // "case.decided". Enforced against a fixed vocabulary in application
+  // code (src/lib/webhooks.ts), not the DB schema.
+  events         String[]
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+
+  deliveries WebhookDelivery[]
+
+  @@index([organizationId])
+}
+
+// One delivery attempt, kept for debugging ("why didn't my webhook fire /
+// what did you actually send") rather than for retries — delivery is
+// best-effort fire-and-forget, matching the adjudication job's own
+// reliability posture (see Job model for the one queue that DOES retry).
+model WebhookDelivery {
+  id             String   @id @default(cuid())
+  webhook        Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  webhookId      String
+  event          String
+  payload        Json
+  responseStatus Int?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([webhookId])
+}
+
+// Append-only record of who did what. Written by application code at
+// each mutating action, not derived from anything else — there's no
+// reconstruction path if a write here is skipped, so callers must log
+// before/alongside the mutation, not as a best-effort afterthought.
+model AuditLog {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  // Exactly one of memberId/apiKeyId is set, identifying which auth path
+  // performed the action - null/null would mean an unauthenticated action,
+  // which should never happen since every mutating route requires auth.
+  memberId       String?
+  apiKeyId       String?
+  action         String
+  targetType     String
+  targetId       String?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@index([createdAt])
+}
+
+// DB-backed job queue for background work (currently just adjudication
+// runs). Replaces the earlier fire-and-forget in-process promise: job
+// state now survives a process restart, and a crashed/killed process
+// leaves the row at RUNNING for a sweep to requeue rather than losing the
+// case silently. Still processed by this same Next.js process (see
+// src/lib/jobs.ts) - the durability gap that's closed is "state survives
+// a restart," not "runs on a separate worker fleet." True horizontal
+// scaling still needs an external worker process polling this table (or
+// a real queue like BullMQ/SQS) instead of the in-process poller.
+model Job {
+  id        String   @id @default(cuid())
+  type      String
+  payload   Json
+  status    String   @default("PENDING") // PENDING | RUNNING | DONE | FAILED
+  attempts  Int      @default(0)
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
 }
 
 // An invite is how an org grows past its founding member — created by any
@@ -131,7 +244,11 @@ model Case {
   contractAddress String?
 
   evidence  Evidence[]
-  decision  Decision?
+  // One-to-many, not one-to-one: an appeal produces a fresh Decision
+  // rather than overwriting the first, so the full history (original
+  // verdict, then the appealed re-adjudication) stays queryable. The
+  // dashboard/API always show the latest by createdAt.
+  decisions Decision[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -168,7 +285,7 @@ model Evidence {
 
 model Decision {
   id                    String   @id @default(cuid())
-  caseId                String   @unique
+  caseId                String
   case                  Case     @relation(fields: [caseId], references: [id])
   policyId              String
   policyVersion         String
@@ -187,4 +304,6 @@ model Decision {
   explanation           String?
   appealWindowClosesAt  DateTime?
   createdAt             DateTime @default(now())
+
+  @@index([caseId])
 }

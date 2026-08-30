@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { StatusStamp } from "@/components/StatusStamp";
+import { EmailVerificationBanner } from "@/components/EmailVerificationBanner";
 
 interface CaseSummary {
   id: string;
@@ -88,6 +89,7 @@ export default function CasesPage() {
 
   return (
     <main className="mx-auto max-w-5xl px-8 py-16">
+      <EmailVerificationBanner />
       <header className="mb-12 border-b border-line pb-8 pt-10 dark:border-line-dark">
         <p className="kicker text-seal-500 dark:text-seal-400">The Docket</p>
         <h1 className="font-display text-4xl font-semibold tracking-tight text-ink-950 dark:text-ink">

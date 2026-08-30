@@ -1,12 +1,18 @@
+import { randomBytes, createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, createSession } from "@/lib/auth";
+import { sendVerificationEmail } from "@/lib/email";
 
-// POST /api/auth/signup — creates a new Organization + the first Member,
-// then a session. This is the only way an Organization gets created;
-// every subsequent member of that org signs up via an invite flow that
-// doesn't exist yet (see Still needed in genlayer/README-equivalent notes
-// — MVP scope is one member per org for now).
+const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+// POST /api/auth/signup — creates a new Organization + its founding
+// (OWNER-role) Member, then a session. Every subsequent member joins via
+// the invite flow (src/app/api/invites), arriving as MEMBER role.
 export async function POST(req: NextRequest) {
   const { organizationName, email, password } = await req.json();
 
@@ -31,10 +37,27 @@ export async function POST(req: NextRequest) {
       organizationId: organization.id,
       email,
       passwordHash: hashPassword(password),
+      role: "OWNER",
     },
   });
 
   await createSession(member.id);
+
+  // Fire-and-forget: signup succeeds regardless of email deliverability —
+  // the dashboard shows an unverified banner with a resend option either way.
+  const rawToken = randomBytes(32).toString("hex");
+  void prisma.emailVerification
+    .create({
+      data: { memberId: member.id, tokenHash: hashToken(rawToken), expiresAt: new Date(Date.now() + VERIFICATION_TTL_MS) },
+    })
+    .then(() => {
+      const verifyUrl = `${process.env.APP_ORIGIN || req.nextUrl.origin}/verify-email/${rawToken}`;
+      return sendVerificationEmail({ to: email, verifyUrl });
+    })
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("signup verification email failed:", err instanceof Error ? err.message : err);
+    });
 
   return NextResponse.json(
     { organization: { id: organization.id, name: organization.name }, member: { id: member.id, email: member.email } },

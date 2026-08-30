@@ -66,10 +66,15 @@ Do not use this skill for:
 
 ## Workflow
 
-1. **Confirm the policy fits.** Currently: `agent_data_task_v1` — Agent A
-   pays Agent B to perform a data/API task; A disputes the delivery didn't
-   meet spec. If the deal doesn't match this shape, don't force it — see
-   Extending below.
+1. **Confirm the policy fits.** Three policies are live today:
+   - `agent_data_task_v1` — Agent A pays Agent B to perform a data/API
+     task; A disputes the delivery didn't meet spec.
+   - `escrow_release_v1` — client disputes whether a service provider's
+     deliverable meets an agreed milestone.
+   - `invoice_dispute_v1` — B2B invoice dispute between buyer and seller.
+
+   If the deal doesn't match any of these, don't force it — see Extending
+   below.
 2. **Open the case** — `POST /api/cases`:
    ```json
    {
@@ -84,17 +89,27 @@ Do not use this skill for:
    `packages/types/index.ts`'s privacy note). Resolve real agent
    identities (ERC-8004, wallet addresses, etc.) to opaque refs before
    calling this.
-3. **Submit evidence** — `POST /api/cases/:id/evidence`, once per required
-   type. `agent_data_task_v1` requires all four:
-   `task_spec`, `delivery_payload`, `claimant_statement`,
-   `respondent_statement`. The endpoint rejects submission for
-   adjudication until all four are present.
+3. **Submit evidence** — `POST /api/cases/:id/evidence` for inline text/
+   JSON, once per required type per the chosen policy (see Evidence
+   Schema below for each policy's required types). For images/PDFs, use
+   `POST /api/cases/:id/evidence/upload` (multipart) instead — files are
+   stored on Cloudinary and, for images, the GenLayer contract fetches
+   and genuinely *sees* the image (real multimodal input to the LLM, not
+   a URL string dropped into the prompt); PDFs are only confirmed
+   reachable, their content is never machine-read. The endpoint rejects
+   submission for adjudication until all required types for the policy
+   are present.
 4. **Submit for adjudication** — `POST /api/cases/:id/adjudicate`. Returns
    `202` immediately with the case in `ADJUDICATING` status — this call
-   does not block on the ~1-2 minute GenLayer consensus round. Poll step 5.
+   does not block on the ~1-2 minute GenLayer consensus round. Poll step 5,
+   or subscribe a webhook (see Webhooks below) instead of polling.
 5. **Poll for the decision** — `GET /api/cases/:id`. Once `status` leaves
-   `ADJUDICATING` (becomes `ACCEPTED` or `UNDETERMINED`), the `decision`
-   field is populated. See Decision Output below for the shape.
+   `ADJUDICATING`, it becomes one of `APPEAL_WINDOW` (a decision was
+   reached and can still be appealed), `UNDETERMINED` (no consensus), or
+   later `FINALIZED`/`RE_ADJUDICATING` if an appeal was used. The
+   `decision` field (most recent) is populated once a verdict exists. See
+   Decision Output below for the shape, and Failure and Appeal Paths for
+   what `APPEAL_WINDOW` actually lets you do now.
 
 ## Decision Output
 
@@ -151,7 +166,9 @@ round-trip delivery to an EVM settlement contract is in progress). Point
 `relayMechanism: "hyperlane"` deals at that pipeline once it's fully
 closed; until then, treat it as `"manual"` for anything shipping today.
 
-## Evidence Schema (agent_data_task_v1)
+## Evidence Schema
+
+**`agent_data_task_v1`**
 
 | Evidence type | Required | Content |
 |---|---|---|
@@ -159,10 +176,38 @@ closed; until then, treat it as `"manual"` for anything shipping today.
 | `delivery_payload` | yes | What was actually returned |
 | `claimant_statement` | yes | Why the claimant disputes the delivery |
 | `respondent_statement` | yes | The respondent's defense |
-| `delivery_metadata` | no | Timestamps, request/response logs |
+
+**`escrow_release_v1`**
+
+| Evidence type | Required | Content |
+|---|---|---|
+| `milestone_spec` | yes | What was agreed as "done" |
+| `deliverable` | yes | What was actually submitted — image URLs are genuinely interpreted visually |
+| `claimant_statement` | yes | Client's dispute of the deliverable |
+| `respondent_statement` | yes | Provider's defense |
+
+**`invoice_dispute_v1`**
+
+| Evidence type | Required | Content |
+|---|---|---|
+| `invoice_terms` | yes | The agreed contract/PO terms |
+| `delivery_record` | yes | Proof of what was delivered/completed |
+| `claimant_statement` | yes | Buyer's dispute of the invoice |
+| `respondent_statement` | yes | Seller's defense |
 
 Full policy logic (how the checklist comparison works, the reason-code
 vocabulary, outcome thresholds): `docs/policy-v1.md` in the Anchor repo.
+
+## Webhooks
+
+Instead of polling `GET /api/cases/:id`, subscribe a URL via the
+dashboard (`Settings -> Webhooks`) or `POST /api/webhooks` to get pushed
+`case.status_changed`, `case.decided`, and `case.appealed` events. Every
+delivery carries `X-Anchor-Signature: sha256=<hex>` — an HMAC-SHA256 of
+the raw JSON body using the webhook's own secret (shown once at
+creation, readable again from the dashboard). Verify it before trusting
+the payload; a webhook endpoint that skips this check can be spoofed by
+anyone who knows (or guesses) the URL.
 
 ## Extending to New Policies
 
@@ -191,11 +236,16 @@ yet. When a deal doesn't fit the existing policy:
   (`OPEN` → `EVIDENCE_COLLECTION` → `SUBMITTED` → `ADJUDICATING` →
   `ACCEPTED`/`UNDETERMINED`) is strict; don't call adjudicate twice or
   submit evidence after submission.
-- No appeal endpoint exists yet in the live API (the case lifecycle design
-  anticipates `APPEAL_WINDOW`/`APPEALED` states — see the root README's
-  case-lifecycle notes — but it isn't wired to the API today). Treat every
-  decision as final until that lands; note this explicitly to the user
-  rather than implying an appeal path exists.
+- **Appeal**: a decided case enters `APPEAL_WINDOW` (48 hours from the
+  decision). Within that window, `POST /api/cases/:id/appeal` (optional
+  `{"reason": "..."}` body) triggers exactly one fresh, independent
+  re-adjudication — capped on-chain by the contract itself (a second
+  appeal attempt is rejected by GenLayer consensus, not just app logic).
+  Evidence can be corrected first via the normal evidence endpoints
+  (resubmitting an existing type is allowed only during `APPEAL_WINDOW`,
+  and the most recent submission per type is what the re-run sees). After
+  the appeal resolves, the case is `FINALIZED` — genuinely final, no
+  further appeal possible for that case.
 
 ## References
 

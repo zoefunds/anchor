@@ -313,6 +313,9 @@ def _coerce_decision_fields(obj: dict, reason_codes: tuple) -> dict:
     }
 
 
+MAX_APPEALS = 1
+
+
 class Adjudicator(gl.Contract):
     # Storage fields are class-level annotations - __init__ only sets values.
     case_id: str
@@ -321,6 +324,7 @@ class Adjudicator(gl.Contract):
     atto_amount: u256  # disputed amount, atto-scale (value * 10^18)
     status: str  # "PENDING" | "DECIDED"
     decision_json: str  # JSON-encoded Decision (docs/decision-schema.md), empty until decided
+    appeal_count: u256
 
     def __init__(self, case_id: str, claimant_ref: str, respondent_ref: str, atto_amount: u256):
         self.case_id = case_id
@@ -329,6 +333,28 @@ class Adjudicator(gl.Contract):
         self.atto_amount = atto_amount
         self.status = "PENDING"
         self.decision_json = ""
+        self.appeal_count = u256(0)
+
+    @gl.public.write
+    def appeal(self) -> None:
+        """Reopens a decided case for exactly one re-adjudication round.
+        Anchor's backend calls this, then calls adjudicate() again with
+        (possibly updated) evidence - the same policy re-runs from scratch
+        with fresh validator consensus, it does not adjust the prior
+        decision. Capped at MAX_APPEALS to prevent an unbounded appeal
+        loop; the cap is enforced here (deterministically, on-chain) so a
+        compromised backend can't grant itself extra appeal rounds."""
+        if self.status != "DECIDED":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Case {self.case_id} is not in a decided state")
+        if self.appeal_count >= MAX_APPEALS:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Appeal limit reached for case {self.case_id}")
+        self.appeal_count += u256(1)
+        self.status = "PENDING"
+        self.decision_json = ""
+
+    @gl.public.view
+    def get_appeal_count(self) -> int:
+        return int(self.appeal_count)
 
     @gl.public.write
     def adjudicate(self, policy_id: str, evidence_json: str) -> None:

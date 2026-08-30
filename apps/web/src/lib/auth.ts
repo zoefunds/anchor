@@ -92,6 +92,7 @@ export interface AuthedMember {
   memberId: string;
   organizationId: string;
   email: string;
+  role: "OWNER" | "MEMBER";
 }
 
 /** Resolves the current dashboard session, if any, from the request cookie. */
@@ -111,6 +112,7 @@ export async function getSessionMember(): Promise<AuthedMember | null> {
     memberId: session.member.id,
     organizationId: session.member.organizationId,
     email: session.member.email,
+    role: session.member.role,
   };
 }
 
@@ -174,7 +176,7 @@ export async function getApiKeyAuth(authHeader: string | null): Promise<AuthedAp
 }
 
 export type OrgAuthResult =
-  | { organizationId: string }
+  | { organizationId: string; memberId?: string; apiKeyId?: string; role?: "OWNER" | "MEMBER" }
   | { error: "unauthorized" }
   | { error: "rate_limited"; retryAfterSeconds: number };
 
@@ -195,13 +197,23 @@ export async function resolveOrgFromRequest(req: Request): Promise<OrgAuthResult
     if (!rateLimit.allowed) {
       return { error: "rate_limited", retryAfterSeconds: rateLimit.retryAfterSeconds! };
     }
-    return { organizationId: apiKeyAuth.organizationId };
+    return { organizationId: apiKeyAuth.organizationId, apiKeyId: apiKeyAuth.apiKeyId };
   }
 
   const member = await getSessionMember();
-  if (member) return { organizationId: member.organizationId };
+  if (member) {
+    return { organizationId: member.organizationId, memberId: member.memberId, role: member.role };
+  }
 
   return { error: "unauthorized" };
+}
+
+/** Owner-only actions (invite/remove members, manage webhooks, view audit log) go through this instead of resolveOrgFromRequest directly — API-key callers never pass, since a key isn't "a" member with a role. */
+export async function requireOwner(): Promise<AuthedMember | { error: "unauthorized" | "forbidden" }> {
+  const member = await getSessionMember();
+  if (!member) return { error: "unauthorized" };
+  if (member.role !== "OWNER") return { error: "forbidden" };
+  return member;
 }
 
 /** Turns a non-success OrgAuthResult into the matching error response — call sites just early-return it. */

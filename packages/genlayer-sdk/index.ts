@@ -71,6 +71,8 @@ export interface AnchorGenLayerClient {
     contractAddress: `0x${string}`,
     params: AdjudicateParams
   ): Promise<{ txHash: `0x${string}`; executionSucceeded: boolean }>;
+  /** Reopens a DECIDED contract for one more adjudicate() call — see adjudicator.py's appeal(), capped at MAX_APPEALS on-chain. */
+  appealCase(contractAddress: `0x${string}`): Promise<{ txHash: `0x${string}` }>;
   getDecision(contractAddress: `0x${string}`): Promise<Decision | null>;
   getStatus(contractAddress: `0x${string}`): Promise<string>;
 }
@@ -172,6 +174,17 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
 
       const receipt = await assertExecutionSucceeded(txHash);
       return { txHash, executionSucceeded: leaderExecutionSucceeded(receipt) };
+    },
+
+    async appealCase(contractAddress) {
+      const txHash = (await client.writeContract({
+        address: contractAddress,
+        functionName: "appeal",
+        args: [],
+        value: 0n,
+      })) as `0x${string}`;
+      await assertExecutionSucceeded(txHash);
+      return { txHash };
     },
 
     async getDecision(contractAddress) {

@@ -185,3 +185,80 @@ def test_malformed_llm_json_raises_llm_error(direct_vm, direct_deploy, direct_al
     })
     with direct_vm.expect_revert("[LLM_ERROR]"):
         contract.adjudicate("agent_data_task_v1", evidence)
+
+
+def test_appeal_allows_one_re_adjudication(direct_vm, direct_deploy, direct_alice):
+    contract = direct_deploy(CONTRACT, "CASE-10", "party_A", "party_B", 10**18)
+    direct_vm.sender = direct_alice
+
+    _mock_llm(direct_vm, {
+        "outcome": "RELEASE_FULL",
+        "claimant_share_bps": 0,
+        "respondent_share_bps": 10000,
+        "reason_codes": ["SPEC_FULLY_MET"],
+        "requirements_total": 3,
+        "requirements_met": 3,
+    })
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    contract.adjudicate("agent_data_task_v1", evidence)
+    assert contract.get_status() == "DECIDED"
+    assert contract.get_appeal_count() == 0
+
+    contract.appeal()
+    assert contract.get_status() == "PENDING"
+    assert contract.get_appeal_count() == 1
+    assert contract.get_decision() == ""
+
+    direct_vm.clear_mocks()
+    _mock_llm(direct_vm, {
+        "outcome": "REFUND_FULL",
+        "claimant_share_bps": 10000,
+        "respondent_share_bps": 0,
+        "reason_codes": ["SPEC_NOT_MET"],
+        "requirements_total": 3,
+        "requirements_met": 0,
+    })
+    new_evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "new evidence surfaced on appeal", "respondent_statement": "stmt",
+    })
+    contract.adjudicate("agent_data_task_v1", new_evidence)
+
+    decision = json.loads(contract.get_decision())
+    assert decision["outcome"] == "REFUND_FULL"
+    assert contract.get_status() == "DECIDED"
+
+
+def test_rejects_appeal_beyond_limit(direct_vm, direct_deploy, direct_alice):
+    contract = direct_deploy(CONTRACT, "CASE-11", "party_A", "party_B", 10**18)
+    direct_vm.sender = direct_alice
+
+    _mock_llm(direct_vm, {
+        "outcome": "RELEASE_FULL",
+        "claimant_share_bps": 0,
+        "respondent_share_bps": 10000,
+        "reason_codes": ["SPEC_FULLY_MET"],
+        "requirements_total": 3,
+        "requirements_met": 3,
+    })
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    contract.adjudicate("agent_data_task_v1", evidence)
+    contract.appeal()
+    contract.adjudicate("agent_data_task_v1", evidence)
+
+    with direct_vm.expect_revert("Appeal limit reached"):
+        contract.appeal()
+
+
+def test_rejects_appeal_before_decided(direct_vm, direct_deploy, direct_alice):
+    contract = direct_deploy(CONTRACT, "CASE-12", "party_A", "party_B", 10**18)
+    direct_vm.sender = direct_alice
+
+    with direct_vm.expect_revert("is not in a decided state"):
+        contract.appeal()

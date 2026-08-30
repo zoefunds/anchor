@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, createSession } from "@/lib/auth";
+import { logAction } from "@/lib/audit";
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -50,6 +51,11 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
         organizationId: invite.organizationId,
         email: invite.email,
         passwordHash: hashPassword(password),
+        role: "MEMBER",
+        // Receiving and clicking the invite link is itself proof of email
+        // control (it was only ever sent to this address) — same evidence
+        // a separate verification email would establish.
+        emailVerifiedAt: new Date(),
       },
     });
     await tx.invite.update({ where: { id: invite.id }, data: { acceptedAt: new Date() } });
@@ -57,6 +63,13 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
   });
 
   await createSession(member.id);
+  logAction({
+    organizationId: invite.organizationId,
+    memberId: member.id,
+    action: "invite.accepted",
+    targetType: "member",
+    targetId: member.id,
+  });
 
   return NextResponse.json({ member: { id: member.id, email: member.email } }, { status: 201 });
 }

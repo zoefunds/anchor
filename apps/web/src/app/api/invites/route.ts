@@ -1,8 +1,9 @@
 import { randomBytes, createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSessionMember } from "@/lib/auth";
+import { getSessionMember, requireOwner } from "@/lib/auth";
 import { sendInviteEmail } from "@/lib/email";
+import { logAction } from "@/lib/audit";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -37,12 +38,15 @@ export async function GET() {
 }
 
 // POST /api/invites — invite a new member into the caller's org. Dashboard-only
-// (session auth): inviting people into an org is a human decision, not
-// something an agent holding an API key should be able to do.
+// (session auth), and OWNER-only: growing the org's membership is an
+// owner decision, not something any member (let alone an API key) can do.
 export async function POST(req: NextRequest) {
-  const member = await getSessionMember();
-  if (!member) {
-    return NextResponse.json({ error: "authentication required" }, { status: 401 });
+  const member = await requireOwner();
+  if ("error" in member) {
+    return NextResponse.json(
+      { error: member.error === "forbidden" ? "only an org owner can invite members" : "authentication required" },
+      { status: member.error === "forbidden" ? 403 : 401 }
+    );
   }
 
   const { email } = await req.json();
@@ -70,6 +74,14 @@ export async function POST(req: NextRequest) {
   });
 
   const inviteUrl = `${appOrigin(req)}/invite/${rawToken}`;
+  logAction({
+    organizationId: member.organizationId,
+    memberId: member.memberId,
+    action: "invite.created",
+    targetType: "invite",
+    targetId: invite.id,
+    metadata: { email },
+  });
 
   try {
     await sendInviteEmail({ to: email, organizationName: organization.name, inviteUrl });

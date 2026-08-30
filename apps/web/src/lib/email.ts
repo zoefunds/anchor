@@ -75,6 +75,22 @@ export async function sendInviteEmail(params: {
   });
 }
 
+export async function sendVerificationEmail(params: {
+  to: string;
+  verifyUrl: string;
+}): Promise<void> {
+  await sendEmail({
+    to: params.to,
+    subject: "Verify your Anchor email",
+    htmlContent: baseTemplate(
+      "Verify your email",
+      `<p style="font-size: 15px; line-height: 1.6;">Confirm this is your email address to finish setting up your Anchor account.</p>
+       <p style="margin-top: 24px;"><a href="${params.verifyUrl}" style="display: inline-block; background: #a15c2f; color: #fff; padding: 10px 20px; text-decoration: none; font-size: 14px;">Verify email</a></p>
+       <p style="margin-top: 16px; font-size: 12px; color: #7a746a;">This link expires in 24 hours.</p>`
+    ),
+  });
+}
+
 export async function sendPasswordResetEmail(params: {
   to: string;
   resetUrl: string;

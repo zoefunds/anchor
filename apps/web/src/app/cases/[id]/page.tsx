@@ -22,6 +22,7 @@ interface Decision {
   respondentShareBps: number | null;
   reasonCodes: string[];
   consensus: string;
+  appealWindowClosesAt: string | null;
 }
 
 interface CaseDetail {
@@ -36,6 +37,7 @@ interface CaseDetail {
   contractAddress: string | null;
   evidence: Evidence[];
   decision: Decision | null;
+  canAppeal: boolean;
 }
 
 interface PolicyDefinition {
@@ -60,6 +62,9 @@ export default function CaseDetailPage() {
   const [adjudicating, setAdjudicating] = useState(false);
   const [evidenceMode, setEvidenceMode] = useState<"text" | "file">("text");
   const [file, setFile] = useState<globalThis.File | null>(null);
+  const [appealReason, setAppealReason] = useState("");
+  const [appealing, setAppealing] = useState(false);
+  const [correctType, setCorrectType] = useState<string>("");
 
   async function load() {
     const res = await fetch(`/api/cases/${id}`);
@@ -89,7 +94,7 @@ export default function CaseDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    if (kase?.status === "ADJUDICATING") {
+    if (kase?.status === "ADJUDICATING" || kase?.status === "RE_ADJUDICATING") {
       pollRef.current = setInterval(load, 5000);
       return () => {
         if (pollRef.current) clearInterval(pollRef.current);
@@ -163,6 +168,53 @@ export default function CaseDetailPage() {
     }
   }
 
+  async function submitCorrection(e: React.FormEvent) {
+    e.preventDefault();
+    if (!correctType) return;
+    setSubmitting(true);
+    setNote(null);
+    try {
+      const res = await fetch(`/api/cases/${id}/evidence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: correctType, content }),
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error ?? "failed to submit correction");
+      }
+      setContent("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function triggerAppeal() {
+    setAppealing(true);
+    setNote(null);
+    try {
+      const res = await fetch(`/api/cases/${id}/appeal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: appealReason || undefined }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body.error ?? "failed to appeal");
+      }
+      setNote(body.note ?? "Appeal accepted.");
+      setAppealReason("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAppealing(false);
+    }
+  }
+
   async function triggerAdjudicate() {
     setAdjudicating(true);
     setNote(null);
@@ -222,9 +274,10 @@ export default function CaseDetailPage() {
           <span className="mx-2 text-line dark:text-line-dark">·</span>
           <span className="font-mono text-xs">{policy?.label ?? kase.policyId}</span>
         </p>
-        {kase.status === "ADJUDICATING" && (
+        {(kase.status === "ADJUDICATING" || kase.status === "RE_ADJUDICATING") && (
           <p className="mt-4 font-mono text-xs text-status-adjudicating">
-            Adjudicating — polling every 5s. Real consensus takes ~1–2 minutes.
+            {kase.status === "RE_ADJUDICATING" ? "Re-adjudicating (appeal)" : "Adjudicating"} — polling every 5s.
+            Real consensus takes ~1–2 minutes.
           </p>
         )}
         {kase.contractAddress && (
@@ -233,6 +286,11 @@ export default function CaseDetailPage() {
             <span className="text-ink-950 dark:text-ink">{kase.contractAddress}</span>
           </p>
         )}
+        <p className="mt-2 font-mono text-[11px] text-muted dark:text-muted-dark">
+          <a href={`/public/cases/${kase.id}`} target="_blank" rel="noreferrer" className="hover:text-seal-500 dark:hover:text-seal-400">
+            Public link for the other party →
+          </a>
+        </p>
       </header>
 
       {note && (
@@ -269,6 +327,56 @@ export default function CaseDetailPage() {
             <p className="mt-6 border-t border-line pt-4 font-mono text-xs text-muted dark:border-line-dark dark:text-muted-dark">
               Grounds: {kase.decision.reasonCodes.join(" · ")}
             </p>
+          </div>
+        </section>
+      )}
+
+      {kase.canAppeal && (
+        <section className="mt-10">
+          <p className="kicker mb-4 text-status-adjudicating">Appeal window open</p>
+          <div className="dossier">
+            <p className="text-sm text-muted dark:text-muted-dark">
+              Closes {kase.decision?.appealWindowClosesAt ? new Date(kase.decision.appealWindowClosesAt).toLocaleString() : ""}.
+              One appeal is allowed per case — it triggers a fresh, independent consensus round, not a review of the prior one.
+            </p>
+
+            {requiredTypes.length > 0 && (
+              <form onSubmit={submitCorrection} className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
+                <p className="field-label">Correct an exhibit before appealing (optional)</p>
+                <div className="flex gap-3">
+                  <select className="field-input" value={correctType || requiredTypes[0]} onChange={(e) => setCorrectType(e.target.value)}>
+                    {requiredTypes.map((t) => (
+                      <option key={t} value={t}>
+                        {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <textarea
+                  className="field-input min-h-[80px] resize-y"
+                  placeholder="Corrected content"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                />
+                <button className="btn-primary self-start" type="submit" disabled={submitting || !content}>
+                  {submitting ? "Saving…" : "Save correction"}
+                </button>
+              </form>
+            )}
+
+            <div className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
+              <label className="flex flex-col gap-2">
+                <span className="field-label">Reason for appeal (optional)</span>
+                <textarea
+                  className="field-input min-h-[80px] resize-y"
+                  value={appealReason}
+                  onChange={(e) => setAppealReason(e.target.value)}
+                />
+              </label>
+              <button className="btn-primary self-start" onClick={triggerAppeal} disabled={appealing}>
+                {appealing ? "Appealing…" : "Appeal this decision"}
+              </button>
+            </div>
           </div>
         </section>
       )}

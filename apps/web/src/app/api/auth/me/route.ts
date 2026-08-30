@@ -8,5 +8,14 @@ export async function GET() {
     return NextResponse.json({ error: "not authenticated" }, { status: 401 });
   }
   const organization = await prisma.organization.findUnique({ where: { id: member.organizationId } });
-  return NextResponse.json({ member: { id: member.memberId, email: member.email }, organization });
+  const full = await prisma.member.findUnique({ where: { id: member.memberId } });
+  return NextResponse.json({
+    member: {
+      id: member.memberId,
+      email: member.email,
+      role: member.role,
+      emailVerified: Boolean(full?.emailVerifiedAt),
+    },
+    organization,
+  });
 }
