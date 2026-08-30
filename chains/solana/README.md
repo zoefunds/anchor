@@ -77,13 +77,14 @@ message dispatched to Sepolia's domain (11155111). That's the hard,
 previously-unverified half of this architecture now proven end-to-end
 on-chain, not simulated.
 
-**Not yet provable**: actual delivery and `handle()` execution. That needs
-a `DecisionRelay.sol` deployed on Sepolia to receive it (see
-`chains/evm/`) and Hyperlane's relayer network to pick the message up —
-both blocked on a funded Sepolia key, which isn't available yet. The
-dispatch mechanics, PDA derivation, and CPI plumbing that would carry that
-handle → escrow.settle() call are already written and compile clean; only
-the live delivery half is unverified.
+**Now proven**: `SolanaCaseReceiver.sol` is deployed on Sepolia
+(`chains/evm/`) and real delivery + `handle()` execution have both been
+verified on-chain. The shared public testnet4 relayer didn't service this
+route (two dispatched messages sat undelivered for 7+ hours), so
+Anchor runs its own scoped relayer — see `chains/hyperlane-relayer/README.md`
+for the running config and the two proven delivery transactions, including
+confirmation that `handle()` correctly decoded the Borsh-encoded message
+and emitted the right case ID, not just that `Mailbox.process()` succeeded.
 
 ### Real findings from building this
 

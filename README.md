@@ -31,6 +31,10 @@ genlayer/deploy/     TS deploy scripts for GenLayer Studio
 genlayer/tests/      Direct-mode contract tests
 packages/types/      Shared TypeScript types (Case, Evidence, Policy, Decision)
 packages/genlayer-sdk/  Thin wrapper around GenLayer's JS SDK for Anchor's needs
+packages/mcp-server/  MCP server exposing Anchor's API as tools for any MCP-compatible agent
+chains/evm/          Hyperlane DecisionRelay/SolanaCaseReceiver contracts (Sepolia)
+chains/solana/       Escrow + decision-relay Solana programs (Testnet/Devnet)
+chains/hyperlane-relayer/  Self-hosted Hyperlane relayer config (see its README for why)
 docs/                Policy specs, decision schema, architecture notes
 ```
 

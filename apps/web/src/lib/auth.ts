@@ -93,6 +93,7 @@ export interface AuthedMember {
   organizationId: string;
   email: string;
   role: "OWNER" | "MEMBER";
+  emailVerified: boolean;
 }
 
 /** Resolves the current dashboard session, if any, from the request cookie. */
@@ -113,6 +114,7 @@ export async function getSessionMember(): Promise<AuthedMember | null> {
     organizationId: session.member.organizationId,
     email: session.member.email,
     role: session.member.role,
+    emailVerified: Boolean(session.member.emailVerifiedAt),
   };
 }
 

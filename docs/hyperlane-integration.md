@@ -7,12 +7,18 @@ execution instruction — from GenLayer's side of the system to whichever
 chain actually needs to act on it, and lets case data flow the other
 direction too.
 
-**Status: architected, not yet implemented.** This doc is the contract for
-what gets built; `chains/evm` and `chains/solana` currently hold skeletons
-only. Validate all Hyperlane API specifics below (Mailbox interface, ISM
-config, Sealevel program conventions) against current Hyperlane docs before
-writing real integration code — same caution as the GenLayer contract: don't
-trust remembered API shapes, verify against source.
+**Status: live, proven end to end.** `chains/evm/contracts/SolanaCaseReceiver.sol`
+and `chains/solana/programs/decision-relay` are deployed and real
+dispatch->relay->handle() round trips have been proven on Sepolia, with a
+self-hosted relayer (`chains/hyperlane-relayer/`) closing the gap the
+shared public testnet4 relayer left open. See
+`chains/hyperlane-relayer/README.md` for the live proof (message IDs,
+destination tx hashes, and the decoded case ID confirming `handle()`
+genuinely parsed the relayed message correctly, not just that Mailbox
+delivery succeeded). Still open: wiring `apps/web/src/lib/adjudication-service.ts`
+to actually dispatch a `DECISION_RELAY` message when a GenLayer decision
+persists — the relay pipeline itself works, but nothing calls it
+automatically yet.
 
 ## Why Hyperlane specifically
 

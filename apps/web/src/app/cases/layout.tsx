@@ -12,6 +12,9 @@ export default async function CasesLayout({ children }: { children: React.ReactN
   if (!member) {
     redirect("/login");
   }
+  if (!member.emailVerified) {
+    redirect("/verify-required");
+  }
 
   const organization = await prisma.organization.findUnique({ where: { id: member.organizationId } });
 

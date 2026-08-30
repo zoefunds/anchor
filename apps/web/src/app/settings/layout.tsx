@@ -6,5 +6,8 @@ export default async function SettingsLayout({ children }: { children: React.Rea
   if (!member) {
     redirect("/login");
   }
+  if (!member.emailVerified) {
+    redirect("/verify-required");
+  }
   return <>{children}</>;
 }

@@ -1,0 +1,25 @@
+{
+  "name": "@anchor/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing Anchor's Adjudication-as-a-Service API as tools for any MCP-compatible agent (Claude Desktop, Claude Code, etc.)",
+  "type": "module",
+  "bin": {
+    "anchor-mcp": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.7.0",
+    "@types/node": "^20.11.0"
+  }
+}

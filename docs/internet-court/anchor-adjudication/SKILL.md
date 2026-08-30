@@ -158,13 +158,17 @@ type AnchorSettlementEffect = {
 
 For cross-chain settlement (e.g. the dispute involves a Solana escrow but
 adjudication runs on GenLayer), Anchor has a real, live-proven Hyperlane
-relay path — not a proposal. See `docs/hyperlane-integration.md` and
-`chains/solana/README.md`/`chains/evm/` for the actual deployed contracts
-and dispatch mechanics (a real dispute-origination message from a Solana
-program through Hyperlane's live Mailbox has been proven on-chain; full
-round-trip delivery to an EVM settlement contract is in progress). Point
-`relayMechanism: "hyperlane"` deals at that pipeline once it's fully
-closed; until then, treat it as `"manual"` for anything shipping today.
+relay path — not a proposal. See `docs/hyperlane-integration.md`,
+`chains/solana/README.md`/`chains/evm/`, and `chains/hyperlane-relayer/README.md`
+for the deployed contracts and dispatch mechanics: a full round trip
+(Solana dispatch -> Hyperlane relay -> `handle()` decode on Sepolia) has
+been proven on-chain, including confirming the destination contract
+correctly parsed the relayed case data. `relayMechanism: "hyperlane"` is
+safe to point real deals at. One caveat: `apps/web`'s adjudication service
+doesn't yet auto-dispatch a `DECISION_RELAY` message when a decision
+persists — that wiring is still manual/scripted, not automatic on every
+decision. Confirm that's been closed before assuming a deal's settlement
+fires without a human triggering the relay.
 
 ## Evidence Schema
 
