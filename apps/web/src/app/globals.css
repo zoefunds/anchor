@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    @apply bg-paper text-ink-950 antialiased;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      @apply bg-ink-950 text-ink;
+    }
+  }
+}
+
+@layer components {
+  /* A case dossier, not a generic dashboard card: paper-toned, a hairline
+     border, and a thin top rule the width of a filing tab rather than a
+     full accent stripe — restrained, not decorative. */
+  .dossier {
+    @apply relative rounded-sm border border-line bg-paper-dim/60 p-7
+      dark:border-line-dark dark:bg-ink-900/60;
+  }
+
+  .dossier::before {
+    content: "";
+    @apply absolute left-7 top-0 h-px w-12 -translate-y-px bg-seal-400;
+  }
+
+  .kicker {
+    @apply text-[11px] font-semibold uppercase tracking-widest2 text-muted dark:text-muted-dark;
+  }
+
+  .field-label {
+    @apply text-[11px] font-semibold uppercase tracking-widest2 text-muted dark:text-muted-dark;
+  }
+
+  .field-input {
+    @apply w-full rounded-none border-0 border-b border-line bg-transparent px-0 py-2 font-sans text-[15px]
+      text-ink-950 placeholder:text-muted focus:border-seal-500 focus:outline-none
+      dark:border-line-dark dark:text-ink;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-sm bg-ink-950 px-5 py-2.5 text-sm
+      font-medium text-paper transition-colors hover:bg-seal-600 disabled:cursor-not-allowed
+      disabled:opacity-40 dark:bg-seal-400 dark:text-ink-950 dark:hover:bg-seal-200;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-sm border border-line px-5 py-2.5 text-sm
+      font-medium text-ink-950 transition-colors hover:border-ink-950
+      dark:border-line-dark dark:text-ink dark:hover:border-ink;
+  }
+
+  /* Docket stamp — a status marker, not a SaaS pill. Left border bar
+     carries the meaning; the rest stays neutral ink so the page isn't a
+     wash of candy colors. */
+  .docket-stamp {
+    @apply inline-flex items-center gap-1.5 border-l-2 py-0.5 pl-2 pr-1 font-mono text-[11px]
+      font-medium uppercase tracking-wide;
+  }
+}

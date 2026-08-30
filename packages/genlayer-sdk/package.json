@@ -1,0 +1,13 @@
+{
+  "name": "@anchor/genlayer-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "dependencies": {
+    "genlayer-js": "^1.1.8"
+  },
+  "peerDependencies": {
+    "@anchor/types": "*"
+  }
+}

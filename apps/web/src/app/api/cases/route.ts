@@ -1,0 +1,68 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
+
+// POST /api/cases — create a case under a named policy (defaults to
+// agent_data_task_v1 if omitted, for backward compatibility with existing
+// integrations). Body: { claim, amount, claimantRef, respondentRef, policyId? }
+// claimantRef/respondentRef must already be pseudonymous refs — Anchor
+// never stores real party identity on the case record itself (see
+// packages/types privacy note); the mapping to a real account lives in a
+// separate identity table, not modeled yet in this MVP schema.
+//
+// Auth: either an API key (Authorization: Bearer ak_live_...) for agent/
+// programmatic callers, or a dashboard session cookie for humans — see
+// lib/auth.ts. Every case is scoped to the caller's organization.
+export async function POST(req: NextRequest) {
+  const auth = await resolveOrgFromRequest(req);
+  if ("error" in auth) {
+    return authErrorResponse(auth);
+  }
+
+  const body = await req.json();
+  const { claim, amount, claimantRef, respondentRef, policyId = DEFAULT_POLICY_ID } = body;
+
+  if (!claim || !amount || !claimantRef || !respondentRef) {
+    return NextResponse.json(
+      { error: "claim, amount, claimantRef, respondentRef are required" },
+      { status: 400 }
+    );
+  }
+
+  const policy = getPolicy(policyId);
+  if (!policy) {
+    return NextResponse.json(
+      { error: `unknown policyId: ${policyId}`, availablePolicies: Object.keys(POLICIES) },
+      { status: 400 }
+    );
+  }
+
+  const kase = await prisma.case.create({
+    data: {
+      organizationId: auth.organizationId,
+      claim,
+      amount,
+      claimantRef,
+      respondentRef,
+      policyId: policy.id,
+      policyVersion: policy.version,
+      status: "EVIDENCE_COLLECTION",
+    },
+  });
+
+  return NextResponse.json(kase, { status: 201 });
+}
+
+export async function GET(req: NextRequest) {
+  const auth = await resolveOrgFromRequest(req);
+  if ("error" in auth) {
+    return authErrorResponse(auth);
+  }
+
+  const cases = await prisma.case.findMany({
+    where: { organizationId: auth.organizationId },
+    orderBy: { createdAt: "desc" },
+  });
+  return NextResponse.json(cases);
+}

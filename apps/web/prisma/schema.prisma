@@ -1,0 +1,190 @@
+// Mirrors packages/types/index.ts — keep in sync.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CaseStatus {
+  OPEN
+  EVIDENCE_COLLECTION
+  SUBMITTED
+  ADJUDICATING
+  ACCEPTED
+  APPEAL_WINDOW
+  APPEALED
+  RE_ADJUDICATING
+  FINALIZED
+  UNDETERMINED
+  CANCELLED
+}
+
+enum PartyRole {
+  claimant
+  respondent
+}
+
+// An Organization is the tenant boundary: it owns API keys (for agent /
+// programmatic callers) and has human Members (for dashboard logins).
+// Every Case belongs to exactly one Organization — this is the scoping
+// unit for both auth paths, so an org's cases are the same whether you're
+// an agent calling with an API key or a human logged into the dashboard.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  members Member[]
+  apiKeys ApiKey[]
+  cases   Case[]
+  invites Invite[]
+}
+
+model Member {
+  id           String       @id @default(cuid())
+  organization Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  email        String       @unique
+  passwordHash String
+  createdAt    DateTime     @default(now())
+
+  sessions       Session[]
+  passwordResets PasswordReset[]
+}
+
+// An invite is how an org grows past its founding member — created by any
+// existing member, redeemed once by setting a password, scoped to one
+// email and one org so it can't be replayed against a different org.
+model Invite {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  email          String
+  // SHA-256 of the raw invite token, same discipline as Session/ApiKey —
+  // the raw token only ever lives in the emailed link.
+  tokenHash      String       @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+}
+
+// Single-use, short-lived token for the "forgot password" flow. Requesting
+// a reset never reveals whether the email exists (the API route always
+// responds the same way); the token itself is what actually gates the
+// password change.
+model PasswordReset {
+  id         String   @id @default(cuid())
+  member     Member   @relation(fields: [memberId], references: [id])
+  memberId   String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([memberId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  member    Member   @relation(fields: [memberId], references: [id])
+  memberId  String
+  // SHA-256 of the raw session token — the raw token itself lives only in
+  // the signed cookie, never stored, same discipline as the API key hash.
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// API keys are for agent/programmatic callers (the primary integration
+// path per the original AaaS positioning) — a raw key is shown exactly
+// once at creation; only its hash and a display prefix are stored.
+model ApiKey {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  name           String
+  keyHash        String       @unique
+  keyPrefix      String
+  createdAt      DateTime     @default(now())
+  lastUsedAt     DateTime?
+  revokedAt      DateTime?
+}
+
+model Case {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  status         CaseStatus   @default(OPEN)
+  claim          String
+  amount         Decimal
+  currency       String       @default("USD")
+  policyId       String
+  policyVersion  String
+  claimantRef    String
+  respondentRef  String
+  // GenLayer contract address once deployed for this case
+  contractAddress String?
+
+  evidence  Evidence[]
+  decision  Decision?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([organizationId])
+}
+
+model Evidence {
+  id           String       @id @default(cuid())
+  caseId       String
+  case         Case         @relation(fields: [caseId], references: [id])
+  // Plain string, not an enum: which types are valid depends on the
+  // case's policy (see src/lib/policies.ts) - enforced in application
+  // code, not the DB schema, since the set of valid types now varies per
+  // policy rather than being one fixed global list.
+  type         String
+  contentHash  String
+  // For text evidence: the content itself. For file evidence: the public
+  // R2 URL — the GenLayer contract fetches it directly via
+  // gl.nondet.web.get(), so this must be a real public URL, not signed
+  // and never expiring.
+  storageRef   String
+  // Null for inline text evidence. Set for uploaded files — lets the
+  // contract (and the dashboard) tell an image it can visually interpret
+  // apart from a PDF/other file it can only note the existence of.
+  mimeType     String?
+  fileSizeBytes Int?
+  submittedBy  PartyRole?
+  createdAt    DateTime     @default(now())
+
+  @@index([caseId])
+}
+
+model Decision {
+  id                    String   @id @default(cuid())
+  caseId                String   @unique
+  case                  Case     @relation(fields: [caseId], references: [id])
+  policyId              String
+  policyVersion         String
+  outcome               String
+  // Integer basis points (0-10000) as returned by the GenLayer contract —
+  // NOT a float. See docs/decision-schema.md for why (GenVM calldata
+  // encoding rejects native float). Convert to a 0-1 fraction only for
+  // display/analytics, never re-derive a float and send it back to GenLayer.
+  claimantShareBps      Int?
+  respondentShareBps    Int?
+  reasonCodes           String[]
+  evidenceUsed          String[]
+  consensus             String
+  confidence            Float?
+  proofHash             String?
+  explanation           String?
+  appealWindowClosesAt  DateTime?
+  createdAt             DateTime @default(now())
+}
