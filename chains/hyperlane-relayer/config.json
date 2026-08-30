@@ -19,9 +19,9 @@
       "protocol": "ethereum",
       "rpcUrls": [
         { "http": "https://ethereum-sepolia.publicnode.com" },
-        { "http": "https://gateway.tenderly.co/public/sepolia" },
-        { "http": "https://sepolia.drpc.org" },
-        { "http": "https://1rpc.io/sepolia" }
+        { "http": "https://sepolia.gateway.tenderly.co" },
+        { "http": "https://sepolia.rpc.thirdweb.com" },
+        { "http": "https://sepolia.drpc.org" }
       ],
       "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9"
     },

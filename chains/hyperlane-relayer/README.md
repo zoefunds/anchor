@@ -110,23 +110,44 @@ relayer needs `--chains.<solana-chain>.signer.type hexKey` +
 ISM/metadata problem (which is what issues #1/#2 above actually were,
 found first). Fixed by adding the flags shown above.
 
-## Known issue NOT fixed — Sepolia-origin auto-delivery is still unreliable
+## Known issue NOT fixed — Sepolia → Solana auto-delivery needs a validator
 
-After fixing all three of the above, this relayer's own automatic
-delivery of *new* Sepolia-origin DecisionRelay messages (both to itself
-and to a Solana destination) remained flaky in ways not fully diagnosed —
-requests to public Sepolia RPC endpoints returning transient errors
-("message expired and must be re-signed", provider rate limits) interrupt
-its retry loop, and a real fresh dispatch to the Solana destination still
-didn't self-deliver within the test window despite the program-level ISM
-fix being independently confirmed correct via direct simulation. The one
-DecisionRelay self-dispatch proven above was delivered by constructing
-and submitting the `Mailbox.process()` call directly with `cast send`,
-not by this relayer. If you depend on unattended DecisionRelay delivery,
-verify it end-to-end again before trusting it, and consider a paid/more
-reliable RPC endpoint for the relayer's `customRpcUrls` — the free public
-endpoints in `config.json` are the most likely source of the remaining
-flakiness.
+Diagnosed further after the RPC endpoint swap below didn't help: this
+relayer's own automatic delivery of Sepolia-origin messages to a Solana
+destination is blocked on a different, deeper cause than RPC flakiness.
+Its logs show `Could not fetch metadata: Unable to reach quorum` for the
+Solana-bound message — the default ISM configured for that route is a
+multisig ISM (`config.json`'s `solanatestnet.interchainSecurityModule`)
+that requires a signed checkpoint from a Hyperlane validator agent for
+the message's origin/destination pair. Anchor doesn't run a validator
+agent for this route, so no checkpoint exists anywhere for the relayer to
+fetch, and no RPC endpoint quality fixes that — the relayer isn't failing
+to *reach* the checkpoint, there simply isn't one.
+
+The Sepolia RPC endpoint list (`chains/sepolia.rpcUrls` above) was
+swapped for a more reliable set (dropped `gateway.tenderly.co/public/sepolia`
+and `1rpc.io/sepolia`, both confirmed dead via direct `eth_blockNumber`
+curl tests; added `sepolia.gateway.tenderly.co` and
+`sepolia.rpc.thirdweb.com`, both confirmed responsive) — worth keeping
+regardless, but it does not touch this issue.
+
+Two real fixes exist, neither implemented yet:
+1. Run a Hyperlane validator agent for the sepolia→solanatestnet route,
+   publishing checkpoints the relayer can fetch (the standard Hyperlane
+   answer, but real additional infrastructure to operate).
+2. Apply the same `TrustedRelayerIsm.sol` pattern used for the Sepolia
+   *destination* (see issue #1 above) on the Solana side instead — a
+   custom Sealevel ISM that always verifies true, since Anchor is both
+   the sole dispatcher and sole relayer for this route. This needs a new
+   instruction handler in decision-relay's Solana program (or a sibling
+   program) and pointing `solanatestnet`'s recipient at it, analogous to
+   `DeployDecisionRelay.s.sol` deploying `TrustedRelayerIsm` on the EVM
+   side.
+
+The one DecisionRelay→Solana dispatch proven end-to-end earlier in this
+doc reached the destination program correctly (confirmed via direct
+`simulateTransaction`), but was never auto-delivered by this relayer —
+verify delivery again before depending on it unattended.
 
 ## Chain configs
 

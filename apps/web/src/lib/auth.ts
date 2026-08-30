@@ -92,7 +92,7 @@ export interface AuthedMember {
   memberId: string;
   organizationId: string;
   email: string;
-  role: "OWNER" | "MEMBER";
+  role: "OWNER" | "MEMBER" | "VIEWER";
   emailVerified: boolean;
 }
 
@@ -178,7 +178,7 @@ export async function getApiKeyAuth(authHeader: string | null): Promise<AuthedAp
 }
 
 export type OrgAuthResult =
-  | { organizationId: string; memberId?: string; apiKeyId?: string; role?: "OWNER" | "MEMBER" }
+  | { organizationId: string; memberId?: string; apiKeyId?: string; role?: "OWNER" | "MEMBER" | "VIEWER" }
   | { error: "unauthorized" }
   | { error: "rate_limited"; retryAfterSeconds: number };
 
@@ -216,6 +216,19 @@ export async function requireOwner(): Promise<AuthedMember | { error: "unauthori
   if (!member) return { error: "unauthorized" };
   if (member.role !== "OWNER") return { error: "forbidden" };
   return member;
+}
+
+/**
+ * Rejects VIEWER-role session members from mutating routes. Call after
+ * resolveOrgFromRequest succeeds, before performing the write — API-key
+ * callers (no `role`) and OWNER/MEMBER session callers pass through
+ * unchanged, since only VIEWER is read-only.
+ */
+export function requireWriteAccess(auth: Extract<OrgAuthResult, { organizationId: string }>): NextResponse | null {
+  if (auth.role === "VIEWER") {
+    return NextResponse.json({ error: "read-only members cannot perform this action" }, { status: 403 });
+  }
+  return null;
 }
 
 /** Turns a non-success OrgAuthResult into the matching error response — call sites just early-return it. */

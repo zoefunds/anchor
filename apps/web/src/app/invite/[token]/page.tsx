@@ -7,6 +7,7 @@ import Link from "next/link";
 interface InviteInfo {
   email: string;
   organizationName: string;
+  role: "OWNER" | "MEMBER" | "VIEWER";
 }
 
 export default function AcceptInvitePage() {
@@ -78,6 +79,12 @@ export default function AcceptInvitePage() {
           </h1>
           <p className="mt-2 text-sm text-muted dark:text-muted-dark">
             Setting up an account for <span className="font-mono">{invite.email}</span>
+            {invite.role === "VIEWER" && (
+              <>
+                {" "}
+                as a <span className="font-mono">read-only viewer</span>
+              </>
+            )}
           </p>
 
           <form onSubmit={handleSubmit} className="mt-10 flex flex-col gap-6">

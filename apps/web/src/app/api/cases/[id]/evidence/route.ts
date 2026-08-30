@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 
 // POST /api/cases/:id/evidence — inline text/JSON evidence (task specs,
@@ -14,6 +14,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if ("error" in auth) {
     return authErrorResponse(auth);
   }
+  const writeError = requireWriteAccess(auth);
+  if (writeError) return writeError;
 
   const kase = await prisma.case.findUnique({
     where: { id: params.id },

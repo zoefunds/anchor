@@ -24,6 +24,7 @@ export async function GET(_req: NextRequest, { params }: { params: { token: stri
   return NextResponse.json({
     email: invite.email,
     organizationName: invite.organization.name,
+    role: invite.role,
   });
 }
 
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
         organizationId: invite.organizationId,
         email: invite.email,
         passwordHash: hashPassword(password),
-        role: "MEMBER",
+        role: invite.role,
         // Receiving and clicking the invite link is itself proof of email
         // control (it was only ever sent to this address) — same evidence
         // a separate verification email would establish.

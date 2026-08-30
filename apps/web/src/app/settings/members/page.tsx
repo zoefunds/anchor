@@ -13,7 +13,7 @@ interface InviteSummary {
 interface MemberSummary {
   id: string;
   email: string;
-  role: "OWNER" | "MEMBER";
+  role: "OWNER" | "MEMBER" | "VIEWER";
   emailVerifiedAt: string | null;
   createdAt: string;
 }
@@ -22,8 +22,9 @@ export default function MembersPage() {
   const [invites, setInvites] = useState<InviteSummary[]>([]);
   const [members, setMembers] = useState<MemberSummary[]>([]);
   const [selfId, setSelfId] = useState<string | null>(null);
-  const [selfRole, setSelfRole] = useState<"OWNER" | "MEMBER" | null>(null);
+  const [selfRole, setSelfRole] = useState<"OWNER" | "MEMBER" | "VIEWER" | null>(null);
   const [email, setEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"MEMBER" | "VIEWER">("MEMBER");
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -56,7 +57,7 @@ export default function MembersPage() {
       const res = await fetch("/api/invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, role: inviteRole }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "failed to send invite");
@@ -167,6 +168,13 @@ export default function MembersPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   required
                 />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="field-label">Role</span>
+                <select className="field-input" value={inviteRole} onChange={(e) => setInviteRole(e.target.value as "MEMBER" | "VIEWER")}>
+                  <option value="MEMBER">Member</option>
+                  <option value="VIEWER">Viewer (read-only)</option>
+                </select>
               </label>
               <button className="btn-primary" type="submit" disabled={inviting}>
                 {inviting ? "Sending…" : "Send invite"}

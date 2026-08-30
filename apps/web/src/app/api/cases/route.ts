@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
 
@@ -20,6 +20,8 @@ export async function POST(req: NextRequest) {
   if ("error" in auth) {
     return authErrorResponse(auth);
   }
+  const writeError = requireWriteAccess(auth);
+  if (writeError) return writeError;
 
   const body = await req.json();
   const {

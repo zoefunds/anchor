@@ -48,6 +48,11 @@ model Organization {
 enum MemberRole {
   OWNER
   MEMBER
+  // Read-only: can view cases, evidence, decisions, and the public case
+  // pages, but every mutating dashboard action (create/adjudicate/appeal
+  // a case, submit evidence, invite/remove members, manage API keys or
+  // webhooks) is rejected - see requireWriteAccess() in lib/auth.ts.
+  VIEWER
 }
 
 model Member {
@@ -176,6 +181,10 @@ model Invite {
   organization   Organization @relation(fields: [organizationId], references: [id])
   organizationId String
   email          String
+  // The role the invitee joins as once they accept — chosen by the
+  // inviting owner at invite time (see api/invites POST), not
+  // changeable afterward except by removing and re-inviting.
+  role           MemberRole   @default(MEMBER)
   // SHA-256 of the raw invite token, same discipline as Session/ApiKey —
   // the raw token only ever lives in the emailed link.
   tokenHash      String       @unique

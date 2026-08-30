@@ -49,10 +49,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { email } = await req.json();
+  const { email, role } = await req.json();
   if (!email || typeof email !== "string") {
     return NextResponse.json({ error: "email is required" }, { status: 400 });
   }
+  const inviteRole = role === "VIEWER" ? "VIEWER" : "MEMBER"; // OWNER can never be invited-in — only the founding signup creates an owner
 
   const existingMember = await prisma.member.findUnique({ where: { email } });
   if (existingMember) {
@@ -68,6 +69,7 @@ export async function POST(req: NextRequest) {
     data: {
       organizationId: member.organizationId,
       email,
+      role: inviteRole,
       tokenHash: hashToken(rawToken),
       expiresAt: new Date(Date.now() + INVITE_TTL_MS),
     },
@@ -80,7 +82,7 @@ export async function POST(req: NextRequest) {
     action: "invite.created",
     targetType: "invite",
     targetId: invite.id,
-    metadata: { email },
+    metadata: { email, role: inviteRole },
   });
 
   try {
