@@ -6,7 +6,7 @@
 // Run: npx tsx tests/run-create-case-for-relay-test.ts
 
 import * as anchor from "@coral-xyz/anchor";
-import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL, Transaction } from "@solana/web3.js";
 import { readFileSync } from "fs";
 
 async function main() {
@@ -25,7 +25,16 @@ async function main() {
     DECISION_RELAY
   );
 
-  const claimant = provider.wallet as anchor.Wallet;
+  // claimant must be a genuinely distinct keypair from ANCHOR_WALLET —
+  // ANCHOR_WALLET's pubkey is also the relayer's own configured payer/signer
+  // key (see chains/hyperlane-relayer's docker run flags), and the relayer's
+  // dynamic-account sanitizer correctly refuses to let its own payer account
+  // get pulled in as an arbitrary message-defined account (here, "claimant")
+  // - confirmed live via "Dynamic account metas contain payer account".
+  // Reusing the wallet as claimant was a test-data mistake, not something
+  // real callers would do (a real claimant is a third party, never the
+  // relayer operator), so this test now mirrors that reality.
+  const claimant = Keypair.generate();
   const respondent = Keypair.generate();
   const caseId = process.argv[2] ?? `CASE-RELAY-${Date.now()}`;
   const amountLamports = new anchor.BN(0.01 * LAMPORTS_PER_SOL);
@@ -41,15 +50,27 @@ async function main() {
   console.log(`Claimant: ${claimant.publicKey.toBase58()}`);
   console.log(`Respondent: ${respondent.publicKey.toBase58()}`);
 
+  const fundTx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: provider.wallet.publicKey,
+      toPubkey: claimant.publicKey,
+      lamports: 0.05 * LAMPORTS_PER_SOL,
+    })
+  );
+  await provider.sendAndConfirm(fundTx);
+  console.log("funded claimant");
+
   await program.methods
     .initializeCase(caseId, respondent.publicKey, escrowAuthority, amountLamports)
     .accounts({ claimant: claimant.publicKey, case: casePda, systemProgram: SystemProgram.programId })
+    .signers([claimant])
     .rpc();
-  console.log("\ninitialize_case ok");
+  console.log("initialize_case ok");
 
   await program.methods
     .raiseDispute()
     .accounts({ signer: claimant.publicKey, case: casePda })
+    .signers([claimant])
     .rpc();
   console.log("raise_dispute ok — case is ready for decision-relay to settle it");
 

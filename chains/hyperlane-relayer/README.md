@@ -7,17 +7,21 @@ hours before this was stood up. This is Anchor's own relayer, scoped to
 exactly the chains it needs, plus two real bugs found and fixed along the
 way (see Known issues fixed below).
 
-**Status: CaseOriginate (Solana -> Sepolia) proven live end to end.**
-DecisionRelay (Sepolia -> \*) dispatch is proven and one real delivery has
-been proven manually; automatic delivery via this relayer for
-Sepolia-origin messages is still unreliable (see Known issues below) even
-after fixing the two root causes we could actually fix ourselves.
+**Status: both directions proven live end to end, fully automatic.**
+CaseOriginate (Solana -> Sepolia) and DecisionRelay (Sepolia -> Solana) both
+now auto-deliver with zero manual trigger. Getting DecisionRelay's
+Sepolia -> Solana leg working took three real, independently-confirmed
+fixes on top of the two below — see "Known issue, actually fixed" further
+down for the full story (a stale relayer image missing `VerifyMetadataSpec`
+support, a missing `identity` signer distinct from the payer, and a real
+account-ordering bug in decision-relay's own Rust source).
 
 | Test | Origin | Message ID | Destination tx | Delivered by |
 |---|---|---|---|---|
 | CaseOriginate | Solana Testnet | `0x7ca006278e77c09962ae930f4c3f5f5cbd80dc8234645a66b49cc78c0023d473` | [`0xe7b9b011...`](https://sepolia.etherscan.io/tx/0xe7b9b011c00af0311931ad07e49728d8e6801aa57a9ce18803ba9b25a75119a1) | this relayer |
 | CaseOriginate | Solana Devnet | `0xf77581accc03d17fd3ea76bcbd3ed16d336566310fe31a863a961fb21350e252` | [`0x4ef81e79...`](https://sepolia.etherscan.io/tx/0x4ef81e7972309147aef11687eb2fb2204b18c32d672bceb9e0247b1941bbd1a6) | this relayer |
-| DecisionRelay (self) | Sepolia | (reconstructed, id `0xf2d09a34...`) | [`0x5116fdcc...`](https://sepolia.etherscan.io/tx/0x5116fdcc0fdf25b7abb7f596ce61fb90f3b75990bdf9790126f3d2b87348605e) | manual `cast send` (see below) |
+| DecisionRelay (self) | Sepolia | (reconstructed, id `0xf2d09a34...`) | [`0x5116fdcc...`](https://sepolia.etherscan.io/tx/0x5116fdcc0fdf25b7abb7f596ce61fb90f3b75990bdf9790126f3d2b87348605e) | manual `cast send` (superseded — see below) |
+| DecisionRelay | Sepolia | `0x0b1548f36ce39cc223e074af62f3cfa444491b775d62a79603167571c965d155` | Solana tx `0x94ae7a01...` — escrow case `CASE-RELAY-1788120485310` went `Disputed` -> `Settled` | this relayer, fully automatic |
 
 All three destination transactions succeeded and the recipient contract
 (`SolanaCaseReceiver.handle()` or `DecisionRelay.handle()`) correctly
@@ -27,8 +31,9 @@ whichever relayer submits the delivery transaction.
 
 ## What this is
 
-A single `hyperlane-agent` relayer container (`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.2.0`),
-scoped to three chains via `config.json`:
+A single `hyperlane-agent` relayer container (`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.3.0`
+— see "Known issue, actually fixed" for why not `agents-v2.2.0`), scoped to
+three chains via `config.json`:
 - `sepolia` (both an origin, for DecisionRelay, and a destination, for CaseOriginate)
 - `solanatestnet`, `solanadevnet` (origins for CaseOriginate, destinations for DecisionRelay)
 
@@ -42,13 +47,15 @@ docker run -d --name anchor-hyperlane-relayer \
   -e CONFIG_FILES=/config/config.json \
   -v "$(pwd)/config.json:/config/config.json:ro" \
   -v "$(pwd)/db:/data" \
-  ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.2.0 \
+  ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.3.0 \
   ./relayer \
   --db /data \
   --relayChains solanatestnet,solanadevnet,sepolia \
   --defaultSigner.key "$RELAYER_EVM_PRIVATE_KEY" \
   --chains.solanatestnet.signer.type hexKey \
   --chains.solanatestnet.signer.key "$RELAYER_SOLANA_SEED_HEX" \
+  --chains.solanatestnet.identity.type hexKey \
+  --chains.solanatestnet.identity.key "$RELAYER_SOLANA_IDENTITY_SEED_HEX" \
   --chains.solanadevnet.signer.type hexKey \
   --chains.solanadevnet.signer.key "$RELAYER_SOLANA_SEED_HEX" \
   --allowLocalCheckpointSyncers true
@@ -63,6 +70,15 @@ Solana account. **Both are required** — the relayer needs its own signer
 per destination-chain *protocol* family (EVM vs. Sealevel), not one key
 overall. Without the Solana signer, delivery to any Sealevel destination
 silently stalls with no clear top-level error (see Known issues fixed).
+
+`RELAYER_SOLANA_IDENTITY_SEED_HEX` is a **second, distinct** Solana
+seed — only needed on `solanatestnet` here because that's the chain whose
+`decision-relay` recipient uses a `TrustedRelayer`-based ISM (see "Known
+issue, actually fixed"). It must differ from `RELAYER_SOLANA_SEED_HEX` (the
+payer): the relayer treats `identity == payer` as "no identity configured"
+and won't drive `TrustedRelayer` checks at all in that case. The identity
+key's pubkey must match whatever the ISM was configured to trust — doesn't
+need its own funding, since it only co-signs, never pays fees.
 
 `--restart unless-stopped` keeps it running across host reboots — this is
 meant to be long-lived infrastructure, not a one-shot script. Check status
@@ -110,85 +126,91 @@ relayer needs `--chains.<solana-chain>.signer.type hexKey` +
 ISM/metadata problem (which is what issues #1/#2 above actually were,
 found first). Fixed by adding the flags shown above.
 
-## Known issue NOT fixed — Sepolia → Solana auto-delivery needs a validator
+## Known issue, actually fixed — Sepolia → Solana auto-delivery
 
-Diagnosed further after the RPC endpoint swap below didn't help: this
-relayer's own automatic delivery of Sepolia-origin messages to a Solana
-destination is blocked on a different, deeper cause than RPC flakiness.
-Its logs show `Could not fetch metadata: Unable to reach quorum` for the
-Solana-bound message — the default ISM configured for that route is a
-multisig ISM (`config.json`'s `solanatestnet.interchainSecurityModule`)
-that requires a signed checkpoint from a Hyperlane validator agent for
-the message's origin/destination pair. Anchor doesn't run a validator
-agent for this route, so no checkpoint exists anywhere for the relayer to
-fetch, and no RPC endpoint quality fixes that — the relayer isn't failing
-to *reach* the checkpoint, there simply isn't one.
+This took three layered, independently-confirmed fixes to actually resolve
+— each one was verified necessary by hitting the *next* failure only after
+fixing the one before it, not assumed from reading source.
 
-The Sepolia RPC endpoint list (`chains/sepolia.rpcUrls` above) was
-swapped for a more reliable set (dropped `gateway.tenderly.co/public/sepolia`
-and `1rpc.io/sepolia`, both confirmed dead via direct `eth_blockNumber`
-curl tests; added `sepolia.gateway.tenderly.co` and
-`sepolia.rpc.thirdweb.com`, both confirmed responsive) — worth keeping
-regardless, but it does not touch this issue.
+**Symptom, initially:** the relayer's own automatic delivery of
+Sepolia-origin messages to a Solana destination logged
+`Could not fetch metadata: Unable to reach quorum` — the default ISM for
+that route is a multisig ISM (`config.json`'s
+`solanatestnet.interchainSecurityModule`) requiring a validator checkpoint
+Anchor doesn't publish (no validator agent run for this route). Swapping
+the Sepolia RPC endpoint list (see below) didn't touch this — it was never
+an RPC problem.
 
-Two real fixes exist:
-1. Run a Hyperlane validator agent for the sepolia→solanatestnet route,
-   publishing checkpoints the relayer can fetch (the standard Hyperlane
-   answer, but real additional infrastructure to operate). Not attempted.
-2. Apply the same `TrustedRelayerIsm.sol` pattern used for the Sepolia
-   *destination* (see issue #1 above) on the Solana side instead — attempted,
-   built, deployed, and it does NOT auto-deliver either (see below), so this
-   is not actually a working fix yet.
-
-### Attempt #2 in detail — deployed, verified independently correct, still doesn't auto-deliver
-
-Deployed `hyperlane-sealevel-composite-ism` (a real, tested Hyperlane program
-— see `rust/sealevel/programs/ism/composite-ism` in the pinned monorepo rev,
-not something written from scratch) to Solana Testnet at
+**Fix attempt, first pass — deploy a TrustedRelayer ISM.** Deployed
+`hyperlane-sealevel-composite-ism` (a real, tested Hyperlane program, not
+written from scratch — `rust/sealevel/programs/ism/composite-ism` in the
+pinned monorepo rev) to Solana Testnet at
 `PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus`, initialized with root node
 `IsmNode::TrustedRelayer { relayer: <our relayer's Solana signer pubkey> }`
-via `chains/solana/tests/init-composite-ism.ts`. Updated decision-relay's
-`InterchainSecurityModule` query handler to return this program's address
-instead of `None` (default), rebuilt, and redeployed in place — confirmed
-correct via direct `simulateTransaction` (the query genuinely returns the
-new ISM's pubkey, not a guess).
+(`chains/solana/tests/init-composite-ism.ts`), and pointed decision-relay's
+`InterchainSecurityModule` query at it instead of the default. Confirmed
+correct via direct `simulateTransaction`. Result: still silent stall, no
+progress past `delivered()` checks — a *different* failure mode than the
+quorum error, so genuine progress, but not a fix yet.
 
-Dispatched a fresh message against a fresh escrow case under the new ISM and
-watched the relayer for ~6 minutes. Result: the relayer polls `delivered()`
-on the message repeatedly but never even reaches its metadata-building step
-for it — no error, no retry log, nothing, unlike the old multisig-ISM path
-which at least logged `Could not fetch metadata: Unable to reach quorum`.
-The escrow case stayed `Disputed` (never `Settled`) for the whole watch
-window.
+**Root cause #1 — the relayer image predates this ISM protocol.** Cloned
+the actual `agents-v2.2.0` tag of `hyperlane-xyz/hyperlane-monorepo` (the
+rev our Docker image, `ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.2.0`,
+was built from) and checked directly: `rust/sealevel/programs/ism/` there
+has only `multisig-ism-message-id` and `test-ism` — `composite-ism` and
+`VerifyMetadataSpec` don't exist at that rev at all. The relayer's metadata
+builder at that version dispatches purely on the fixed `ModuleType` enum;
+there's no code path for the newer fixpoint protocol at all, which is why
+it stalled silently instead of erroring. Checked the next tag,
+`agents-v2.3.0`: `composite-ism` is present, and its relayer source has a
+dedicated `msg/metadata/sealevel_composite.rs` builder that actually drives
+`VerifyMetadataSpec`. **Fix**: pulled and switched to
+`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.3.0`.
 
-Working theory, **not confirmed**: `VerifyMetadataSpec` (the fixpoint
-protocol composite-ism's `Verify`/account-discovery relies on — see that
-program's own README) may be a newer addition to the pinned monorepo rev
-than what's actually built into the relayer Docker image we run
-(`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.2.0`), so the running
-relayer binary may simply not know how to build metadata for an ISM using
-that interface, and stalls silently rather than erroring. This needs
-checking against the actual agents-v2.2.0 source/changelog before trusting
-it, not assumed.
+**Root cause #2 — `TrustedRelayer` needs a distinct `identity` key, not
+just `signer`.** Under `agents-v2.3.0`, delivery progressed further (the
+composite ISM's `Verify` genuinely ran) but then failed with
+`Dry-run simulation failed... Dynamic account metas contain payer account`.
+Traced into `chains/hyperlane-sealevel/src/composite_ism.rs`:
+`trusted_relayer_pubkey()` returns `None` — meaning "no identity
+configured" — whenever the configured `identity` key equals the `signer`
+(payer) key, or `identity` isn't set at all; we only ever set `.signer`.
+Worse, our test data happened to reuse the exact same key as both the
+relayer's payer *and* the escrow case's "claimant" pubkey, which the
+relayer's dynamic-account sanitizer correctly rejects (a program shouldn't
+be able to make the relayer's own payer account show up as an arbitrary
+message-defined account). **Fix**: generated a second, distinct Solana
+keypair, updated the composite ISM's config to trust its pubkey
+(`UpdateConfig` instruction, not a redeploy), passed it via
+`--chains.solanatestnet.identity.type hexKey --chains.solanatestnet.identity.key`,
+and fixed `chains/solana/tests/run-create-case-for-relay-test.ts` to use a
+genuinely separate claimant keypair instead of reusing the wallet.
 
-Next steps if picking this back up: (a) confirm or rule out the version
-theory by checking what `agents-v2.2.0` actually supports; if confirmed,
-either pull a newer relayer image built from a rev that includes
-`VerifyMetadataSpec` support, or fall back to attempt #1 (a validator
-agent) instead; (b) independent of the relayer, a direct
-`Mailbox::process()` call signed by the relayer's own key (proving the
-on-chain `TrustedRelayer` check itself is sound) has not yet been tried for
-this route — would isolate "the ISM logic works" from "the relayer can
-drive it," the same way `cast send` isolated Sepolia's destination-side fix
-earlier in this doc.
+**Root cause #3 — a real bug in decision-relay's own Rust source.** With
+both of the above fixed, delivery progressed to actually invoking
+decision-relay's `handle()` — which then failed on-chain with
+`invalid program argument`. Comparing `handle()`'s expected account order
+against what `handle_account_metas()` (the function that tells the relayer
+which accounts to pass) actually returned: `handle_account_metas()` was
+missing the `escrow_program` account entirely, silently shifting every
+account after it by one slot. This was a genuine bug in
+`chains/solana/programs/decision-relay/src/lib.rs`, unrelated to any of the
+Hyperlane-side issues above — it just hadn't been reachable until the ISM
+and identity-key problems were out of the way. **Fix**: added the missing
+account, rebuilt, redeployed in place.
 
-The one DecisionRelay→Solana dispatch proven end-to-end earlier in this
-doc (under the old default multisig ISM) reached the destination program
-correctly (confirmed via direct `simulateTransaction`), but was never
-auto-delivered by this relayer either. Bottom line: as of this writing,
-Sepolia→Solana auto-delivery is unproven under both the default ISM and
-the TrustedRelayer replacement — don't depend on it unattended under
-either configuration without verifying again.
+**Result, proven live:** a fresh DecisionRelay dispatch
+(message `0x0b1548f3...`) was picked up, verified, and delivered by this
+relayer with zero manual intervention — Solana tx `0x94ae7a01...`, and the
+target escrow case (`CASE-RELAY-1788120485310`) genuinely transitioned
+`Disputed` -> `Settled` on-chain. See the table at the top of this doc.
+
+The Sepolia RPC endpoint list (`chains.sepolia.rpcUrls` above) was also
+swapped for a more reliable set earlier in this investigation (dropped
+`gateway.tenderly.co/public/sepolia` and `1rpc.io/sepolia`, both confirmed
+dead via direct `eth_blockNumber` curl tests; added
+`sepolia.gateway.tenderly.co` and `sepolia.rpc.thirdweb.com`, both confirmed
+responsive) — unrelated to the three fixes above, but worth keeping.
 
 ## Chain configs
 

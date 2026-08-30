@@ -398,8 +398,16 @@ fn handle_account_metas(program_id: &Pubkey, handle_ix: HandleInstruction) -> Pr
     let (escrow_authority_key, _) =
         Pubkey::find_program_address(decision_relay_escrow_authority_pda_seeds!(), program_id);
 
+    // Must match handle()'s account order exactly (minus process_authority,
+    // which the Mailbox always prepends itself before calling Handle) -
+    // storage, escrow_program, case, claimant, respondent, escrow_authority.
+    // escrow_program was missing here for a while, which silently shifted
+    // every account after it by one slot and made handle() fail with
+    // InvalidArgument on real inbound messages - confirmed live via relayer
+    // simulation logs, not just inferred from reading the two functions.
     let account_metas: Vec<SerializableAccountMeta> = vec![
         AccountMeta::new_readonly(storage_key, false).into(),
+        AccountMeta::new_readonly(body.escrow_program, false).into(),
         AccountMeta::new(case_key, false).into(),
         AccountMeta::new(body.claimant, false).into(),
         AccountMeta::new(body.respondent, false).into(),
