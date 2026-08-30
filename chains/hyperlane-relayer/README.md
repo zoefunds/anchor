@@ -131,23 +131,64 @@ curl tests; added `sepolia.gateway.tenderly.co` and
 `sepolia.rpc.thirdweb.com`, both confirmed responsive) — worth keeping
 regardless, but it does not touch this issue.
 
-Two real fixes exist, neither implemented yet:
+Two real fixes exist:
 1. Run a Hyperlane validator agent for the sepolia→solanatestnet route,
    publishing checkpoints the relayer can fetch (the standard Hyperlane
-   answer, but real additional infrastructure to operate).
+   answer, but real additional infrastructure to operate). Not attempted.
 2. Apply the same `TrustedRelayerIsm.sol` pattern used for the Sepolia
-   *destination* (see issue #1 above) on the Solana side instead — a
-   custom Sealevel ISM that always verifies true, since Anchor is both
-   the sole dispatcher and sole relayer for this route. This needs a new
-   instruction handler in decision-relay's Solana program (or a sibling
-   program) and pointing `solanatestnet`'s recipient at it, analogous to
-   `DeployDecisionRelay.s.sol` deploying `TrustedRelayerIsm` on the EVM
-   side.
+   *destination* (see issue #1 above) on the Solana side instead — attempted,
+   built, deployed, and it does NOT auto-deliver either (see below), so this
+   is not actually a working fix yet.
+
+### Attempt #2 in detail — deployed, verified independently correct, still doesn't auto-deliver
+
+Deployed `hyperlane-sealevel-composite-ism` (a real, tested Hyperlane program
+— see `rust/sealevel/programs/ism/composite-ism` in the pinned monorepo rev,
+not something written from scratch) to Solana Testnet at
+`PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus`, initialized with root node
+`IsmNode::TrustedRelayer { relayer: <our relayer's Solana signer pubkey> }`
+via `chains/solana/tests/init-composite-ism.ts`. Updated decision-relay's
+`InterchainSecurityModule` query handler to return this program's address
+instead of `None` (default), rebuilt, and redeployed in place — confirmed
+correct via direct `simulateTransaction` (the query genuinely returns the
+new ISM's pubkey, not a guess).
+
+Dispatched a fresh message against a fresh escrow case under the new ISM and
+watched the relayer for ~6 minutes. Result: the relayer polls `delivered()`
+on the message repeatedly but never even reaches its metadata-building step
+for it — no error, no retry log, nothing, unlike the old multisig-ISM path
+which at least logged `Could not fetch metadata: Unable to reach quorum`.
+The escrow case stayed `Disputed` (never `Settled`) for the whole watch
+window.
+
+Working theory, **not confirmed**: `VerifyMetadataSpec` (the fixpoint
+protocol composite-ism's `Verify`/account-discovery relies on — see that
+program's own README) may be a newer addition to the pinned monorepo rev
+than what's actually built into the relayer Docker image we run
+(`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.2.0`), so the running
+relayer binary may simply not know how to build metadata for an ISM using
+that interface, and stalls silently rather than erroring. This needs
+checking against the actual agents-v2.2.0 source/changelog before trusting
+it, not assumed.
+
+Next steps if picking this back up: (a) confirm or rule out the version
+theory by checking what `agents-v2.2.0` actually supports; if confirmed,
+either pull a newer relayer image built from a rev that includes
+`VerifyMetadataSpec` support, or fall back to attempt #1 (a validator
+agent) instead; (b) independent of the relayer, a direct
+`Mailbox::process()` call signed by the relayer's own key (proving the
+on-chain `TrustedRelayer` check itself is sound) has not yet been tried for
+this route — would isolate "the ISM logic works" from "the relayer can
+drive it," the same way `cast send` isolated Sepolia's destination-side fix
+earlier in this doc.
 
 The one DecisionRelay→Solana dispatch proven end-to-end earlier in this
-doc reached the destination program correctly (confirmed via direct
-`simulateTransaction`), but was never auto-delivered by this relayer —
-verify delivery again before depending on it unattended.
+doc (under the old default multisig ISM) reached the destination program
+correctly (confirmed via direct `simulateTransaction`), but was never
+auto-delivered by this relayer either. Bottom line: as of this writing,
+Sepolia→Solana auto-delivery is unproven under both the default ISM and
+the TrustedRelayer replacement — don't depend on it unattended under
+either configuration without verifying again.
 
 ## Chain configs
 

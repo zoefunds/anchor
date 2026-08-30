@@ -53,6 +53,17 @@ solana_program::entrypoint!(process_instruction);
 
 const SETTLE_DISCRIMINATOR: [u8; 8] = [175, 42, 185, 87, 144, 131, 102, 212];
 
+/// A deployed hyperlane-sealevel-composite-ism instance, initialized with
+/// root node `IsmNode::TrustedRelayer { relayer: <our relayer's Solana
+/// signer pubkey> }` — see chains/solana/tests/init-composite-ism.ts. Its
+/// Verify instruction accepts iff our own relayer key signed the inbound
+/// process() call, same tradeoff as chains/evm/contracts/TrustedRelayerIsm.sol
+/// on the EVM side: sound only because Anchor is both the sole dispatcher
+/// and sole relayer for this route. Replaces the Mailbox's default (a
+/// multisig ISM requiring a validator checkpoint Anchor doesn't publish —
+/// see chains/hyperlane-relayer/README.md's "Known issue NOT fixed").
+const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus");
+
 #[macro_export]
 macro_rules! decision_relay_storage_pda_seeds {
     () => {{
@@ -132,20 +143,23 @@ pub fn process_instruction(
     if let Ok(recipient_instruction) = MessageRecipientInstruction::decode(instruction_data) {
         return match recipient_instruction {
             MessageRecipientInstruction::InterchainSecurityModule => {
-                // "No custom ISM, use the Mailbox's default" must be
-                // communicated as an explicitly Borsh-encoded
-                // Option::<Pubkey>::None via set_return_data - a bare
-                // Ok(()) with no return data at all is NOT the same thing
-                // and errors out relayer-side ("No return data from
-                // InboxGetRecipientIsm instruction"), confirmed against
-                // real Sepolia->Solana Testnet delivery attempts and the
-                // reference implementation in Hyperlane's own
-                // test-send-receiver program (programs/test-send-receiver/
+                // Returning Some(TRUSTED_ISM) here (rather than None, which
+                // means "use the Mailbox's default") is what makes
+                // TRUSTED_ISM's TrustedRelayer check the actual gate for
+                // inbound messages, instead of the default multisig ISM
+                // that needs a validator checkpoint we don't publish. Must
+                // be an explicitly Borsh-encoded Option::<Pubkey> via
+                // set_return_data - a bare Ok(()) with no return data at
+                // all is NOT the same thing and errors out relayer-side
+                // ("No return data from InboxGetRecipientIsm instruction"),
+                // confirmed against real Sepolia->Solana Testnet delivery
+                // attempts and the reference implementation in Hyperlane's
+                // own test-send-receiver program (programs/test-send-receiver/
                 // src/program.rs's get_interchain_security_module, pinned
                 // at the same rev as everything else in this file).
-                let none_ism: Option<Pubkey> = None;
+                let ism: Option<Pubkey> = Some(TRUSTED_ISM);
                 solana_program::program::set_return_data(
-                    &borsh::to_vec(&none_ism).map_err(|_| ProgramError::BorshIoError)?,
+                    &borsh::to_vec(&ism).map_err(|_| ProgramError::BorshIoError)?,
                 );
                 Ok(())
             }
