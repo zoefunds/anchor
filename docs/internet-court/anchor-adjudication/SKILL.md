@@ -222,12 +222,23 @@ vocabulary, outcome thresholds): `docs/policy-v1.md` in the Anchor repo.
 
 Instead of polling `GET /api/cases/:id`, subscribe a URL via the
 dashboard (`Settings -> Webhooks`) or `POST /api/webhooks` to get pushed
-`case.status_changed`, `case.decided`, and `case.appealed` events. Every
-delivery carries `X-Anchor-Signature: sha256=<hex>` — an HMAC-SHA256 of
-the raw JSON body using the webhook's own secret (shown once at
-creation, readable again from the dashboard). Verify it before trusting
-the payload; a webhook endpoint that skips this check can be spoofed by
-anyone who knows (or guesses) the URL.
+`case.status_changed`, `case.decided`, and `case.appealed` events.
+Registered URLs are rejected outright if they resolve to a private/
+internal address (localhost, RFC1918 ranges, cloud metadata endpoints,
+etc.) — Anchor's own SSRF defense, not something the subscriber needs to
+account for.
+
+Every delivery carries `X-Anchor-Timestamp: <unix seconds>` and
+`X-Anchor-Signature: sha256=<hex>` — an HMAC-SHA256 of `${timestamp}.${body}`
+(not the body alone) using the webhook's own secret (shown once at
+creation, readable again from the dashboard). Verify the signature AND
+check the timestamp is within a few minutes of now before trusting the
+payload — the timestamp is what makes a captured (signature, body) pair
+unable to be replayed indefinitely; skipping that check defeats half the
+point of signing in the first place. Delivery retries with backoff on a
+non-2xx response or network failure (up to 5 attempts), so treat the
+handler as idempotent — the same event can legitimately arrive more than
+once.
 
 ## Extending to New Policies
 

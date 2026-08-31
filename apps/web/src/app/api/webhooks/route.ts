@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 import { WEBHOOK_EVENTS, generateWebhookSecret } from "@/lib/webhooks";
+import { isDangerousHostname } from "@/lib/ssrf-guard";
 
 // GET /api/webhooks — list this org's webhooks (secrets included: the org
 // needs to read its own signing secret back to verify deliveries).
@@ -41,6 +42,12 @@ export async function POST(req: NextRequest) {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     return NextResponse.json({ error: "url must be http(s)" }, { status: 400 });
+  }
+  // Cheap, obvious-pattern rejection now; the real defense (resolved-IP
+  // check, catches DNS rebinding this can't) happens again right before
+  // every actual delivery — see lib/ssrf-guard.ts.
+  if (isDangerousHostname(parsed.hostname)) {
+    return NextResponse.json({ error: "url must not point at a private/internal address" }, { status: 400 });
   }
 
   const requestedEvents: string[] = Array.isArray(events) && events.length > 0 ? events : [...WEBHOOK_EVENTS];

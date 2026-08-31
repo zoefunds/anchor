@@ -2,6 +2,7 @@ import { Worker, type Job } from "bullmq";
 import IORedis from "ioredis";
 import { ADJUDICATION_QUEUE_NAME, getAdjudicationQueue } from "@/lib/queue";
 import { runAdjudicationJob, finalizeExpiredAppealWindows } from "@/lib/adjudication-service";
+import { deliverWebhookAttempt } from "@/lib/webhooks";
 
 // The actual BullMQ job processor — separate from src/worker.ts (the
 // standalone process entrypoint) because this module is also imported
@@ -21,6 +22,11 @@ async function processJob(job: Job): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(`worker: finalized ${count} case(s) with expired appeal windows`);
     }
+    return;
+  }
+  if (job.name === "deliver_webhook") {
+    const { webhookId, payload } = job.data as { webhookId: string; payload: { event: string; createdAt: string; data: Record<string, unknown> } };
+    await deliverWebhookAttempt(webhookId, payload);
     return;
   }
   if (job.name !== "adjudicate_case") {
