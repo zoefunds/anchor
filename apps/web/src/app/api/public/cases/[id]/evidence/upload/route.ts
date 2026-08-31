@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolvePartyToken } from "@/lib/party-auth";
+import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { uploadEvidenceFile } from "@/lib/storage";
 import { extractPdfText } from "@/lib/pdf-extract";
@@ -20,12 +20,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const type = form.get("type");
   const file = form.get("file");
 
-  if (typeof token !== "string" || !token) {
-    return NextResponse.json({ error: "token is required" }, { status: 401 });
-  }
-  const resolved = await resolvePartyToken(token);
-  if (!resolved || resolved.caseId !== params.id) {
-    return NextResponse.json({ error: "invalid token" }, { status: 401 });
+  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  if (!resolved) {
+    return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
   if (typeof type !== "string" || !type) {
@@ -43,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const uploadedFile = file as unknown as { arrayBuffer(): Promise<ArrayBuffer>; name: string; type: string };
 
   const kase = await prisma.case.findUnique({
-    where: { id: resolved.caseId },
+    where: { id: params.id },
     include: { evidence: true },
   });
   if (!kase) {

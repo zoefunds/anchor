@@ -2,29 +2,28 @@ import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
-import { resolvePartyToken } from "@/lib/party-auth";
+import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 
 // POST /api/public/cases/:id/evidence — a party submitting evidence
-// directly, authenticated by their own per-case token (see
-// lib/party-auth.ts), not an org session or API key. Body:
-// { token, type, content }. `submittedBy` is never a caller-supplied
-// field here (unlike the org-authenticated /api/cases/:id/evidence,
-// where it's still just a self-asserted string) — it's set to whichever
-// role the token actually resolved to, so "the claimant said X" is a
-// claim backed by possessing the claimant's real secret, not a form
-// field anyone with org write access could type in.
+// directly, authenticated by their own per-case token or an exchanged
+// session cookie (see lib/party-auth.ts), not an org session or API
+// key. Body: { token?, type, content }. `submittedBy` is never a
+// caller-supplied field here (unlike the org-authenticated
+// /api/cases/:id/evidence, where it's still just a self-asserted
+// string) — it's set to whichever role actually resolved, so "the
+// claimant said X" is a claim backed by possessing the claimant's real
+// secret (or a session exchanged from it), not a form field anyone with
+// org write access could type in.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { token, type, content } = await req.json();
-  if (!token || typeof token !== "string") {
-    return NextResponse.json({ error: "token is required" }, { status: 401 });
-  }
 
-  const resolved = await resolvePartyToken(token);
-  if (!resolved || resolved.caseId !== params.id) {
-    // Same 404 whether the token is simply invalid or valid-but-for-a-
-    // different-case — don't help a caller distinguish "wrong token" from
-    // "right token, wrong case" while probing.
-    return NextResponse.json({ error: "invalid token" }, { status: 401 });
+  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  if (!resolved) {
+    // Same response whether the token/session is simply invalid or
+    // valid-but-for-a-different-case — don't help a caller distinguish
+    // "wrong" from "right, wrong case" while probing.
+    return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
   if (!type || !content) {
@@ -32,7 +31,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const kase = await prisma.case.findUnique({
-    where: { id: resolved.caseId },
+    where: { id: params.id },
     include: { evidence: true },
   });
   if (!kase) {

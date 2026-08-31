@@ -37,10 +37,23 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   await prisma.case.update({
     where: { id: kase.id },
     data: {
-      ...(claimantToken ? { claimantTokenHash: claimantToken.hash } : {}),
-      ...(respondentToken ? { respondentTokenHash: respondentToken.hash } : {}),
+      ...(claimantToken ? { claimantTokenHash: claimantToken.hash, claimantTokenExpiresAt: claimantToken.expiresAt } : {}),
+      ...(respondentToken ? { respondentTokenHash: respondentToken.hash, respondentTokenExpiresAt: respondentToken.expiresAt } : {}),
     },
   });
+
+  // A reissue is usually triggered by a suspected leak — an old session
+  // exchanged from the now-invalidated raw token would otherwise keep
+  // working for up to its own 2-hour TTL (see party-auth.ts) even after
+  // the token itself stops resolving. Kill those sessions too, not just
+  // the token.
+  const revokedRoles = [
+    ...(reissueClaimant ? (["claimant"] as const) : []),
+    ...(reissueRespondent ? (["respondent"] as const) : []),
+  ];
+  if (revokedRoles.length > 0) {
+    await prisma.partySession.deleteMany({ where: { caseId: kase.id, role: { in: revokedRoles } } });
+  }
 
   logAction({
     organizationId: auth.organizationId,

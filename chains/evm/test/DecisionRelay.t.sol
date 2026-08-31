@@ -19,9 +19,36 @@ contract FakeMailbox {
 
 contract RecordingSettlementTarget {
     uint256 public settleCallCount;
+    bytes32 public lastCaseId;
+    bytes32 public lastEscrowId;
+    uint256 public lastClaimantAmount;
+    uint256 public lastRespondentAmount;
+    bytes32 public lastProofHash;
 
-    function settle(bytes32, bytes32, uint256, uint256, bytes32) external {
+    function settle(
+        bytes32 caseId,
+        bytes32 escrowId,
+        uint256 claimantAmount,
+        uint256 respondentAmount,
+        bytes32 proofHash
+    ) external {
         settleCallCount++;
+        lastCaseId = caseId;
+        lastEscrowId = escrowId;
+        lastClaimantAmount = claimantAmount;
+        lastRespondentAmount = respondentAmount;
+        lastProofHash = proofHash;
+    }
+}
+
+/// A settlement target that always reverts — stands in for a real escrow
+/// rejecting a settle() call (insufficient funds, already settled by
+/// some other path, a business-logic guard, whatever). What matters for
+/// DecisionRelay itself is that this failure can't leave the message
+/// half-processed.
+contract RevertingSettlementTarget {
+    function settle(bytes32, bytes32, uint256, uint256, bytes32) external pure {
+        revert("settlement target rejected");
     }
 }
 
@@ -97,5 +124,61 @@ contract DecisionRelayTest is Test {
     function test_handle_rejects_non_mailbox_caller() public {
         vm.expectRevert("not mailbox");
         relay.handle(ORIGIN, TRUSTED_SENDER, _body(bytes32(uint256(1))));
+    }
+
+    function test_handle_forwards_exact_settlement_params() public {
+        bytes memory body = abi.encode(
+            bytes32(uint256(42)), // caseId
+            "PARTIAL",
+            uint256(700),
+            uint256(300),
+            bytes32(uint256(99)), // escrowId
+            bytes32(uint256(0xfeed))
+        );
+
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, body);
+
+        assertEq(target.lastCaseId(), bytes32(uint256(42)));
+        assertEq(target.lastEscrowId(), bytes32(uint256(99)));
+        assertEq(target.lastClaimantAmount(), 700);
+        assertEq(target.lastRespondentAmount(), 300);
+        assertEq(target.lastProofHash(), bytes32(uint256(0xfeed)));
+    }
+
+    function test_handle_no_settlement_target_configured_does_not_revert() public {
+        relay.setSettlementTarget(ORIGIN, address(0));
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, _body(bytes32(uint256(1))));
+        // No assertion beyond "didn't revert" — there's nothing to
+        // settle against, this just confirms DecisionRelay itself
+        // doesn't require one.
+    }
+
+    /// The atomicity guarantee behind the idempotency claim: if the
+    /// settlement target itself rejects the call, the ENTIRE
+    /// transaction — including the processedDecisions[proofHash] write —
+    /// must roll back with it (ordinary EVM revert semantics, since that
+    /// write happens before the external call, not after). Otherwise a
+    /// decision could get marked "settled" while the actual settlement
+    /// never happened, permanently blocking any future retry.
+    function test_handle_settlement_target_revert_rolls_back_processed_flag() public {
+        RevertingSettlementTarget badTarget = new RevertingSettlementTarget();
+        relay.setSettlementTarget(ORIGIN, address(badTarget));
+
+        bytes32 proofHash = bytes32(uint256(0xabc));
+        vm.prank(address(mailbox));
+        vm.expectRevert("settlement target rejected");
+        relay.handle(ORIGIN, TRUSTED_SENDER, _body(proofHash));
+
+        assertFalse(relay.processedDecisions(proofHash));
+
+        // Fixing the target and retrying the exact same message must now
+        // succeed — proving the failed attempt left nothing behind.
+        relay.setSettlementTarget(ORIGIN, address(target));
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, _body(proofHash));
+        assertTrue(relay.processedDecisions(proofHash));
+        assertEq(target.settleCallCount(), 1);
     }
 }

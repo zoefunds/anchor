@@ -112,6 +112,8 @@ export async function POST(req: NextRequest) {
       settlementSolanaCaseId: isSealevelSettlement ? settlementSolanaCaseId : null,
       claimantTokenHash: claimantToken.hash,
       respondentTokenHash: respondentToken.hash,
+      claimantTokenExpiresAt: claimantToken.expiresAt,
+      respondentTokenExpiresAt: respondentToken.expiresAt,
     },
   });
 

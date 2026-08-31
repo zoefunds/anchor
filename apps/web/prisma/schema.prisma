@@ -254,6 +254,16 @@ model Case {
   // discussion for why that's a larger, separate piece of work).
   claimantTokenHash   String? @unique
   respondentTokenHash String? @unique
+  // Bounds how long a bearer token stays valid — a long-lived capability
+  // secret that never expires is exactly the kind of thing that keeps
+  // working after it leaks (browser history, referrer headers, a
+  // forwarded screenshot, support tooling logs). Set on issue/reissue
+  // (see party-auth.ts's PARTY_TOKEN_TTL_MS); resolvePartyToken treats an
+  // expired token as invalid, same as a wrong one.
+  claimantTokenExpiresAt   DateTime?
+  respondentTokenExpiresAt DateTime?
+
+  partySessions PartySession[]
 
   // Optional cross-chain settlement target. When settlementChain +
   // settlementContract are both set, a decision persisting for this case
@@ -447,6 +457,26 @@ model Decision {
   // window, since the real fix is destination-side idempotency keyed by
   // decisionHash.
   relayClaimedAt DateTime?
+
+  @@index([caseId])
+}
+
+// A short-lived exchange session for a party token — see
+// party-auth.ts's exchangePartyTokenForSession. The long-lived bearer
+// token (in claimantTokenHash/respondentTokenHash) is only ever meant
+// to be used ONCE, to mint one of these; every subsequent request from
+// that browser uses the session cookie instead, so the raw token stops
+// appearing in URLs/query params (and therefore browser history,
+// referrer headers, access logs, screenshots) after the first click.
+// Same tokenHash-not-raw-token discipline as Session/ApiKey.
+model PartySession {
+  id         String   @id @default(cuid())
+  case       Case     @relation(fields: [caseId], references: [id])
+  caseId     String
+  role       String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
 
   @@index([caseId])
 }

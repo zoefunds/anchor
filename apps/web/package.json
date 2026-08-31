@@ -8,7 +8,8 @@
     "start": "next start",
     "worker": "tsx src/worker.ts",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:generate": "prisma generate"
+    "prisma:generate": "prisma generate",
+    "test:integration": "vitest run"
   },
   "dependencies": {
     "@anchor/hyperlane-relay": "*",
@@ -30,6 +31,7 @@
     "postcss": "^8.4.31",
     "prisma": "^5.20.0",
     "tailwindcss": "^3.4.19",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.11"
   }
 }

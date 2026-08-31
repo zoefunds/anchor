@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolvePartyToken } from "@/lib/party-auth";
+import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 
 // GET /api/public/cases/:id?token=... — for the counterparty in a
 // dispute who doesn't hold an org session or API key but still needs to
 // see the case's evidence and verdict. Requires a valid per-case party
-// token (see lib/party-auth.ts) — a bare case ID is not a credential,
-// and evidence/statements are exactly the kind of thing that must not
-// be readable by anyone who merely learns the ID (forwarded link,
-// referrer leak, log line, etc).
+// token or an exchanged session cookie (see lib/party-auth.ts) — a bare
+// case ID is not a credential, and evidence/statements are exactly the
+// kind of thing that must not be readable by anyone who merely learns
+// the ID (forwarded link, referrer leak, log line, etc).
 //
 // Deliberately a narrow field set, not `prisma.case` wholesale: no
 // organizationId, no internal contractAddress-adjacent org context, and
@@ -17,13 +17,11 @@ import { resolvePartyToken } from "@/lib/party-auth";
 // the other party) but nothing about which org filed it or its API
 // keys/members/billing.
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const token = req.nextUrl.searchParams.get("token");
-  if (!token) {
-    return NextResponse.json({ error: "token query parameter is required" }, { status: 401 });
-  }
-  const resolved = await resolvePartyToken(token);
-  if (!resolved || resolved.caseId !== params.id) {
-    return NextResponse.json({ error: "invalid token" }, { status: 401 });
+  const token = req.nextUrl.searchParams.get("token") ?? undefined;
+  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const resolved = await resolvePartyAuth(sessionCookie, token, params.id);
+  if (!resolved) {
+    return NextResponse.json({ error: "token query parameter or session is required" }, { status: 401 });
   }
 
   const kase = await prisma.case.findUnique({

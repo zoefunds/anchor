@@ -64,6 +64,24 @@ const SETTLE_DISCRIMINATOR: [u8; 8] = [175, 42, 185, 87, 144, 131, 102, 212];
 /// see chains/hyperlane-relayer/README.md's "Known issue NOT fixed").
 const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus");
 
+/// The relayer's own operational Solana keypair, which pays rent for
+/// each processed-decision PDA `handle()` creates (see
+/// decision_relay_processed_decision_pda_seeds! above). Included as a
+/// fixed constant, same reasoning as TRUSTED_ISM: `handle_account_metas`
+/// can only decode the message body, not read on-chain state, so
+/// whichever account is going to sign as payer has to be knowable from
+/// that alone. Anchor's own relayer process must build the outer
+/// Mailbox::process() transaction with this exact key included (and
+/// signing) among the trailing "recipient accounts" — see handle()'s
+/// account list doc below.
+///
+/// PLACEHOLDER — replace with the real relayer's Solana public key
+/// before this program is deployed or redeployed. This has NOT been set
+/// to a real value or verified end-to-end against a live Mailbox in
+/// this codebase; no Solana relayer keypair exists anywhere else in
+/// this repo to reuse.
+const RELAYER_PAYER: Pubkey = solana_program::pubkey!("11111111111111111111111111111111111111111");
+
 #[macro_export]
 macro_rules! decision_relay_storage_pda_seeds {
     () => {{
@@ -85,6 +103,28 @@ macro_rules! decision_relay_escrow_authority_pda_seeds {
     }};
     ($bump_seed:expr) => {{
         &[b"decision_relay", b"-", b"escrow_authority", &[$bump_seed]]
+    }};
+}
+
+/// One tiny PDA per decision_hash, created (never written to again) the
+/// first time `handle()` successfully settles that decision — its mere
+/// existence is the "already processed" flag, mirroring
+/// DecisionRelay.sol's `processedDecisions[proofHash]` mapping on the
+/// EVM side. The Mailbox's own processed-message PDA (see
+/// hyperlane-sealevel-mailbox's inbox_process) already prevents the
+/// exact same Hyperlane message from being replayed, but that's keyed
+/// by message_id, not by decision content — it does nothing to stop two
+/// DIFFERENT messages (two separate dispatches, e.g. an Anchor-side
+/// retry after a lost local record) that happen to carry the same
+/// decision. This PDA is what closes that gap on Solana, the same way
+/// proofHash-keyed idempotency closes it on EVM.
+#[macro_export]
+macro_rules! decision_relay_processed_decision_pda_seeds {
+    ($decision_hash:expr) => {{
+        &[b"decision_relay", b"-", b"processed", $decision_hash.as_ref()]
+    }};
+    ($decision_hash:expr, $bump_seed:expr) => {{
+        &[b"decision_relay", b"-", b"processed", $decision_hash.as_ref(), &[$bump_seed]]
     }};
 }
 
@@ -311,6 +351,9 @@ fn dispatch(program_id: &Pubkey, accounts: &[AccountInfo], outbox_dispatch: Outb
 /// 4. `[writeable]` Claimant account (from the message body).
 /// 5. `[writeable]` Respondent account (from the message body).
 /// 6. `[]` This program's escrow-authority PDA.
+/// 7. `[executable]` System program.
+/// 8. `[signer, writeable]` RELAYER_PAYER — pays rent for account 9.
+/// 9. `[writeable]` Processed-decision PDA for this message's decision_hash.
 pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleInstruction) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
 
@@ -335,6 +378,15 @@ pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleIn
     let claimant_info = next_account_info(accounts_iter)?;
     let respondent_info = next_account_info(accounts_iter)?;
     let escrow_authority_info = next_account_info(accounts_iter)?;
+    let system_program_info = next_account_info(accounts_iter)?;
+    if system_program_info.key != &system_program::id() {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let payer_info = next_account_info(accounts_iter)?;
+    if payer_info.key != &RELAYER_PAYER || !payer_info.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+    let processed_decision_info = next_account_info(accounts_iter)?;
 
     let body = DecisionRelayBody::try_from_slice(&handle_ix.message)
         .map_err(|_| ProgramError::BorshIoError)?;
@@ -359,6 +411,40 @@ pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleIn
     if escrow_authority_info.key != &expected_escrow_authority_key {
         return Err(ProgramError::InvalidArgument);
     }
+
+    // Destination-side idempotency (mirrors DecisionRelay.sol's
+    // processedDecisions[proofHash] — see the PDA seeds macro's doc
+    // comment above for why the Mailbox's own per-message dedup isn't
+    // enough on its own). find_program_address itself doesn't touch
+    // chain state, so this check is purely "does an account already
+    // exist at this decision's PDA address" — verify_account_uninitialized
+    // is the same check the Mailbox uses for its own processed-message
+    // guard.
+    let (expected_processed_decision_key, processed_decision_bump) = Pubkey::find_program_address(
+        decision_relay_processed_decision_pda_seeds!(body.decision_hash),
+        program_id,
+    );
+    if processed_decision_info.key != &expected_processed_decision_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if processed_decision_info.owner == program_id && processed_decision_info.lamports() > 0 {
+        return Err(ProgramError::AccountAlreadyInitialized);
+    }
+    // Created (effects) BEFORE the settle CPI below — if settle() itself
+    // reverts, the whole instruction (including this account creation)
+    // rolls back with it, same atomicity argument as the EVM contract's
+    // processedDecisions[proofHash] = true placed before its own
+    // external call. A one-byte account is enough; only its existence
+    // is checked, its contents are never read.
+    create_pda_account(
+        payer_info,
+        &Rent::get()?,
+        1,
+        program_id,
+        system_program_info,
+        processed_decision_info,
+        decision_relay_processed_decision_pda_seeds!(body.decision_hash, processed_decision_bump),
+    )?;
 
     let mut settle_data = SETTLE_DISCRIMINATOR.to_vec();
     settle_data.extend_from_slice(&body.claimant_share_bps.to_le_bytes());
@@ -406,10 +492,15 @@ fn handle_account_metas(program_id: &Pubkey, handle_ix: HandleInstruction) -> Pr
         Pubkey::find_program_address(&[b"case", body.case_id.as_bytes()], &body.escrow_program);
     let (escrow_authority_key, _) =
         Pubkey::find_program_address(decision_relay_escrow_authority_pda_seeds!(), program_id);
+    let (processed_decision_key, _) = Pubkey::find_program_address(
+        decision_relay_processed_decision_pda_seeds!(body.decision_hash),
+        program_id,
+    );
 
     // Must match handle()'s account order exactly (minus process_authority,
     // which the Mailbox always prepends itself before calling Handle) -
-    // storage, escrow_program, case, claimant, respondent, escrow_authority.
+    // storage, escrow_program, case, claimant, respondent, escrow_authority,
+    // system_program, RELAYER_PAYER, processed_decision.
     // escrow_program was missing here for a while, which silently shifted
     // every account after it by one slot and made handle() fail with
     // InvalidArgument on real inbound messages - confirmed live via relayer
@@ -421,6 +512,9 @@ fn handle_account_metas(program_id: &Pubkey, handle_ix: HandleInstruction) -> Pr
         AccountMeta::new(body.claimant, false).into(),
         AccountMeta::new(body.respondent, false).into(),
         AccountMeta::new_readonly(escrow_authority_key, false).into(),
+        AccountMeta::new_readonly(system_program::id(), false).into(),
+        AccountMeta::new(RELAYER_PAYER, true).into(),
+        AccountMeta::new(processed_decision_key, false).into(),
     ];
 
     let bytes = borsh::to_vec(&SimulationReturnData::new(account_metas))

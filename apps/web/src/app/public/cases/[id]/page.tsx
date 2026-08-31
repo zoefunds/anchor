@@ -45,19 +45,41 @@ export default function PublicCasePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) {
-      setError("This link is missing its access token — ask whoever sent it for the full link.");
-      return;
-    }
-    fetch(`/api/public/cases/${id}?token=${encodeURIComponent(token)}`)
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json();
-          throw new Error(body.error ?? "case not found");
+    async function load() {
+      // If a raw token is in the URL, exchange it for a short-lived
+      // HttpOnly session cookie immediately and strip it from the
+      // address bar (history.replaceState — no navigation, no reload).
+      // The token itself is a long-lived bearer secret; leaving it
+      // sitting in the URL means it keeps accumulating in browser
+      // history, referrer headers on any outbound link/image on this
+      // page, and screenshots for as long as the tab stays open. After
+      // this, the cookie (not the query string) is what authenticates
+      // every request.
+      if (token) {
+        const exchangeRes = await fetch(`/api/public/cases/${id}/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        if (exchangeRes.ok) {
+          window.history.replaceState(null, "", `/public/cases/${id}`);
         }
-        setKase(await res.json());
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+        // If the exchange failed, fall through to the plain fetch below
+        // — it'll surface the same "invalid token" error from the case
+        // route itself rather than duplicating that logic here.
+      }
+
+      const res = await fetch(`/api/public/cases/${id}${token ? `?token=${encodeURIComponent(token)}` : ""}`);
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error ?? "case not found");
+      }
+      setKase(await res.json());
+    }
+
+    // Runs even with no token in the URL — a session cookie from an
+    // earlier visit to this same case may still be valid.
+    load().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [id, token]);
 
   if (error) {
