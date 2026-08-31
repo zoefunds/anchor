@@ -35,6 +35,7 @@ export default function CasesPage() {
   const [claimantRef, setClaimantRef] = useState("party_A");
   const [respondentRef, setRespondentRef] = useState("party_B");
   const [creating, setCreating] = useState(false);
+  const [newPartyTokens, setNewPartyTokens] = useState<{ caseId: string; claimantToken: string; respondentToken: string } | null>(null);
 
   async function loadCases() {
     setLoading(true);
@@ -73,10 +74,16 @@ export default function CasesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ claim, amount: Number(amount), claimantRef, respondentRef, policyId }),
       });
+      const body = await res.json();
       if (!res.ok) {
-        const body = await res.json();
         throw new Error(body.error ?? "failed to create case");
       }
+      // Shown exactly once — the API never returns the raw tokens again
+      // after this response (only their hashes are stored). Hand these
+      // to the actual claimant/respondent so they can submit evidence or
+      // appeal independently, via /api/public/cases/:id/* — see
+      // lib/party-auth.ts.
+      setNewPartyTokens({ caseId: body.id, claimantToken: body.claimantToken, respondentToken: body.respondentToken });
       await loadCases();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -96,6 +103,38 @@ export default function CasesPage() {
           Cases
         </h1>
       </header>
+
+      {newPartyTokens && (
+        <section className="dossier mb-10 border-2 border-seal-500 dark:border-seal-400">
+          <p className="kicker mb-4 text-seal-500 dark:text-seal-400">Party links — shown once</p>
+          <p className="mb-4 text-sm text-muted dark:text-muted-dark">
+            Hand each token to the actual claimant/respondent so they can submit evidence or appeal
+            independently, without an Anchor account. These are shown exactly once — if lost, reissue via{" "}
+            <code className="font-mono text-xs">POST /api/cases/{newPartyTokens.caseId}/party-tokens</code>.
+          </p>
+          <div className="flex flex-col gap-3">
+            <div>
+              <span className="field-label">Claimant token</span>
+              <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
+                {newPartyTokens.claimantToken}
+              </code>
+            </div>
+            <div>
+              <span className="field-label">Respondent token</span>
+              <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
+                {newPartyTokens.respondentToken}
+              </code>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="mt-4 font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
+            onClick={() => setNewPartyTokens(null)}
+          >
+            Dismiss
+          </button>
+        </section>
+      )}
 
       <section className="dossier mb-10">
         <p className="kicker mb-6">File a new case</p>

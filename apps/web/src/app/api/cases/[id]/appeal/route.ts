@@ -2,19 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
-import { dispatchWebhookEvent } from "@/lib/webhooks";
-import { enqueueJob, ensureJobWorker } from "@/lib/jobs";
 import { canAccessCase } from "@/lib/case-access";
+import { triggerAppeal } from "@/lib/appeal-service";
 
 // POST /api/cases/:id/appeal — contest a decision within its appeal
 // window and trigger exactly one re-adjudication round. The contract
 // itself caps this at one appeal (see adjudicator.py's MAX_APPEALS) —
-// this route's own checks (status + window) are the app-level gate that
-// keeps a party from even attempting a second one, but the contract is
-// the actual source of truth and will reject it on-chain regardless.
+// this route's own checks (status + window, in lib/appeal-service.ts)
+// are the app-level gate that keeps a party from even attempting a
+// second one, but the contract is the actual source of truth and will
+// reject it on-chain regardless. See api/public/cases/:id/appeal for the
+// party-token-authenticated equivalent of this route.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  ensureJobWorker();
-
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -29,35 +28,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
-  if (kase.status !== "APPEAL_WINDOW") {
-    return NextResponse.json({ error: `cannot appeal a case in status ${kase.status}` }, { status: 409 });
-  }
-  if (!kase.contractAddress) {
-    return NextResponse.json({ error: "case has no deployed contract" }, { status: 500 });
-  }
-
-  const latestDecision = kase.decisions[0];
-  if (!latestDecision?.appealWindowClosesAt || latestDecision.appealWindowClosesAt < new Date()) {
-    return NextResponse.json({ error: "appeal window has closed" }, { status: 409 });
-  }
 
   const { reason } = await req.json().catch(() => ({ reason: undefined }));
+  const reasonStr = typeof reason === "string" ? reason : undefined;
 
-  // Atomic, conditional transition — only succeeds if the case is still
-  // exactly APPEAL_WINDOW, so two concurrent appeal requests for the same
-  // case can't both pass the checks above and both enqueue an appeal job
-  // (which would race two appeal()/adjudicate() calls against the same
-  // contract - the contract's own MAX_APPEALS check would reject the
-  // second eventually, but only after wasting a real GenLayer round trip
-  // and failing the job loudly instead of being rejected cleanly here).
-  const claimed = await prisma.case.updateMany({
-    where: { id: kase.id, status: "APPEAL_WINDOW" },
-    data: { status: "RE_ADJUDICATING" },
-  });
-  if (claimed.count === 0) {
-    return NextResponse.json({ error: `cannot appeal a case in status ${kase.status}` }, { status: 409 });
-  }
-  await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: true });
+  const errorResponse = await triggerAppeal(kase, kase.decisions[0], reasonStr);
+  if (errorResponse) return errorResponse;
 
   logAction({
     organizationId: auth.organizationId,
@@ -66,17 +42,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     action: "case.appealed",
     targetType: "case",
     targetId: kase.id,
-    metadata: { reason: typeof reason === "string" ? reason : undefined },
-  });
-  dispatchWebhookEvent({
-    organizationId: auth.organizationId,
-    event: "case.appealed",
-    data: { caseId: kase.id, reason: typeof reason === "string" ? reason : undefined },
-  });
-  dispatchWebhookEvent({
-    organizationId: auth.organizationId,
-    event: "case.status_changed",
-    data: { caseId: kase.id, status: "RE_ADJUDICATING" },
+    metadata: { reason: reasonStr },
   });
 
   return NextResponse.json(

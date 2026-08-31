@@ -240,6 +240,21 @@ model Case {
   // GenLayer contract address once deployed for this case
   contractAddress String?
 
+  // Per-party capability tokens (sha256 hash stored, raw token only ever
+  // shown once at case creation, same discipline as Session/ApiKey/Invite)
+  // - what makes "the claimant submitted this evidence" or "the
+  // respondent triggered this appeal" a claim backed by possessing a
+  // real per-case, per-role secret, not just something a caller typed
+  // into a submittedBy form field with zero verification (the previous
+  // state - see api/cases/[id]/evidence/route.ts's history). Anyone
+  // holding claimantTokenHash's raw token can act AS the claimant on
+  // this specific case via /api/public/cases/:id/* routes, independent
+  // of the org's own session/API-key auth - real party-specific standing,
+  // not full identity/signature verification (see docs/party-auth
+  // discussion for why that's a larger, separate piece of work).
+  claimantTokenHash   String? @unique
+  respondentTokenHash String? @unique
+
   // Optional cross-chain settlement target. When settlementChain +
   // settlementContract are both set, a decision persisting for this case
   // automatically dispatches a DecisionRelay Hyperlane message to this

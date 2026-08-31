@@ -4,6 +4,7 @@ import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/
 import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
 import { caseVisibilityWhere } from "@/lib/case-access";
+import { generatePartyToken } from "@/lib/party-auth";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -87,6 +88,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Per-party capability tokens (see lib/party-auth.ts) — generated now,
+  // shown exactly once below, so the caller can hand each raw token to
+  // the actual claimant/respondent. Only the hashes are persisted.
+  const claimantToken = generatePartyToken();
+  const respondentToken = generatePartyToken();
+
   const kase = await prisma.case.create({
     data: {
       organizationId: auth.organizationId,
@@ -103,6 +110,8 @@ export async function POST(req: NextRequest) {
       settlementSolanaRespondent: isSealevelSettlement ? settlementSolanaRespondent : null,
       settlementSolanaEscrowProgram: isSealevelSettlement ? settlementSolanaEscrowProgram : null,
       settlementSolanaCaseId: isSealevelSettlement ? settlementSolanaCaseId : null,
+      claimantTokenHash: claimantToken.hash,
+      respondentTokenHash: respondentToken.hash,
     },
   });
 
@@ -116,7 +125,21 @@ export async function POST(req: NextRequest) {
     metadata: { policyId: policy.id, claim },
   });
 
-  return NextResponse.json(kase, { status: 201 });
+  // Hashes aren't secret, but echoing them back is just noise the caller
+  // never needs — the raw tokens below are the only thing that matters.
+  const { claimantTokenHash: _claimantTokenHash, respondentTokenHash: _respondentTokenHash, ...kaseWithoutHashes } = kase;
+  return NextResponse.json(
+    {
+      ...kaseWithoutHashes,
+      // Shown once — not retrievable again (only the hashes are stored).
+      // A caller that loses these needs POST /api/cases/:id/party-tokens
+      // to reissue fresh ones (invalidating whichever old token that role
+      // had).
+      claimantToken: claimantToken.raw,
+      respondentToken: respondentToken.raw,
+    },
+    { status: 201 }
+  );
 }
 
 export async function GET(req: NextRequest) {
