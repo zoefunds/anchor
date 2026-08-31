@@ -23,6 +23,22 @@ hexify() {
   esac
 }
 
+# Without a whitelist, the relayer's sequence-aware sync walks and
+# retries EVERY historical dispatched message on these chains forever
+# — including old ones sent to a recipient that never had a working
+# ISM configured (their default ISM is a 2-of-2 aggregation multisig
+# this self-hosted relayer can only ever produce 1 of 2 checkpoints
+# for, so those are permanently undeliverable, not just slow). Observed
+# live: the relayer spending all its time on "Aggregation threshold
+# not met (2)" retries for old stuck messages instead of ever reaching
+# a genuinely new, deliverable one. Restricting to the actual live
+# recipients this deployment cares about makes those old entries get
+# skipped outright instead of retried forever.
+WHITELIST='[
+  {"destinationDomain":"11155111","recipientAddress":"0xCDfF36cDA76e08BAd2EA0d5a3fDaDf3761Ed5041"},
+  {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
+]'
+
 exec ./relayer \
   --db /data \
   --relayChains solanatestnet,sepolia \
@@ -31,4 +47,5 @@ exec ./relayer \
   --chains.solanatestnet.signer.key "$(hexify "$RELAYER_SOLANA_SEED_HEX")" \
   --chains.solanatestnet.identity.type hexKey \
   --chains.solanatestnet.identity.key "$(hexify "$RELAYER_SOLANA_IDENTITY_SEED_HEX")" \
-  --allowLocalCheckpointSyncers true
+  --allowLocalCheckpointSyncers true \
+  --whitelist "$WHITELIST"
