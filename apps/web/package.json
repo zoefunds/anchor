@@ -13,8 +13,10 @@
   "dependencies": {
     "@anchor/hyperlane-relay": "*",
     "@prisma/client": "^5.20.0",
+    "bullmq": "^6.3.2",
     "cloudinary": "^2.11.0",
     "genlayer-js": "^1.1.8",
+    "ioredis": "^6.0.0",
     "next": "^14.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"

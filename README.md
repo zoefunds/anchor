@@ -61,17 +61,23 @@ the Intelligent Contract implementation.
 
 ## Local development
 
-Prerequisites: Node 20+, Docker (for local Postgres), a GenLayer Studio
-account/wallet (you're setting this up separately).
+Prerequisites: Node 20+, Docker (for local Postgres + Redis), a GenLayer
+Studio account/wallet (you're setting this up separately).
 
 ```bash
 cd apps/web
-cp .env.example .env       # fill in DATABASE_URL, GENLAYER_* vars
-docker compose up -d       # starts local Postgres
+cp .env.example .env       # fill in DATABASE_URL, REDIS_URL, GENLAYER_* vars
+docker compose up -d       # starts local Postgres and Redis
 npm install
 npx prisma migrate dev
 npm run dev
 ```
+
+The adjudication job queue (BullMQ, backed by Redis) runs an in-process
+worker inside `npm run dev`/`next start` by default — nothing extra to
+start locally. For a standalone worker process instead (serverless web
+deployments, or scaling job throughput independently), see `npm run
+worker` in `apps/web` and `src/lib/queue.ts`'s header comment.
 
 GenLayer contract development happens under `genlayer/` — see that
 directory's own notes once the contract lands.

@@ -1,46 +1,31 @@
-// Standalone job worker — runs the same runOnce() loop as the in-process
-// poller in lib/jobs.ts, but as its own long-lived process instead of a
-// setInterval inside the Next.js server. Two cases this is for:
+// Standalone job worker — starts the same BullMQ Worker as the in-process
+// one (lib/jobs.ts's ensureJobWorker()), but as its own long-lived process
+// instead of running inside the Next.js server. Two cases this is for:
 //
-//   1. A serverless web deployment (Vercel, etc) has no long-lived process
-//      to host the in-process poller at all — the in-process poller only
-//      works under `next start` on a server you keep running yourself.
+//   1. A serverless web deployment (Vercel, etc) has nowhere to host a
+//      long-lived BullMQ Worker connection at all.
 //   2. Scaling job throughput independently of web request throughput —
-//      run N of these without touching the web deployment.
+//      run N of these against the same Redis queue without touching the
+//      web deployment; BullMQ's own connection/concurrency handling deals
+//      with multiple workers pulling from one queue correctly.
 //
 // Run: npm run worker (from apps/web), or `tsx src/worker.ts` directly.
 // Set JOB_WORKER_EXTERNAL=1 on the web process once this is running
-// somewhere, so it stops also polling in-process (see lib/jobs.ts) - not
-// required for correctness (claimNextJob's optimistic locking makes
-// running both harmless), just avoids a wasted query every tick.
+// somewhere, so it stops also starting an in-process worker (not required
+// for correctness — BullMQ workers on the same queue don't double-process
+// a job — just avoids an idle Redis connection doing nothing there).
 
-import { runOnce, POLL_INTERVAL_MS } from "@/lib/jobs";
+import { startAdjudicationWorker } from "@/lib/worker";
 
-let stopping = false;
-
-async function loop(): Promise<void> {
-  // eslint-disable-next-line no-console
-  console.log(`worker: started, polling every ${POLL_INTERVAL_MS}ms`);
-  while (!stopping) {
-    try {
-      await runOnce();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("worker: tick failed:", err instanceof Error ? err.message : err);
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-  // eslint-disable-next-line no-console
-  console.log("worker: stopped");
-}
+const worker = startAdjudicationWorker();
+// eslint-disable-next-line no-console
+console.log("worker: started, connected to Redis, waiting for jobs");
 
 function shutdown(signal: string): void {
   // eslint-disable-next-line no-console
-  console.log(`worker: received ${signal}, finishing current tick then exiting`);
-  stopping = true;
+  console.log(`worker: received ${signal}, finishing in-flight jobs then exiting`);
+  worker.close().then(() => process.exit(0));
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
-
-loop();

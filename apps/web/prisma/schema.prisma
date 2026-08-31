@@ -152,32 +152,14 @@ model AuditLog {
   @@index([createdAt])
 }
 
-// DB-backed job queue for background work (currently just adjudication
-// runs). Replaces the earlier fire-and-forget in-process promise: job
-// state now survives a process restart, and a crashed/killed process
-// leaves the row at RUNNING for a sweep to requeue rather than losing the
-// case silently. Can be processed either by the in-process poller in the
-// Next.js server (src/lib/jobs.ts's ensureJobPoller) or by the standalone
-// worker at src/worker.ts (`npm run worker`) - both drive the same
-// runOnce() loop and are safe to run simultaneously (optimistic locking
-// in claimNextJob), so scaling job throughput independently of the web
-// deployment, or running on serverless (no long-lived process for the
-// in-process poller at all), just means running more of the standalone
-// worker. A real broker (BullMQ/SQS/etc) would still buy more - retry
-// backoff strategies, dead-letter queues, cross-region delivery - but
-// "does it run outside the web process" is answered.
-model Job {
-  id        String   @id @default(cuid())
-  type      String
-  payload   Json
-  status    String   @default("PENDING") // PENDING | RUNNING | DONE | FAILED
-  attempts  Int      @default(0)
-  lastError String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([status])
-}
+// Background job queueing (currently just adjudication runs) is handled
+// by BullMQ on Redis now, not a table here — see src/lib/queue.ts,
+// src/lib/worker.ts, and src/worker.ts (the standalone entrypoint). It
+// used to be a DB-backed `Job` table with an in-process poller; that
+// bought "survives a process restart" but not real retry backoff or a
+// proper dead-letter queue, and nothing else in the app ever read the
+// table directly, so it was dropped in favor of the real broker rather
+// than kept as a second, now-redundant source of job state.
 
 // An invite is how an org grows past its founding member — created by any
 // existing member, redeemed once by setting a password, scoped to one

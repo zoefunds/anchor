@@ -1,112 +1,40 @@
-import type { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
-import { runAdjudicationJob } from "@/lib/adjudication-service";
+import { getAdjudicationQueue } from "@/lib/queue";
 
-// DB-backed queue: replaces the earlier bare `void runAdjudicationJob(id)`
-// fire-and-forget call. A Job row is durable — if this process is killed
-// mid-run, the row is still there at RUNNING for the sweep below to
-// requeue, instead of the case being silently stuck in ADJUDICATING
-// forever with no record anything was ever supposed to happen.
-//
-// Can run two ways, and both are safe to run at once (see claimNextJob's
-// optimistic locking): the in-process poller started by ensureJobPoller()
-// below, good enough for a single `next start` process; or the standalone
-// worker at src/worker.ts (`npm run worker`), which is the same runOnce()
-// loop in its own process - for a serverless web deployment (no
-// long-lived process to host setInterval) or for scaling job throughput
-// independently of web request throughput. Set JOB_WORKER_EXTERNAL=1 to
-// stop the web process from also polling once a dedicated worker is
-// running it, so both don't burn a query every tick for nothing.
+// Enqueues jobs onto the real BullMQ queue (see lib/queue.ts for why this
+// replaced the earlier DB-polling `Job` table). Processing itself lives in
+// lib/worker.ts, driven by either the in-process worker started by
+// ensureJobWorker() below, or the standalone entrypoint at src/worker.ts
+// (`npm run worker`) — same tradeoffs as before (single `next start`
+// process vs. serverless/independent scaling), just on a real broker now
+// instead of a poll loop. Set JOB_WORKER_EXTERNAL=1 to stop the web
+// process from also running an in-process worker once a dedicated one is
+// deployed.
 
-export const POLL_INTERVAL_MS = 3000;
-const MAX_ATTEMPTS = 3;
-const STUCK_RUNNING_MS = 5 * 60 * 1000; // a RUNNING row older than this is presumed crashed, not slow
-
-type JobHandler = (payload: Record<string, unknown>) => Promise<void>;
-
-const HANDLERS: Record<string, JobHandler> = {
-  adjudicate_case: async (payload) => {
-    const caseId = payload.caseId as string;
-    const isAppeal = Boolean(payload.isAppeal);
-    await runAdjudicationJob(caseId, isAppeal);
-  },
+const JOB_OPTIONS = {
+  attempts: 3,
+  backoff: { type: "exponential" as const, delay: 5000 },
+  removeOnComplete: { age: 7 * 24 * 60 * 60 }, // keep completed jobs 7 days for debugging, then GC
+  removeOnFail: false, // failed jobs (BullMQ's own dead-letter set) are kept indefinitely until manually cleared
 };
 
 export async function enqueueJob(type: string, payload: Record<string, unknown>): Promise<string> {
-  const job = await prisma.job.create({
-    data: { type, payload: payload as Prisma.InputJsonValue, status: "PENDING" },
-  });
-  return job.id;
+  const job = await getAdjudicationQueue().add(type, payload, JOB_OPTIONS);
+  return job.id!;
 }
 
-async function claimNextJob() {
-  // Also reclaims rows stuck at RUNNING past the crash-presumption
-  // window, so a process restart doesn't orphan them forever.
-  const candidate = await prisma.job.findFirst({
-    where: {
-      OR: [
-        { status: "PENDING" },
-        { status: "RUNNING", updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } },
-      ],
-    },
-    orderBy: { createdAt: "asc" },
-  });
-  if (!candidate) return null;
-
-  // Optimistic claim: only succeeds if the row is still in the state we
-  // read it in, so two pollers (or a poller racing a stuck-row reclaim)
-  // can't both pick up the same job.
-  const claimed = await prisma.job.updateMany({
-    where: { id: candidate.id, status: candidate.status },
-    data: { status: "RUNNING", attempts: { increment: 1 } },
-  });
-  if (claimed.count === 0) return null;
-
-  return prisma.job.findUnique({ where: { id: candidate.id } });
-}
-
-/** Claims and runs at most one pending job. Exported so the standalone worker (src/worker.ts) can drive the exact same logic in its own process, not a reimplementation. */
-export async function runOnce(): Promise<void> {
-  const job = await claimNextJob();
-  if (!job) return;
-
-  const handler = HANDLERS[job.type];
-  if (!handler) {
-    await prisma.job.update({
-      where: { id: job.id },
-      data: { status: "FAILED", lastError: `no handler registered for job type ${job.type}` },
-    });
-    return;
-  }
-
-  try {
-    await handler(job.payload as Record<string, unknown>);
-    await prisma.job.update({ where: { id: job.id }, data: { status: "DONE" } });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const failedPermanently = job.attempts >= MAX_ATTEMPTS;
-    await prisma.job.update({
-      where: { id: job.id },
-      data: { status: failedPermanently ? "FAILED" : "PENDING", lastError: message },
-    });
-  }
-}
-
-let pollerStarted = false;
+let workerStarted = false;
 
 /**
  * Idempotent - call on every request that needs the queue running; only
- * actually starts the interval once per process. No-ops when
- * JOB_WORKER_EXTERNAL is set, since that means a standalone worker process
- * (src/worker.ts) is the one polling instead.
+ * actually starts the in-process BullMQ Worker once per process. No-ops
+ * when JOB_WORKER_EXTERNAL is set, since that means a standalone worker
+ * process (src/worker.ts) is the one running it instead.
  */
-export function ensureJobPoller(): void {
-  if (pollerStarted || process.env.JOB_WORKER_EXTERNAL) return;
-  pollerStarted = true;
-  setInterval(() => {
-    runOnce().catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error("job poller tick failed:", err instanceof Error ? err.message : err);
-    });
-  }, POLL_INTERVAL_MS);
+export function ensureJobWorker(): void {
+  if (workerStarted || process.env.JOB_WORKER_EXTERNAL) return;
+  workerStarted = true;
+  // Deferred import: lib/worker.ts pulls in adjudication-service and its
+  // own dependency chain, which every route importing lib/jobs.ts
+  // (enqueueJob callers) doesn't need loaded just to enqueue.
+  import("@/lib/worker").then(({ startAdjudicationWorker }) => startAdjudicationWorker());
 }

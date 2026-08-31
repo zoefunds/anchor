@@ -10,5 +10,17 @@ services:
     volumes:
       - anchor_pg_data:/var/lib/postgresql/data
 
+  # Job queue (BullMQ) — see src/lib/queue.ts. Port 6390, not the default
+  # 6379, since that's frequently already taken by some other local
+  # project's Redis; change REDIS_URL to match if you use a different port.
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6390:6379"
+    volumes:
+      - anchor_redis_data:/data
+
 volumes:
   anchor_pg_data:
+  anchor_redis_data:

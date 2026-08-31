@@ -4,7 +4,7 @@ import { requiredEvidenceTypesFor } from "@/lib/adjudication-service";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
-import { enqueueJob, ensureJobPoller } from "@/lib/jobs";
+import { enqueueJob, ensureJobWorker } from "@/lib/jobs";
 import { canAccessCase } from "@/lib/case-access";
 
 // POST /api/cases/:id/adjudicate — the Adjudication Builder step: validate
@@ -16,13 +16,13 @@ import { canAccessCase } from "@/lib/case-access";
 // case to ADJUDICATING and returns 202; status/decision are picked up by
 // polling GET /api/cases/:id, or by a subscribed webhook.
 //
-// The actual run is a DB-backed Job row (src/lib/jobs.ts), not a bare
-// fire-and-forget promise — its state survives this process restarting.
-// ensureJobPoller() below starts this server's in-process poller (a no-op
-// once a standalone worker is running — see src/worker.ts and the Job
-// model's schema comment); either can pick this job up.
+// The actual run is a BullMQ job (src/lib/queue.ts + src/lib/worker.ts),
+// not a bare fire-and-forget promise — durable on Redis, with real
+// exponential backoff between retries. ensureJobWorker() below starts
+// this server's in-process worker (a no-op once a standalone worker is
+// running — see src/worker.ts); either can pick this job up.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  ensureJobPoller();
+  ensureJobWorker();
 
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {

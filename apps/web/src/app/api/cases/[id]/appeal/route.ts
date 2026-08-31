@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
-import { enqueueJob, ensureJobPoller } from "@/lib/jobs";
+import { enqueueJob, ensureJobWorker } from "@/lib/jobs";
 import { canAccessCase } from "@/lib/case-access";
 
 // POST /api/cases/:id/appeal — contest a decision within its appeal
@@ -13,7 +13,7 @@ import { canAccessCase } from "@/lib/case-access";
 // keeps a party from even attempting a second one, but the contract is
 // the actual source of truth and will reject it on-chain regardless.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  ensureJobPoller();
+  ensureJobWorker();
 
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
