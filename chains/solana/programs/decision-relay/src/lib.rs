@@ -64,22 +64,6 @@ const SETTLE_DISCRIMINATOR: [u8; 8] = [175, 42, 185, 87, 144, 131, 102, 212];
 /// see chains/hyperlane-relayer/README.md's "Known issue NOT fixed").
 const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus");
 
-/// The relayer's own operational Solana keypair, which pays rent for
-/// each processed-decision PDA `handle()` creates (see
-/// decision_relay_processed_decision_pda_seeds! above). Included as a
-/// fixed constant, same reasoning as TRUSTED_ISM: `handle_account_metas`
-/// can only decode the message body, not read on-chain state, so
-/// whichever account is going to sign as payer has to be knowable from
-/// that alone. Anchor's own relayer process must build the outer
-/// Mailbox::process() transaction with this exact key included (and
-/// signing) among the trailing "recipient accounts" — see handle()'s
-/// account list doc below.
-///
-/// The relayer's real, funded Solana Testnet signer — same key as
-/// RELAYER_SOLANA_SEED_HEX (see chains/hyperlane-relayer/entrypoint.sh)
-/// and this program's own upgrade authority.
-const RELAYER_PAYER: Pubkey = solana_program::pubkey!("EBea3UVndSrNdgdtfuXC6PoN7573GdS43XDoB6pja9fh");
-
 #[macro_export]
 macro_rules! decision_relay_storage_pda_seeds {
     () => {{
@@ -101,28 +85,6 @@ macro_rules! decision_relay_escrow_authority_pda_seeds {
     }};
     ($bump_seed:expr) => {{
         &[b"decision_relay", b"-", b"escrow_authority", &[$bump_seed]]
-    }};
-}
-
-/// One tiny PDA per decision_hash, created (never written to again) the
-/// first time `handle()` successfully settles that decision — its mere
-/// existence is the "already processed" flag, mirroring
-/// DecisionRelay.sol's `processedDecisions[proofHash]` mapping on the
-/// EVM side. The Mailbox's own processed-message PDA (see
-/// hyperlane-sealevel-mailbox's inbox_process) already prevents the
-/// exact same Hyperlane message from being replayed, but that's keyed
-/// by message_id, not by decision content — it does nothing to stop two
-/// DIFFERENT messages (two separate dispatches, e.g. an Anchor-side
-/// retry after a lost local record) that happen to carry the same
-/// decision. This PDA is what closes that gap on Solana, the same way
-/// proofHash-keyed idempotency closes it on EVM.
-#[macro_export]
-macro_rules! decision_relay_processed_decision_pda_seeds {
-    ($decision_hash:expr) => {{
-        &[b"decision_relay", b"-", b"processed", $decision_hash.as_ref()]
-    }};
-    ($decision_hash:expr, $bump_seed:expr) => {{
-        &[b"decision_relay", b"-", b"processed", $decision_hash.as_ref(), &[$bump_seed]]
     }};
 }
 
@@ -162,8 +124,10 @@ pub struct DecisionRelayBody {
     /// backend). The same value carried as EVM DecisionRelay.sol's
     /// proofHash, so this side can bind settlement to the exact decision
     /// Anchor claims to have made, not just the shares it derived from
-    /// it. Checked against `processed` in `handle` for the same
-    /// destination-side idempotency the EVM contract enforces.
+    /// it. Not used to gate a PDA-based idempotency check (see `handle`'s
+    /// doc comment for why) — destination-side idempotency here comes
+    /// from escrow's own `case.status` guard instead. Kept in the wire
+    /// format for audit/record purposes and parity with the EVM side.
     pub decision_hash: [u8; 32],
 }
 
@@ -341,6 +305,36 @@ fn dispatch(program_id: &Pubkey, accounts: &[AccountInfo], outbox_dispatch: Outb
 /// process authority, decodes the body, then CPIs into escrow.settle()
 /// with this program's escrow-authority PDA signing as `adjudicator`.
 ///
+/// Destination-side settlement idempotency does NOT use a
+/// decision-relay-owned PDA here (a prior version did — see git history
+/// for "processed-decision PDA" — and required a relayer-funded payer
+/// account to create it). That design was structurally incompatible with
+/// Hyperlane's own Sealevel relayer: its `sanitize_dynamic_accounts`
+/// unconditionally rejects any recipient-declared dynamic account that
+/// matches the relayer's payer pubkey (chains/hyperlane-sealevel's
+/// `utils.rs` — a hard anti-signer-smuggling rule, not a bug, since a
+/// repeated pubkey in a Solana transaction's account list becomes a
+/// signer everywhere it appears if it's a signer anywhere), so
+/// `handle_account_metas` could never legally advertise a payer account
+/// at all. Confirmed live: every relayer simulation of a real inbound
+/// message failed with "Dynamic account metas contain payer account"
+/// before a single transaction was ever attempted.
+///
+/// Idempotency here instead comes from two guarantees that already
+/// exist and need no new account: the Mailbox's own processed-message
+/// PDA (keyed by message_id, created in inbox_process before this CPI
+/// runs) rejects exact message replay, and escrow's own
+/// `case.status`/`AlreadySettled` guard (chains/solana/programs/escrow)
+/// rejects a second settle() for the same case regardless of which
+/// message/dispatch triggered it — a retry after a lost local record
+/// (two different messages, same case) hits `AlreadySettled` in
+/// escrow's own program and reverts cleanly. That covers the same
+/// "can't settle twice" requirement the EVM side's
+/// `processedDecisions[proofHash]` mapping covers, without requiring any
+/// party's key to be advertised as a dynamic recipient account. Since no
+/// account is created here anymore, no payer or system program is
+/// needed in this instruction at all.
+///
 /// Accounts:
 /// 0. `[]` Process authority specific to this program (signer).
 /// 1. `[]` Storage PDA account.
@@ -349,9 +343,6 @@ fn dispatch(program_id: &Pubkey, accounts: &[AccountInfo], outbox_dispatch: Outb
 /// 4. `[writeable]` Claimant account (from the message body).
 /// 5. `[writeable]` Respondent account (from the message body).
 /// 6. `[]` This program's escrow-authority PDA.
-/// 7. `[executable]` System program.
-/// 8. `[signer, writeable]` RELAYER_PAYER — pays rent for account 9.
-/// 9. `[writeable]` Processed-decision PDA for this message's decision_hash.
 pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleInstruction) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
 
@@ -376,15 +367,6 @@ pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleIn
     let claimant_info = next_account_info(accounts_iter)?;
     let respondent_info = next_account_info(accounts_iter)?;
     let escrow_authority_info = next_account_info(accounts_iter)?;
-    let system_program_info = next_account_info(accounts_iter)?;
-    if system_program_info.key != &system_program::id() {
-        return Err(ProgramError::InvalidArgument);
-    }
-    let payer_info = next_account_info(accounts_iter)?;
-    if payer_info.key != &RELAYER_PAYER || !payer_info.is_signer {
-        return Err(ProgramError::MissingRequiredSignature);
-    }
-    let processed_decision_info = next_account_info(accounts_iter)?;
 
     let body = DecisionRelayBody::try_from_slice(&handle_ix.message)
         .map_err(|_| ProgramError::BorshIoError)?;
@@ -409,40 +391,6 @@ pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleIn
     if escrow_authority_info.key != &expected_escrow_authority_key {
         return Err(ProgramError::InvalidArgument);
     }
-
-    // Destination-side idempotency (mirrors DecisionRelay.sol's
-    // processedDecisions[proofHash] — see the PDA seeds macro's doc
-    // comment above for why the Mailbox's own per-message dedup isn't
-    // enough on its own). find_program_address itself doesn't touch
-    // chain state, so this check is purely "does an account already
-    // exist at this decision's PDA address" — verify_account_uninitialized
-    // is the same check the Mailbox uses for its own processed-message
-    // guard.
-    let (expected_processed_decision_key, processed_decision_bump) = Pubkey::find_program_address(
-        decision_relay_processed_decision_pda_seeds!(body.decision_hash),
-        program_id,
-    );
-    if processed_decision_info.key != &expected_processed_decision_key {
-        return Err(ProgramError::InvalidArgument);
-    }
-    if processed_decision_info.owner == program_id && processed_decision_info.lamports() > 0 {
-        return Err(ProgramError::AccountAlreadyInitialized);
-    }
-    // Created (effects) BEFORE the settle CPI below — if settle() itself
-    // reverts, the whole instruction (including this account creation)
-    // rolls back with it, same atomicity argument as the EVM contract's
-    // processedDecisions[proofHash] = true placed before its own
-    // external call. A one-byte account is enough; only its existence
-    // is checked, its contents are never read.
-    create_pda_account(
-        payer_info,
-        &Rent::get()?,
-        1,
-        program_id,
-        system_program_info,
-        processed_decision_info,
-        decision_relay_processed_decision_pda_seeds!(body.decision_hash, processed_decision_bump),
-    )?;
 
     let mut settle_data = SETTLE_DISCRIMINATOR.to_vec();
     settle_data.extend_from_slice(&body.claimant_share_bps.to_le_bytes());
@@ -485,38 +433,89 @@ fn handle_account_metas(program_id: &Pubkey, handle_ix: HandleInstruction) -> Pr
     let body = DecisionRelayBody::try_from_slice(&handle_ix.message)
         .map_err(|_| ProgramError::BorshIoError)?;
 
+    let account_metas = required_handle_account_metas(program_id, &body);
+
+    let bytes = borsh::to_vec(&SimulationReturnData::new(account_metas))
+        .map_err(|_| ProgramError::BorshIoError)?;
+    solana_program::program::set_return_data(&bytes[..]);
+    Ok(())
+}
+
+/// Pure account-list builder shared by `handle_account_metas` (which wraps
+/// this for the syscall-based simulation response) and, below, a unit test
+/// asserting the exact regression that caused a real production incident —
+/// see `handle`'s doc comment for the full story. Split out so the account
+/// list itself is testable without a Solana runtime/syscall context.
+fn required_handle_account_metas(program_id: &Pubkey, body: &DecisionRelayBody) -> Vec<SerializableAccountMeta> {
     let (storage_key, _) = Pubkey::find_program_address(decision_relay_storage_pda_seeds!(), program_id);
     let (case_key, _) =
         Pubkey::find_program_address(&[b"case", body.case_id.as_bytes()], &body.escrow_program);
     let (escrow_authority_key, _) =
         Pubkey::find_program_address(decision_relay_escrow_authority_pda_seeds!(), program_id);
-    let (processed_decision_key, _) = Pubkey::find_program_address(
-        decision_relay_processed_decision_pda_seeds!(body.decision_hash),
-        program_id,
-    );
 
     // Must match handle()'s account order exactly (minus process_authority,
     // which the Mailbox always prepends itself before calling Handle) -
-    // storage, escrow_program, case, claimant, respondent, escrow_authority,
-    // system_program, RELAYER_PAYER, processed_decision.
+    // storage, escrow_program, case, claimant, respondent, escrow_authority.
+    // No payer/system_program/processed_decision account anymore — see
+    // handle()'s doc comment for why (a relayer-payer-owned dynamic
+    // account is categorically rejected by Hyperlane's own Sealevel
+    // relayer, "Dynamic account metas contain payer account").
     // escrow_program was missing here for a while, which silently shifted
     // every account after it by one slot and made handle() fail with
     // InvalidArgument on real inbound messages - confirmed live via relayer
     // simulation logs, not just inferred from reading the two functions.
-    let account_metas: Vec<SerializableAccountMeta> = vec![
+    vec![
         AccountMeta::new_readonly(storage_key, false).into(),
         AccountMeta::new_readonly(body.escrow_program, false).into(),
         AccountMeta::new(case_key, false).into(),
         AccountMeta::new(body.claimant, false).into(),
         AccountMeta::new(body.respondent, false).into(),
         AccountMeta::new_readonly(escrow_authority_key, false).into(),
-        AccountMeta::new_readonly(system_program::id(), false).into(),
-        AccountMeta::new(RELAYER_PAYER, true).into(),
-        AccountMeta::new(processed_decision_key, false).into(),
-    ];
+    ]
+}
 
-    let bytes = borsh::to_vec(&SimulationReturnData::new(account_metas))
-        .map_err(|_| ProgramError::BorshIoError)?;
-    solana_program::program::set_return_data(&bytes[..]);
-    Ok(())
+#[cfg(test)]
+mod handle_account_metas_tests {
+    use super::*;
+
+    /// Regression test for a real production incident: `handle_account_metas`
+    /// used to return `AccountMeta::new(RELAYER_PAYER, true)`, a dynamic
+    /// account matching the relayer's own configured payer pubkey.
+    /// Hyperlane's Sealevel relayer unconditionally rejects any recipient
+    /// dynamic account meta whose pubkey equals its payer
+    /// (`sanitize_dynamic_accounts` in `chains/hyperlane-sealevel/src/utils.rs`
+    /// — a Solana same-account-signer-escalation guard, not a bug to work
+    /// around). Confirmed live: every relayer simulation of a real inbound
+    /// message failed with "Dynamic account metas contain payer account"
+    /// before a transaction was ever attempted. Since the relayer's actual
+    /// payer pubkey is runtime config unknown to this program, the only
+    /// structurally safe fix is for `handle()` to need no payer at all — this
+    /// test asserts the dynamic account list therefore contains zero signer
+    /// accounts (only the Mailbox-prepended `process_authority`, which this
+    /// function does not return, is ever a signer).
+    #[test]
+    fn handle_account_metas_never_includes_a_signer() {
+        let program_id = Pubkey::new_unique();
+        let body = DecisionRelayBody {
+            case_id: "CASE-TEST-1".to_string(),
+            claimant: Pubkey::new_unique(),
+            respondent: Pubkey::new_unique(),
+            escrow_program: Pubkey::new_unique(),
+            claimant_share_bps: 10_000,
+            respondent_share_bps: 0,
+            decision_hash: [7u8; 32],
+        };
+
+        let metas = required_handle_account_metas(&program_id, &body);
+
+        assert_eq!(metas.len(), 6, "unexpected account count — check handle()'s doc comment stays in sync");
+        for meta in metas {
+            let meta: AccountMeta = meta.into();
+            assert!(
+                !meta.is_signer,
+                "handle_account_metas must never return a signer account — a relayer-payer-owned \
+                 signer here is exactly what caused \"Dynamic account metas contain payer account\""
+            );
+        }
+    }
 }

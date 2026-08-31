@@ -71,11 +71,55 @@ true`, `DecisionRelay.processedDecisions(decisionHash) == true`,
 **This was a same-chain Sepolia→Sepolia test, not a cross-chain one —
 it proves message discovery, ISM metadata building, and destination
 execution all work, but does not exercise real cross-chain relaying
-(different origin/destination domains).** A real Sepolia→Solana or
-Sepolia→Base-Sepolia delivery has not been re-proven against the
-current contracts (with the idempotency guard and the fixed ISM) this
-session; the Sepolia→Solana row in the table above is from an earlier
-version of the contracts, before this round's guard/payer/ISM changes.
+(different origin/destination domains).**
+
+**Update (this session, continued): real Sepolia→Solana settlement now
+proven end to end, after fixing a second, structurally distinct bug.**
+A real dispatched message (`0x6a543bd6...`) sat stuck the same way the
+Sepolia one had, but with a different root cause: `decision-relay`'s
+`handle_account_metas` returned `AccountMeta::new(RELAYER_PAYER, true)`
+— a dynamic account matching the relayer's own configured payer pubkey,
+to fund creating a processed-decision idempotency PDA. Hyperlane's
+Sealevel relayer unconditionally rejects any recipient-declared dynamic
+account matching its own payer (`sanitize_dynamic_accounts` in
+`hyperlane-sealevel`'s `utils.rs` — a deliberate anti-signer-smuggling
+rule: a repeated pubkey in a Solana transaction becomes a signer
+everywhere it appears if it's a signer anywhere, so a message-declared
+account matching the payer could otherwise smuggle in unintended
+signing authority). Every simulation failed with "Dynamic account
+metas contain payer account" before a transaction was ever attempted —
+confirmed live, and against the vendored relayer source.
+
+Fixed by removing the processed-decision PDA mechanism entirely rather
+than swapping in a different payer: `handle()` no longer creates any
+account, so it needs no payer or system program at all. Destination-side
+settlement idempotency now comes from two guarantees that already
+exist and need no new account — the Mailbox's own processed-message PDA
+(exact message replay, keyed by message_id) and escrow's own
+`case.status`/`AlreadySettled` guard (any second `settle()` for the same
+case, regardless of which message triggered it, reverts). `handle()` and
+`handle_account_metas` were updated together (see
+`chains/solana/programs/decision-relay/src/lib.rs`'s doc comments for
+the exact current account ordering), a regression test added
+(`handle_account_metas_never_includes_a_signer`), and the program
+re-deployed (upgrade tx
+`2RGnUiEpSsP1PfGJLe4FxtZyn3CpPaN84WFoBMggmYoocDyr7QshTnNaUt3eKrFSrnE16dz52gMe6FNdap5vngR1`).
+
+Real end-to-end proof, from the stuck message plus one fresh one against
+the same live, real escrow case (`CASE-RELAY-1788205515061`,
+`initialize_case` → `raise_dispute`, both real confirmed transactions):
+
+| | |
+|---|---|
+| message 1 (the originally-stuck one) | `0x6a543bd6ad0b94d4ca90958ef608bef794aafdcf11dfe9ca8124f75aa5038f8a` |
+| Solana `process()` tx (delivers message 1) | [`eFQFHswDyVysYeq1EbeX5ZoZcxhhvYUmrQbkFbdpFCRGxA4Dx1hos9zN8XduskNFVk7QArhtAKZ9vkGb1gCVYFM`](https://explorer.solana.com/tx/eFQFHswDyVysYeq1EbeX5ZoZcxhhvYUmrQbkFbdpFCRGxA4Dx1hos9zN8XduskNFVk7QArhtAKZ9vkGb1gCVYFM?cluster=testnet) — `Status: Ok` |
+| program log | `decision-relay: settled case CASE-RELAY-1788205515061` |
+| `escrow.case.status` (direct account read) | `Settled` |
+| message 2 (fresh dispatch, same case, different decision) | `0x041e3d832a882ae9d5fae4bf63d5345f0023f09eea9829929cc0219e55cc7110` — relayer simulation now succeeds (no more account-metas rejection) but is correctly and repeatedly rejected on-chain with `Custom(6003)` (`AlreadySettled`), proving replay/double-settlement protection holds even across two genuinely distinct messages for the same case |
+
+This closes both Solana blockers found this session (the account-metas
+rejection and the untested settlement path) with real on-chain evidence,
+not simulation-only success.
 
 ## What this is
 
