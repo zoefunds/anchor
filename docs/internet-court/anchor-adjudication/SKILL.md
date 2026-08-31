@@ -64,6 +64,17 @@ Do not use this skill for:
   explicitly rather than forcing a mismatched policy, and flag it as a gap
   (new policies are how this connector grows — see Extending below).
 
+## Live Discovery
+
+`GET /.well-known/internet-court.json` on any Anchor deployment is a real,
+unauthenticated, machine-readable manifest of this connector — policy list
+(pulled live from the same registry the API itself validates against, so
+it can't drift out of sync with what's actually accepted), the decision
+schema, settlement/relay capabilities, and the base API endpoints. Use it
+to confirm a specific Anchor deployment is live and check what it
+currently supports before committing a deal to it, rather than assuming
+this document is still accurate for that instance.
+
 ## Workflow
 
 1. **Confirm the policy fits.** Three policies are live today:
