@@ -45,6 +45,10 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  const amountNumber = Number(amount);
+  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
+    return NextResponse.json({ error: "amount must be a positive number" }, { status: 400 });
+  }
   const SUPPORTED_SETTLEMENT_CHAINS = ["sepolia", "solanatestnet"];
   // Both or neither — a settlement target only makes sense as a pair, and
   // half-configuring it would silently never dispatch (see

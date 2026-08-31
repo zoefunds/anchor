@@ -59,7 +59,28 @@ export function getGenLayerClient(): AnchorGenLayerClient {
   };
 }
 
-/** Converts a decimal currency amount (e.g. 1000.00) to atto-scale (value * 10^18) as used by the contract's u256 atto_amount field. */
-export function toAttoAmount(amount: number): bigint {
-  return BigInt(Math.round(amount * 1e18));
+/**
+ * Converts a decimal currency amount to atto-scale (value * 10^18) as used
+ * by the contract's u256 atto_amount field. Takes the exact decimal
+ * string (e.g. Prisma's Decimal.toString(), not Number(decimal)) and
+ * scales it with BigInt arithmetic — `Number(amount) * 1e18` loses real
+ * precision the moment the amount has enough digits to exceed
+ * Number.MAX_SAFE_INTEGER once multiplied by 1e18 (any amount with a
+ * fractional part already does, since 1e18 alone exceeds it), silently
+ * settling a slightly wrong sum. Rejects negative amounts — a case's
+ * disputed amount is never meaningfully negative, and letting one
+ * through would flow into a u256 field the contract can't represent
+ * negative values in anyway.
+ */
+export function toAttoAmount(amount: number | string): bigint {
+  const str = typeof amount === "number" ? amount.toString() : amount;
+  if (!/^-?\d+(\.\d+)?$/.test(str)) {
+    throw new Error(`toAttoAmount: not a valid decimal string: ${str}`);
+  }
+  if (str.startsWith("-")) {
+    throw new Error(`toAttoAmount: amount must not be negative: ${str}`);
+  }
+  const [whole, frac = ""] = str.split(".");
+  const fracPadded = (frac + "0".repeat(18)).slice(0, 18);
+  return BigInt(whole) * 10n ** 18n + BigInt(fracPadded || "0");
 }

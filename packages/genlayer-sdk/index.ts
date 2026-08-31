@@ -205,6 +205,7 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
         respondent_share_bps?: number;
         reason_codes: ReasonCode[];
         consensus: "ACCEPTED" | "UNDETERMINED";
+        evidence_hash?: string;
       };
 
       return {
@@ -216,6 +217,7 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
         respondentShareBps: parsed.respondent_share_bps,
         reasonCodes: parsed.reason_codes,
         evidenceUsed: [],
+        evidenceHash: parsed.evidence_hash,
         consensus: parsed.consensus,
       };
     },

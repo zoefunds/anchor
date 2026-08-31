@@ -1,3 +1,4 @@
+import type { Case, Decision } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/lib/genlayer";
 import { getPolicy } from "@/lib/policies";
@@ -10,6 +11,123 @@ const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 export function requiredEvidenceTypesFor(policyId: string): string[] {
   const policy = getPolicy(policyId);
   return policy ? policy.requiredEvidence.map((e) => e.type) : [];
+}
+
+/**
+ * Dispatches settlement for a FINALIZED decision with a settlement target
+ * configured. Split out from runAdjudicationJob so both that function
+ * (the appeal-decided path, where FINALIZED happens immediately - see
+ * MAX_APPEALS note below) and finalizeExpiredAppealWindows (the
+ * non-appealed path) can call the exact same dispatch logic rather than
+ * duplicating it.
+ *
+ * Only ever call this once a case is genuinely FINALIZED - never from
+ * APPEAL_WINDOW. A decision that can still be appealed can still change,
+ * so settling against it would let an appeal contest a verdict after
+ * funds were already released against the earlier one.
+ */
+async function dispatchSettlementForDecision(kase: Case, decision: Decision): Promise<void> {
+  if (!kase.settlementChain || !kase.settlementContract) return;
+  if (decision.consensus !== "ACCEPTED") return;
+  if (!decision.proofHash) {
+    // Every real ACCEPTED decision has a proofHash (set from the
+    // contract's own evidence_hash when the Decision row was created -
+    // see runAdjudicationJob). Missing here means something upstream
+    // regressed; refuse to relay with no real proof rather than silently
+    // fabricating one.
+    // eslint-disable-next-line no-console
+    console.error(`decision ${decision.id} for case ${kase.id} has no proofHash — refusing to dispatch settlement`);
+    return;
+  }
+
+  const totalAmountAtto = toAttoAmount(kase.amount.toString());
+  const claimantBps = BigInt(decision.claimantShareBps ?? 0);
+  const respondentBps = BigInt(decision.respondentShareBps ?? 0);
+  try {
+    const { txHash, messageId } = await dispatchDecisionForCase({
+      caseId: kase.id,
+      outcome: decision.outcome,
+      claimantShareBps: decision.claimantShareBps ?? 0,
+      respondentShareBps: decision.respondentShareBps ?? 0,
+      claimantAmountAtto: (totalAmountAtto * claimantBps) / 10000n,
+      respondentAmountAtto: (totalAmountAtto * respondentBps) / 10000n,
+      settlementChain: kase.settlementChain,
+      settlementContract: kase.settlementContract,
+      settlementSolanaClaimant: kase.settlementSolanaClaimant,
+      settlementSolanaRespondent: kase.settlementSolanaRespondent,
+      settlementSolanaEscrowProgram: kase.settlementSolanaEscrowProgram,
+      settlementSolanaCaseId: kase.settlementSolanaCaseId,
+      evidenceHash: decision.proofHash,
+    });
+    await prisma.decision.update({
+      where: { id: decision.id },
+      data: { relayTxHash: txHash, relayMessageId: messageId },
+    });
+    dispatchWebhookEvent({
+      organizationId: kase.organizationId,
+      event: "case.relay_dispatched",
+      data: { caseId: kase.id, txHash, messageId },
+    });
+  } catch (relayErr) {
+    // A failed relay dispatch doesn't undo the decision itself — the
+    // adjudication succeeded and is recorded regardless. Record the
+    // error on the decision so it's visible, but don't fail the job.
+    const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
+    // eslint-disable-next-line no-console
+    console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
+    await prisma.decision.update({ where: { id: decision.id }, data: { relayError: relayMessage } });
+  }
+}
+
+/**
+ * Sweeps cases sitting in APPEAL_WINDOW whose window has actually closed
+ * (no appeal came in) and finalizes them — transitioning to FINALIZED and
+ * only THEN dispatching settlement, never before. Meant to be run
+ * periodically (see lib/worker.ts's repeatable job), not called from a
+ * request path.
+ *
+ * This is what makes "settlement only after finalization" true for the
+ * common case (no appeal filed) — the appeal-decided path finalizes
+ * immediately inside runAdjudicationJob instead, since MAX_APPEALS=1 on
+ * the contract means there's nothing left to wait for once an appeal
+ * itself has been decided.
+ */
+export async function finalizeExpiredAppealWindows(): Promise<number> {
+  const now = new Date();
+  const expired = await prisma.case.findMany({
+    where: {
+      status: "APPEAL_WINDOW",
+      decisions: { some: { appealWindowClosesAt: { lte: now } } },
+    },
+    include: { decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
+  });
+
+  let finalizedCount = 0;
+  for (const kase of expired) {
+    const latestDecision = kase.decisions[0];
+    if (!latestDecision || !latestDecision.appealWindowClosesAt || latestDecision.appealWindowClosesAt > now) {
+      continue; // race: another sweep tick (or an appeal) already moved this case on
+    }
+
+    // Atomic, conditional transition — only succeeds if the case is still
+    // exactly where we read it, so two overlapping sweep ticks (or a
+    // sweep racing an appeal request) can't both finalize/settle the
+    // same case.
+    const claimed = await prisma.case.updateMany({
+      where: { id: kase.id, status: "APPEAL_WINDOW" },
+      data: { status: "FINALIZED" },
+    });
+    if (claimed.count === 0) continue;
+
+    finalizedCount++;
+    dispatchWebhookEvent({
+      organizationId: kase.organizationId,
+      event: "case.status_changed",
+      data: { caseId: kase.id, status: "FINALIZED" },
+    });
+    await dispatchSettlementForDecision(kase, latestDecision);
+  }
+  return finalizedCount;
 }
 
 /**
@@ -45,7 +163,7 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
         caseId: kase.id,
         claimantRef: kase.claimantRef,
         respondentRef: kase.respondentRef,
-        attoAmount: toAttoAmount(Number(kase.amount)),
+        attoAmount: toAttoAmount(kase.amount.toString()),
       });
       contractAddress = deployed.contractAddress;
       await prisma.case.update({ where: { id: kase.id }, data: { contractAddress } });
@@ -90,7 +208,14 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
           claimantShareBps: decision.claimantShareBps,
           respondentShareBps: decision.respondentShareBps,
           reasonCodes: decision.reasonCodes,
-          evidenceUsed: [],
+          // The actual evidence type/contentHash pairs sent to the
+          // contract for this run — a real record of what was
+          // adjudicated on, not a placeholder.
+          evidenceUsed: sortedEvidence.map((e) => `${e.type}:${e.contentHash}`),
+          // The contract's own deterministic evidence_hash - see
+          // dispatchSettlementForDecision for why this, not a hash of
+          // the case ID, is what gets relayed as settlement proof.
+          proofHash: decision.evidenceHash ?? null,
           consensus: decision.consensus,
           appealWindowClosesAt: nextStatus === "APPEAL_WINDOW" ? new Date(Date.now() + APPEAL_WINDOW_MS) : null,
         },
@@ -109,46 +234,17 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       data: { caseId: kase.id, status: nextStatus },
     });
 
-    // Auto-dispatch: a decided case with a settlement target configured
-    // relays automatically, no separate manual/scripted trigger needed.
-    // Only for a real ACCEPTED verdict — nothing to settle on UNDETERMINED.
-    if (decision.consensus === "ACCEPTED" && kase.settlementChain && kase.settlementContract) {
-      const totalAmountAtto = toAttoAmount(Number(kase.amount));
-      const claimantBps = BigInt(decision.claimantShareBps ?? 0);
-      const respondentBps = BigInt(decision.respondentShareBps ?? 0);
-      try {
-        const { txHash, messageId } = await dispatchDecisionForCase({
-          caseId: kase.id,
-          outcome: decision.outcome,
-          claimantShareBps: decision.claimantShareBps ?? 0,
-          respondentShareBps: decision.respondentShareBps ?? 0,
-          claimantAmountAtto: (totalAmountAtto * claimantBps) / 10000n,
-          respondentAmountAtto: (totalAmountAtto * respondentBps) / 10000n,
-          settlementChain: kase.settlementChain,
-          settlementContract: kase.settlementContract,
-          settlementSolanaClaimant: kase.settlementSolanaClaimant,
-          settlementSolanaRespondent: kase.settlementSolanaRespondent,
-          settlementSolanaEscrowProgram: kase.settlementSolanaEscrowProgram,
-          settlementSolanaCaseId: kase.settlementSolanaCaseId,
-        });
-        await prisma.decision.update({
-          where: { id: createdDecision.id },
-          data: { relayTxHash: txHash, relayMessageId: messageId },
-        });
-        dispatchWebhookEvent({
-          organizationId: kase.organizationId,
-          event: "case.relay_dispatched",
-          data: { caseId: kase.id, txHash, messageId },
-        });
-      } catch (relayErr) {
-        // A failed relay dispatch doesn't undo the decision itself — the
-        // adjudication succeeded and is recorded regardless. Record the
-        // error on the decision so it's visible, but don't fail the job.
-        const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
-        // eslint-disable-next-line no-console
-        console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
-        await prisma.decision.update({ where: { id: createdDecision.id }, data: { relayError: relayMessage } });
-      }
+    // Settlement only ever dispatches once a case is truly FINALIZED —
+    // never from APPEAL_WINDOW, where the decision can still be
+    // contested. FINALIZED here only happens on the appeal-decided path
+    // (isAppeal=true): the contract's MAX_APPEALS=1 means an appeal
+    // decision itself can never be appealed again, so there's nothing
+    // left to wait for. The far more common path — a first decision that
+    // goes uncontested — reaches FINALIZED (and dispatches settlement)
+    // later, via finalizeExpiredAppealWindows's periodic sweep once the
+    // window genuinely closes.
+    if (nextStatus === "FINALIZED") {
+      await dispatchSettlementForDecision(kase, createdDecision);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

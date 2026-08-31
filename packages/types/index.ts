@@ -87,6 +87,16 @@ export interface Decision {
   respondentShareBps?: number;
   reasonCodes: ReasonCode[];
   evidenceUsed: string[];
+  /**
+   * sha256 of the exact evidence_json calldata the contract adjudicated
+   * against (see adjudicator.py's adjudicate()) — deterministic, computed
+   * on-chain, not the nondeterministic LLM output. This is the real proof
+   * a decision is bound to specific evidence: anyone holding the evidence
+   * can recompute this hash and check it against what's permanently
+   * recorded on-chain, instead of trusting Anchor's own database that it
+   * adjudicated on the evidence it claims to have.
+   */
+  evidenceHash?: string;
   consensus: "ACCEPTED" | "UNDETERMINED";
   confidence?: number;
   appealWindowClosesAt?: string;

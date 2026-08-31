@@ -6,7 +6,7 @@ import {
   type SealevelDecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
-import { keccak256, toHex, pad } from "viem";
+import { pad } from "viem";
 
 // GenLayer isn't a Hyperlane domain (checked - not supported by Hyperlane
 // or LayerZero), so Anchor's backend dispatches the DecisionRelay message
@@ -36,6 +36,8 @@ export interface DispatchDecisionParams {
   respondentAmountAtto: bigint;
   settlementChain: string;
   settlementContract: string;
+  /** The contract's own evidence_hash (sha256 hex, no 0x prefix) — see adjudicator.py's adjudicate(). Required; a decision with no real evidence_hash shouldn't be relayed with a fabricated stand-in. */
+  evidenceHash: string;
   /** Sealevel-only — see schema.prisma's settlementSolana* fields for why these can't reuse claimantRef/respondentRef/id. */
   settlementSolanaClaimant?: string | null;
   settlementSolanaRespondent?: string | null;
@@ -43,9 +45,13 @@ export interface DispatchDecisionParams {
   settlementSolanaCaseId?: string | null;
 }
 
-/** caseId is an arbitrary cuid string, doesn't fit bytes32 directly — hash it, same discipline DecisionRelay.sol's caller-side encoding already assumed. */
-function caseIdToBytes32(caseId: string): Hex {
-  return keccak256(toHex(caseId));
+/** Formats the contract's own hex-encoded evidence_hash (sha256, no 0x prefix) as a bytes32 for DecisionRelay.sol. */
+function evidenceHashToBytes32(evidenceHash: string): Hex {
+  const hex = evidenceHash.startsWith("0x") ? evidenceHash.slice(2) : evidenceHash;
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(`evidenceHash must be a 32-byte hex string (sha256 hex digest), got: ${evidenceHash}`);
+  }
+  return `0x${hex}` as Hex;
 }
 
 const SEALEVEL_CHAINS = new Set(["solanatestnet"]);
@@ -71,7 +77,7 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       claimantAmount: params.claimantAmountAtto,
       respondentAmount: params.respondentAmountAtto,
       escrowId: pad("0x0", { size: 32 }), // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
-      proofHash: caseIdToBytes32(params.caseId),
+      proofHash: evidenceHashToBytes32(params.evidenceHash),
     };
     return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
   }

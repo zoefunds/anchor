@@ -51,11 +51,24 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: "missing required evidence", missing }, { status: 400 });
   }
 
-  await prisma.case.update({ where: { id: kase.id }, data: { status: "SUBMITTED" } });
-  const updated = await prisma.case.update({
-    where: { id: kase.id },
+  // Atomic, conditional transition — only succeeds if the case is still
+  // exactly EVIDENCE_COLLECTION, so two concurrent adjudicate requests
+  // for the same case can't both pass the status check above and both
+  // enqueue a job (which would deploy two GenLayer contracts for one
+  // case, or race two adjudicate() calls against each other). The
+  // now-unused SUBMITTED status this used to pass through was never read
+  // anywhere else, so going straight to ADJUDICATING loses nothing.
+  const claimed = await prisma.case.updateMany({
+    where: { id: kase.id, status: "EVIDENCE_COLLECTION" },
     data: { status: "ADJUDICATING" },
   });
+  if (claimed.count === 0) {
+    return NextResponse.json(
+      { error: `cannot submit for adjudication in status ${kase.status}` },
+      { status: 409 }
+    );
+  }
+  const updated = await prisma.case.findUniqueOrThrow({ where: { id: kase.id } });
 
   await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: false });
 

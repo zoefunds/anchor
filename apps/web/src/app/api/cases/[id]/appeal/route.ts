@@ -43,7 +43,20 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const { reason } = await req.json().catch(() => ({ reason: undefined }));
 
-  await prisma.case.update({ where: { id: kase.id }, data: { status: "RE_ADJUDICATING" } });
+  // Atomic, conditional transition — only succeeds if the case is still
+  // exactly APPEAL_WINDOW, so two concurrent appeal requests for the same
+  // case can't both pass the checks above and both enqueue an appeal job
+  // (which would race two appeal()/adjudicate() calls against the same
+  // contract - the contract's own MAX_APPEALS check would reject the
+  // second eventually, but only after wasting a real GenLayer round trip
+  // and failing the job loudly instead of being rejected cleanly here).
+  const claimed = await prisma.case.updateMany({
+    where: { id: kase.id, status: "APPEAL_WINDOW" },
+    data: { status: "RE_ADJUDICATING" },
+  });
+  if (claimed.count === 0) {
+    return NextResponse.json({ error: `cannot appeal a case in status ${kase.status}` }, { status: 409 });
+  }
   await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: true });
 
   logAction({
