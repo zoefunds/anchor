@@ -38,8 +38,16 @@ function computeEvidenceManifestHash(evidenceUsed: string[]): string {
   return sha256Hex(JSON.stringify([...evidenceUsed].sort()));
 }
 
-/** sha256 of this decision's own canonical content — see Decision.decisionHash's schema comment. */
-function computeDecisionHash(params: {
+/**
+ * sha256 of this decision's own canonical content — see
+ * Decision.decisionHash's schema comment. Exported (not just used
+ * internally) so the public decision-verification endpoint can
+ * recompute it from the same preimage fields it publishes, proving to
+ * an external, non-trusting verifier that decisionHash wasn't just
+ * asserted — anyone can redo this exact computation themselves. See
+ * api/public/decisions/:id/verify.
+ */
+export function computeDecisionHash(params: {
   caseId: string;
   policyId: string;
   policyVersion: string;
