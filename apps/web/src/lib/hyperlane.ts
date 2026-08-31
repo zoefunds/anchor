@@ -1,12 +1,15 @@
 import {
   dispatchDecisionRelay,
   dispatchDecisionRelayToSealevel,
+  computeDecisionAttestationHash,
+  caseIdToBytes32,
   HYPERLANE_DOMAIN,
   type DecisionRelayPayload,
   type SealevelDecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
 import { pad, createPublicClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 const PROCESSED_DECISIONS_ABI = [
@@ -36,6 +39,22 @@ function getRelayConfig() {
     privateKey: (privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex,
     rpcUrl: process.env.HYPERLANE_RELAY_RPC_URL,
   };
+}
+
+// Deliberately a DIFFERENT key from HYPERLANE_RELAY_PRIVATE_KEY above —
+// see DecisionRelay.sol's own doc comment on `attestor` for why. The
+// dispatch key only needs to pay gas and call Mailbox.dispatch; the
+// attestor key is the actual thing standing behind "this decision is
+// real," so it should be held more carefully (e.g. real deployments
+// should consider generating this offline and never storing it in the
+// same secrets store as the day-to-day relay key) even though this MVP
+// currently keeps both as ordinary env vars.
+function getAttestorAccount() {
+  const privateKey = process.env.ATTESTOR_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new Error("ATTESTOR_PRIVATE_KEY is not set — see apps/web/.env.example");
+  }
+  return privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
 }
 
 export interface DispatchDecisionParams {
@@ -122,13 +141,27 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       throw new DecisionAlreadySettledError(params.decisionHash);
     }
 
+    const escrowId = pad("0x0", { size: 32 }); // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
+    const attestationHash = computeDecisionAttestationHash({
+      originDomain: HYPERLANE_DOMAIN.sepolia,
+      recipientAddress: params.settlementContract as Address,
+      caseIdBytes32: caseIdToBytes32(params.caseId),
+      outcome: params.outcome,
+      claimantAmount: params.claimantAmountAtto,
+      respondentAmount: params.respondentAmountAtto,
+      escrowId,
+      proofHash: decisionHashBytes32,
+    });
+    const attestationSignature = await getAttestorAccount().sign({ hash: attestationHash });
+
     const payload: DecisionRelayPayload = {
       caseId: params.caseId,
       outcome: params.outcome,
       claimantAmount: params.claimantAmountAtto,
       respondentAmount: params.respondentAmountAtto,
-      escrowId: pad("0x0", { size: 32 }), // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
+      escrowId,
       proofHash: decisionHashBytes32,
+      attestationSignature,
     };
     return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
   }

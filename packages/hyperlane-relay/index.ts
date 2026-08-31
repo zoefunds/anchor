@@ -11,7 +11,7 @@
 // Addresses/domain IDs below are from Hyperlane's own registry
 // (github.com/hyperlane-xyz/hyperlane-registry), not guessed.
 
-import { createPublicClient, createWalletClient, http, encodeAbiParameters, pad, type Address, type Hex } from "viem";
+import { createPublicClient, createWalletClient, http, encodeAbiParameters, keccak256, pad, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia, baseSepolia } from "viem/chains";
 
@@ -65,11 +65,71 @@ export interface DecisionRelayPayload {
   respondentAmount: bigint;
   escrowId: Hex; // bytes32
   proofHash: Hex; // bytes32
+  /**
+   * 65-byte ECDSA signature (r || s || v) from Anchor's ATTESTOR_PRIVATE_KEY
+   * over exactly the fields DecisionRelay.sol's handle() recomputes and
+   * checks via ecrecover — see computeDecisionAttestationHash below and
+   * that contract's own doc comment for why this exists (destination-side
+   * proof the decision content itself is genuine, independent of who
+   * dispatched the Hyperlane message).
+   */
+  attestationSignature: Hex;
+}
+
+/**
+ * The exact hash DecisionRelay.sol's handle() recomputes via
+ * `keccak256(abi.encode("ANCHOR_DECISION_ATTESTATION_V1", _origin,
+ * address(this), caseId, outcome, claimantAmount, respondentAmount,
+ * escrowId, proofHash))` — must stay byte-for-byte identical to that
+ * Solidity code (type order, the literal version-tag string, and
+ * `address(this)` meaning "the deployed DecisionRelay contract's own
+ * address" for `recipientAddress` here) or every real signature this
+ * produces will fail verification on-chain.
+ */
+export function computeDecisionAttestationHash(params: {
+  originDomain: number;
+  recipientAddress: Address;
+  caseIdBytes32: Hex;
+  outcome: string;
+  claimantAmount: bigint;
+  respondentAmount: bigint;
+  escrowId: Hex;
+  proofHash: Hex;
+}): Hex {
+  const encoded = encodeAbiParameters(
+    [
+      { type: "string" },
+      { type: "uint32" },
+      { type: "address" },
+      { type: "bytes32" },
+      { type: "string" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+    ],
+    [
+      "ANCHOR_DECISION_ATTESTATION_V1",
+      params.originDomain,
+      params.recipientAddress,
+      params.caseIdBytes32,
+      params.outcome,
+      params.claimantAmount,
+      params.respondentAmount,
+      params.escrowId,
+      params.proofHash,
+    ]
+  );
+  return keccak256(encoded);
+}
+
+export function caseIdToBytes32(caseId: string): Hex {
+  return pad(`0x${Buffer.from(caseId).toString("hex")}` as Hex, { size: 32 });
 }
 
 /** Matches DecisionRelay.sol's `handle()` abi.decode shape exactly. */
 export function encodeDecisionRelayBody(payload: DecisionRelayPayload): Hex {
-  const caseIdBytes32 = pad(`0x${Buffer.from(payload.caseId).toString("hex")}` as Hex, { size: 32 });
+  const caseIdBytes32 = caseIdToBytes32(payload.caseId);
   return encodeAbiParameters(
     [
       { type: "bytes32" },
@@ -78,8 +138,17 @@ export function encodeDecisionRelayBody(payload: DecisionRelayPayload): Hex {
       { type: "uint256" },
       { type: "bytes32" },
       { type: "bytes32" },
+      { type: "bytes" },
     ],
-    [caseIdBytes32, payload.outcome, payload.claimantAmount, payload.respondentAmount, payload.escrowId, payload.proofHash]
+    [
+      caseIdBytes32,
+      payload.outcome,
+      payload.claimantAmount,
+      payload.respondentAmount,
+      payload.escrowId,
+      payload.proofHash,
+      payload.attestationSignature,
+    ]
   );
 }
 

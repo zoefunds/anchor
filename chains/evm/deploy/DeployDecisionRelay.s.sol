@@ -15,18 +15,24 @@ import {TrustedRelayerIsm} from "../contracts/TrustedRelayerIsm.sol";
 //
 // Usage:
 //   forge script deploy/DeployDecisionRelay.s.sol --rpc-url sepolia --broadcast --private-key $PRIVATE_KEY
+// Requires ATTESTOR_ADDRESS env var — the public address matching
+// apps/web's ATTESTOR_PRIVATE_KEY (see DecisionRelay.sol's `attestor`
+// doc comment). Deliberately not derived from any key this script itself
+// holds — the deployer and the attestor are different trust roles.
 contract DeployDecisionRelay is Script {
     function run() external returns (address) {
         address mailbox = vm.envAddress("HYPERLANE_MAILBOX");
+        address attestorAddress = vm.envAddress("ATTESTOR_ADDRESS");
 
         vm.startBroadcast();
         TrustedRelayerIsm ism = new TrustedRelayerIsm();
-        DecisionRelay relay = new DecisionRelay(mailbox, address(ism));
+        DecisionRelay relay = new DecisionRelay(mailbox, address(ism), attestorAddress);
         vm.stopBroadcast();
 
         console.log("TrustedRelayerIsm deployed at:", address(ism));
         console.log("DecisionRelay deployed at:", address(relay));
         console.log("Mailbox used:", mailbox);
+        console.log("Attestor:", attestorAddress);
         return address(relay);
     }
 }

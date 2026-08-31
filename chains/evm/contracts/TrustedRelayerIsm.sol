@@ -26,6 +26,21 @@ pragma solidity ^0.8.24;
 // but it is NOT a substitute for real multisig/aggregation security.
 // Replace this before routing anything where an attacker forging a fake
 // DecisionRelay message would cause real financial loss.
+//
+// A compensating control now sits at the RECIPIENT, not this ISM:
+// DecisionRelay.sol's handle() independently verifies a real ECDSA
+// signature (via ecrecover) from a dedicated `attestor` key over the
+// decision's own content, and rejects anything that doesn't recover to
+// that address — see that contract's own doc comment. That closes the
+// specific gap of "the relay/dispatch pipeline is compromised, so any
+// settlement it wants gets accepted," since forging a settlement now
+// needs the attestor's private key specifically, not just control of
+// this ISM's trust path or the dispatch wallet. It does NOT make this
+// ISM itself real origin verification — a message can still only reach
+// Mailbox.process() at all via whatever this ISM's own (currently
+// none) checks allow, so a genuinely adversarial relayer/ISM operator
+// is still a real threat model this hasn't closed. Real multisig/
+// validator ISM verification remains the honest fix for that layer.
 interface IInterchainSecurityModule {
     function moduleType() external view returns (uint8);
     function verify(bytes calldata _metadata, bytes calldata _message) external returns (bool);

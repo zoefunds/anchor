@@ -60,24 +60,54 @@ contract DecisionRelayTest is Test {
     uint32 constant ORIGIN = 11155111;
     bytes32 constant TRUSTED_SENDER = bytes32(uint256(0xdead));
 
+    uint256 attestorKey;
+    address attestorAddress;
+    uint256 wrongKey;
+
     function setUp() public {
         mailbox = new FakeMailbox();
-        relay = new DecisionRelay(address(mailbox), address(0));
+        attestorKey = 0xA11CE;
+        attestorAddress = vm.addr(attestorKey);
+        wrongKey = 0xBAD;
+
+        relay = new DecisionRelay(address(mailbox), address(0), attestorAddress);
         target = new RecordingSettlementTarget();
 
         relay.setTrustedSender(ORIGIN, TRUSTED_SENDER);
         relay.setSettlementTarget(ORIGIN, address(target));
     }
 
-    function _body(bytes32 proofHash) internal pure returns (bytes memory) {
-        return abi.encode(
-            bytes32(uint256(1)), // caseId
-            "RELEASE_FULL", // outcome
-            uint256(1000), // claimantAmount
-            uint256(0), // respondentAmount
-            bytes32(0), // escrowId
-            proofHash
+    /// Reproduces DecisionRelay.sol's own attestationHash computation
+    /// exactly — must stay in lockstep with handle()'s.
+    function _attestationHash(
+        bytes32 caseId,
+        string memory outcome,
+        uint256 claimantAmount,
+        uint256 respondentAmount,
+        bytes32 escrowId,
+        bytes32 proofHash
+    ) internal view returns (bytes32) {
+        return keccak256(
+            abi.encode("ANCHOR_DECISION_ATTESTATION_V1", ORIGIN, address(relay), caseId, outcome, claimantAmount, respondentAmount, escrowId, proofHash)
         );
+    }
+
+    function _sign(uint256 key, bytes32 hash) internal pure returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, hash);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _body(bytes32 caseId, string memory outcome, uint256 claimantAmount, uint256 respondentAmount, bytes32 escrowId, bytes32 proofHash, uint256 signerKey)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 hash = _attestationHash(caseId, outcome, claimantAmount, respondentAmount, escrowId, proofHash);
+        return abi.encode(caseId, outcome, claimantAmount, respondentAmount, escrowId, proofHash, _sign(signerKey, hash));
+    }
+
+    function _body(bytes32 proofHash) internal view returns (bytes memory) {
+        return _body(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), proofHash, attestorKey);
     }
 
     function test_handle_settles_once() public {
@@ -127,14 +157,7 @@ contract DecisionRelayTest is Test {
     }
 
     function test_handle_forwards_exact_settlement_params() public {
-        bytes memory body = abi.encode(
-            bytes32(uint256(42)), // caseId
-            "PARTIAL",
-            uint256(700),
-            uint256(300),
-            bytes32(uint256(99)), // escrowId
-            bytes32(uint256(0xfeed))
-        );
+        bytes memory body = _body(bytes32(uint256(42)), "PARTIAL", uint256(700), uint256(300), bytes32(uint256(99)), bytes32(uint256(0xfeed)), attestorKey);
 
         vm.prank(address(mailbox));
         relay.handle(ORIGIN, TRUSTED_SENDER, body);
@@ -153,6 +176,64 @@ contract DecisionRelayTest is Test {
         // No assertion beyond "didn't revert" — there's nothing to
         // settle against, this just confirms DecisionRelay itself
         // doesn't require one.
+    }
+
+    /// The core new guarantee this session added: a message that passes
+    /// trustedSender (i.e. dispatched by the relay wallet the Mailbox
+    /// itself trusts) but carries a signature from a DIFFERENT key than
+    /// the configured attestor must still be rejected. This is what
+    /// actually decouples "who dispatched the Hyperlane message" from
+    /// "who vouches this decision is real" — compromising the dispatch
+    /// wallet/relay pipeline alone is not enough to forge a settlement.
+    function test_handle_rejects_wrong_attestor_signature() public {
+        bytes memory body = _body(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), bytes32(uint256(0xabc)), wrongKey);
+
+        vm.prank(address(mailbox));
+        vm.expectRevert("invalid attestation");
+        relay.handle(ORIGIN, TRUSTED_SENDER, body);
+
+        assertEq(target.settleCallCount(), 0);
+    }
+
+    /// A signature that's valid for a DIFFERENT decision's content
+    /// (correct attestor key, wrong signed fields) must not be
+    /// reusable — proves the signature is actually bound to this
+    /// specific decision's data, not just "signed by the right key."
+    function test_handle_rejects_signature_over_different_content() public {
+        // Sign attestation for caseId=1/RELEASE_FULL/1000/0, but submit a
+        // body claiming caseId=1/RELEASE_FULL/9999/0 (tampered amount).
+        bytes32 hash = _attestationHash(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), bytes32(uint256(0xabc)));
+        bytes memory sig = _sign(attestorKey, hash);
+        bytes memory tamperedBody = abi.encode(bytes32(uint256(1)), "RELEASE_FULL", uint256(9999), uint256(0), bytes32(0), bytes32(uint256(0xabc)), sig);
+
+        vm.prank(address(mailbox));
+        vm.expectRevert("invalid attestation");
+        relay.handle(ORIGIN, TRUSTED_SENDER, tamperedBody);
+    }
+
+    function test_handle_rejects_malformed_signature_length() public {
+        bytes memory body = abi.encode(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), bytes32(uint256(0xabc)), bytes("short"));
+
+        vm.prank(address(mailbox));
+        vm.expectRevert("invalid signature length");
+        relay.handle(ORIGIN, TRUSTED_SENDER, body);
+    }
+
+    function test_setAttestor_rotates_and_old_signatures_stop_working() public {
+        bytes memory body = _body(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), bytes32(uint256(0xabc)), attestorKey);
+
+        uint256 newAttestorKey = 0xC0FFEE;
+        relay.setAttestor(vm.addr(newAttestorKey));
+
+        vm.prank(address(mailbox));
+        vm.expectRevert("invalid attestation");
+        relay.handle(ORIGIN, TRUSTED_SENDER, body);
+
+        // A fresh signature from the NEW attestor key succeeds.
+        bytes memory newBody = _body(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), bytes32(uint256(0xabc)), newAttestorKey);
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, newBody);
+        assertEq(target.settleCallCount(), 1);
     }
 
     /// The atomicity guarantee behind the idempotency claim: if the

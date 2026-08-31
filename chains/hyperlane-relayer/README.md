@@ -15,6 +15,30 @@ removed entirely: `config.json`'s `solanadevnet` chain entry, the
 `apps/web`, and `chains/solana`'s deploy/dispatch scripts. If you need it
 back, `git log` has the removal commit and the working config it reverts.)
 
+**Update (this session): destination-side decision attestation added and
+proven live.** DecisionRelay.sol previously trusted whichever address
+dispatched the Hyperlane message (trustedSender) plus an opaque
+proofHash — real for idempotency, but not a proof the decision content
+was genuine, since a compromised dispatch wallet or relay pipeline could
+otherwise get any settlement accepted. `handle()` now also verifies a
+real ECDSA signature (ecrecover) from a dedicated `attestor` key over the
+decision's own content (see DecisionRelay.sol's own doc comment), signed
+by Anchor's backend with a NEW, separate `ATTESTOR_PRIVATE_KEY` — not the
+relay dispatch key. Redeployed: ISM `0x1f26b190819BFf558e9FeBdC319ea9D9F1Ad6AD6`,
+DecisionRelay `0x928abCf7383D605bc528123098374DaeF08F885a`, attestor
+`0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70`. A real decision dispatched
+through the app's own code (not a synthetic script) confirmed end to end:
+dispatch tx `0x56dc2369...`, message ID `0xefdbb06f...`, relayer
+`process()` tx `0xeaacf100...` (real, on-chain `ecrecover` check passed),
+`Mailbox.delivered == true`, `DecisionRelay.processedDecisions == true`.
+Foundry tests cover the rejection paths this can't easily be proven live
+without an adversarial relayer: wrong attestor key, tampered content
+under a valid signature, malformed signature length, and attestor
+rotation invalidating old signatures (`chains/evm/test/DecisionRelay.t.sol`).
+This does not replace a real multisig/validator ISM (TrustedRelayerIsm's
+own `verify()` still returns true unconditionally) — see that contract's
+updated doc comment for exactly what this does and doesn't close.
+
 **Status: both directions proven live end to end, fully automatic.**
 CaseOriginate (Solana -> Sepolia) and DecisionRelay (Sepolia -> Solana) both
 now auto-deliver with zero manual trigger. Getting DecisionRelay's
