@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
+import { resolveEvidenceUri } from "@/lib/storage";
+
+// A dashboard page load only needs the URL to survive long enough to
+// render (and for the viewer to click it) — not to sit around
+// indefinitely as a standing credential the way the old permanently-
+// public URLs did. See lib/storage.ts's resolveEvidenceUri.
+const DASHBOARD_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await resolveOrgFromRequest(req);
@@ -30,6 +37,10 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   return NextResponse.json({
     ...kase,
+    evidence: kase.evidence.map((e) => ({
+      ...e,
+      storageRef: resolveEvidenceUri(e.storageRef, DASHBOARD_EVIDENCE_URL_TTL_SECONDS),
+    })),
     // Back-compat single-decision field the dashboard already reads —
     // always the most recent of the case's decision history.
     decision: latestDecision,

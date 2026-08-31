@@ -1,12 +1,24 @@
 import { createHash } from "crypto";
 import { v2 as cloudinary } from "cloudinary";
 
-// Evidence files need to end up at a real public URL (not a signed/expiring
-// one), because the GenLayer contract fetches them itself via
-// gl.nondet.web.get() from inside the network — completely independent of
-// this backend, so a Next.js API route or presigned URL with an expiry
-// isn't an option. Cloudinary's uploaded asset URLs are public and stable
-// by default, which is what makes them usable here.
+// Evidence files are uploaded to Cloudinary's `authenticated` delivery
+// type (private by default, not just "unlisted") rather than the public
+// delivery type this used to use. Anything with a case ID and a content
+// hash could previously construct a permanently-valid public URL and
+// read the exhibit forever, with zero relationship to Anchor's own
+// party-token/org-auth model — a real gap flagged in review.
+//
+// Genuinely fetchable-only-with-a-signature evidence still has to work
+// for GenLayer: the contract fetches the URL itself via
+// gl.nondet.web.get() from inside GenVM, completely independent of this
+// backend, potentially long after upload (an appeal can re-adjudicate
+// days later). A short-lived signed URL that's already expired by then
+// would silently break re-adjudication. So instead of a fixed expiry
+// baked in at upload time, storageRef stores a stable internal
+// reference (see EVIDENCE_URI_PREFIX below), and every caller —
+// GenLayer dispatch, the org API, the public API — asks
+// getSignedEvidenceUrl() for a freshly signed URL at the moment it
+// actually needs one, each with its own appropriate TTL.
 
 let configured = false;
 function getClient(): typeof cloudinary {
@@ -40,10 +52,18 @@ const ALLOWED_MIME_TYPES = new Set([
 ]);
 
 export interface UploadedEvidenceFile {
-  url: string;
+  /** Stable internal reference stored in Evidence.storageRef — see EVIDENCE_URI_PREFIX. NOT a fetchable URL by itself. */
+  uri: string;
   contentHash: string;
   mimeType: string;
   sizeBytes: number;
+}
+
+/** Marks an Evidence.storageRef value as a Cloudinary reference (uri-encoded `type/publicId`) rather than raw text/URL — see resolveEvidenceUri below for the inverse. */
+const EVIDENCE_URI_PREFIX = "cloudinary-authenticated:";
+
+function cloudinaryResourceTypeFor(mimeType: string): "image" | "raw" {
+  return mimeType.startsWith("image/") ? "image" : "raw";
 }
 
 export async function uploadEvidenceFile(params: {
@@ -61,18 +81,21 @@ export async function uploadEvidenceFile(params: {
 
   const client = getClient();
   const contentHash = createHash("sha256").update(params.bytes).digest("hex");
+  const resourceType = cloudinaryResourceTypeFor(params.mimeType);
+  const publicId = `anchor-evidence/${params.caseId}/${contentHash}`;
 
-  // resource_type "auto" lets Cloudinary route images vs PDFs correctly;
-  // "raw" would serve a PDF as an octet-stream download link instead of a
-  // directly fetchable URL, which is what the contract actually needs.
-  const result = await new Promise<{ secure_url: string; bytes: number }>((resolve, reject) => {
+  await new Promise<{ bytes: number }>((resolve, reject) => {
     const uploadStream = client.uploader.upload_stream(
       {
-        folder: `anchor-evidence/${params.caseId}`,
-        resource_type: "auto",
+        resource_type: resourceType,
+        // "authenticated" — not the default "upload" delivery type — is
+        // what actually makes this private: Cloudinary rejects
+        // unsigned requests for authenticated assets outright, not just
+        // "doesn't advertise the URL."
+        type: "authenticated",
         // Content-addressed public id so an identical re-upload doesn't
         // pile up duplicate assets under Cloudinary's free/shared quota.
-        public_id: contentHash,
+        public_id: publicId,
         overwrite: false,
       },
       (error, uploadResult) => {
@@ -87,9 +110,38 @@ export async function uploadEvidenceFile(params: {
   });
 
   return {
-    url: result.secure_url,
+    uri: `${EVIDENCE_URI_PREFIX}${resourceType}:${publicId}`,
     contentHash,
     mimeType: params.mimeType,
     sizeBytes: params.bytes.length,
   };
+}
+
+/**
+ * Resolves an Evidence.storageRef into a freshly signed, time-limited
+ * Cloudinary URL — the only way to actually fetch an `authenticated`
+ * asset. Returns the input unchanged if it isn't a Cloudinary reference
+ * (plain text evidence, or a legacy row uploaded before this existed —
+ * see the migration note in the PR this shipped in).
+ *
+ * `expiresInSeconds` should be picked per caller: long for GenLayer
+ * dispatch (an appeal can re-fetch evidence days later), short for a
+ * dashboard/public-page view (that URL only needs to survive one page
+ * load, not sit around in browser history as a standing credential —
+ * exactly the property permanently-public URLs didn't have).
+ */
+export function resolveEvidenceUri(storageRef: string, expiresInSeconds: number): string {
+  if (!storageRef.startsWith(EVIDENCE_URI_PREFIX)) return storageRef;
+  const rest = storageRef.slice(EVIDENCE_URI_PREFIX.length);
+  const [resourceType, ...publicIdParts] = rest.split(":");
+  const publicId = publicIdParts.join(":");
+
+  const client = getClient();
+  return client.url(publicId, {
+    resource_type: resourceType,
+    type: "authenticated",
+    sign_url: true,
+    secure: true,
+    expires_at: Math.floor(Date.now() / 1000) + expiresInSeconds,
+  });
 }

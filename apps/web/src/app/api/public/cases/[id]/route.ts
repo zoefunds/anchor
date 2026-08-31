@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
+import { resolveEvidenceUri } from "@/lib/storage";
+
+const PUBLIC_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 
 // GET /api/public/cases/:id?token=... — for the counterparty in a
 // dispute who doesn't hold an org session or API key but still needs to
@@ -12,10 +15,11 @@ import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 //
 // Deliberately a narrow field set, not `prisma.case` wholesale: no
 // organizationId, no internal contractAddress-adjacent org context, and
-// evidence storageRef is still exposed (it's already a public URL or the
-// literal submitted text — that's the whole point of showing evidence to
-// the other party) but nothing about which org filed it or its API
-// keys/members/billing.
+// evidence storageRef is still exposed (it's either the literal
+// submitted text, or — for a file — a freshly signed, short-lived
+// Cloudinary URL resolved just for this response, not a standing
+// public link — see lib/storage.ts's resolveEvidenceUri) but nothing
+// about which org filed it or its API keys/members/billing.
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const token = req.nextUrl.searchParams.get("token") ?? undefined;
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
@@ -48,7 +52,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     evidence: kase.evidence.map((e) => ({
       id: e.id,
       type: e.type,
-      storageRef: e.storageRef,
+      storageRef: resolveEvidenceUri(e.storageRef, PUBLIC_EVIDENCE_URL_TTL_SECONDS),
       mimeType: e.mimeType,
       createdAt: e.createdAt,
     })),

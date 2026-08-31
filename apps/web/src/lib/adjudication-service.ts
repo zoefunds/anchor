@@ -6,8 +6,16 @@ import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { dispatchDecisionForCase, DecisionAlreadySettledError } from "@/lib/hyperlane";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
+import { resolveEvidenceUri } from "@/lib/storage";
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
+// GenVM fetches evidence URLs itself, independent of this backend, and
+// an appeal can trigger a fresh adjudication run — and therefore a
+// fresh fetch of the same evidence — long after the original upload.
+// Long enough to comfortably outlive any real case's evidence-
+// collection-through-appeal lifecycle; short enough that it isn't
+// effectively the old permanently-public URL again.
+const GENLAYER_EVIDENCE_URL_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 const MAX_RELAY_ATTEMPTS = 10;
 // How long a relayClaimedAt lease is honored before it's treated as an
 // abandoned attempt (crashed process, killed worker) rather than one
@@ -314,8 +322,12 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       // route + lib/pdf-extract.ts) sends that real content instead of
       // the bare URL — the contract has no PDF-parsing capability of its
       // own, so this is the only way its actual content reaches
-      // adjudication rather than just "this URL is reachable."
-      const value = e.extractedText ?? e.storageRef;
+      // adjudication rather than just "this URL is reachable." Image
+      // evidence (no extractedText) still needs a real fetchable URL —
+      // file evidence is stored as a private Cloudinary reference (see
+      // lib/storage.ts), so resolve it into a freshly signed URL right
+      // here rather than sending GenVM a reference it can't fetch.
+      const value = e.extractedText ?? resolveEvidenceUri(e.storageRef, GENLAYER_EVIDENCE_URL_TTL_SECONDS);
       // Redact common structured PII (emails, phone numbers, SSNs, card
       // numbers) out of free-text party statements before they reach
       // GenLayer — see lib/pii-redaction.ts for why this applies only to

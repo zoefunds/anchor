@@ -80,7 +80,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       caseId: kase.id,
       type,
       contentHash: uploaded.contentHash,
-      storageRef: uploaded.url,
+      storageRef: uploaded.uri,
       mimeType: uploaded.mimeType,
       fileSizeBytes: uploaded.sizeBytes,
       // Cryptographically derived from the token, not a form field — see

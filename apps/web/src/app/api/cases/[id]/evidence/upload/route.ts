@@ -88,7 +88,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       caseId: kase.id,
       type,
       contentHash: uploaded.contentHash,
-      storageRef: uploaded.url,
+      storageRef: uploaded.uri,
       mimeType: uploaded.mimeType,
       fileSizeBytes: uploaded.sizeBytes,
       submittedBy: submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null,
