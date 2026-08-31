@@ -1,5 +1,13 @@
 app = 'anc-hor-relayer'
-primary_region = 'iad'
+# Moved from iad after live-diagnosing a genuine, sustained iad
+# outbound-networking problem: constant TLS/connection-reset failures
+# reaching public Sepolia RPC providers (and even flyctl ssh hanging)
+# for 7+ hours, despite the exact same providers/calls working fine
+# and fast from an unrelated network the whole time. Moving to ord
+# (Chicago) fixed it immediately — zero connection failures, real
+# indexing progress — confirming it was Fly's iad egress, not the RPC
+# providers or this app's own config.
+primary_region = 'ord'
 
 [build]
   dockerfile = 'Dockerfile'
