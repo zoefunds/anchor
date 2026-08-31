@@ -5,6 +5,7 @@ import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/l
 import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { dispatchDecisionForCase } from "@/lib/hyperlane";
+import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 const MAX_RELAY_ATTEMPTS = 10;
@@ -268,7 +269,12 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       // the bare URL — the contract has no PDF-parsing capability of its
       // own, so this is the only way its actual content reaches
       // adjudication rather than just "this URL is reachable."
-      evidence[e.type] = e.extractedText ?? e.storageRef;
+      const value = e.extractedText ?? e.storageRef;
+      // Redact common structured PII (emails, phone numbers, SSNs, card
+      // numbers) out of free-text party statements before they reach
+      // GenLayer — see lib/pii-redaction.ts for why this applies only to
+      // statement fields, not the substantive evidence being judged.
+      evidence[e.type] = REDACTED_EVIDENCE_TYPES.has(e.type) ? redactPii(value) : value;
     }
 
     // Capture the real GenLayer transaction hash of the call that
