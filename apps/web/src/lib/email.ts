@@ -3,10 +3,25 @@
 
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 
-const SENDER = {
-  name: "Anchor",
-  email: process.env.EMAIL_FROM_ADDRESS || "noreply@anchor.dev",
-};
+// Brevo accepts (200/201, a real messageId) a send from ANY From address,
+// verified or not - it does not reject at the API layer. But an
+// unverified sender has no SPF/DKIM alignment, so recipient mail servers
+// silently drop or spam-box it; the API call looking successful is
+// exactly why this went unnoticed. EMAIL_FROM_ADDRESS must be a sender
+// actually verified in Brevo's dashboard (Settings -> Senders) - check
+// `GET https://api.brevo.com/v3/senders` against the real account before
+// assuming a new value here works. No safe placeholder default exists
+// (a fake domain "looks" configured but silently fails exactly like
+// this), so this throws loudly instead of quietly sending nothing.
+function getSenderEmail(): string {
+  const email = process.env.EMAIL_FROM_ADDRESS;
+  if (!email) {
+    throw new Error(
+      "EMAIL_FROM_ADDRESS is not set — must be a sender verified in Brevo (Settings -> Senders), see apps/web/.env.example"
+    );
+  }
+  return email;
+}
 
 interface SendEmailParams {
   to: string;
@@ -34,7 +49,7 @@ export async function sendEmail({ to, subject, htmlContent }: SendEmailParams): 
       "api-key": apiKey,
     },
     body: JSON.stringify({
-      sender: SENDER,
+      sender: { name: "Anchor", email: getSenderEmail() },
       to: [{ email: to }],
       subject,
       htmlContent,
