@@ -503,3 +503,13 @@ model PartySession {
 
   @@index([caseId])
 }
+
+// Single-row guard checked at job-worker startup (see lib/app-env.ts) —
+// binds "this database" to a specific APP_ENV value so a worker process
+// with a misconfigured/wrong APP_ENV can't silently consume jobs from a
+// shared Redis queue while reading/writing the wrong database. id is
+// always the literal string "singleton"; there is exactly one row.
+model DeploymentEnvironment {
+  id  String @id
+  env String
+}

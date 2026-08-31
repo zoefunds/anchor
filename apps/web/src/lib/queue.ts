@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { getAppEnv } from "@/lib/app-env";
 
 // Real message broker (BullMQ on Redis), replacing the earlier DB-polling
 // queue (a `Job` Prisma table a setInterval loop scanned every few
@@ -22,8 +23,22 @@ import IORedis from "ioredis";
 // see .env's REDIS_URL comment — because 6379 was already taken by other
 // local projects on the machine this was built on; use whatever's free
 // for yours.)
-
-export const ADJUDICATION_QUEUE_NAME = "adjudication";
+//
+// The queue name is namespaced by APP_ENV ("adjudication-production" vs
+// "adjudication-development" etc), not a bare "adjudication" — a real
+// incident: a local test worker's REDIS_URL was pointed at the same
+// production Redis as the real deployment (a manual `docker run -e
+// REDIS_URL=<production> ...` for testing a worker image before a Fly
+// deploy), and because the queue name wasn't environment-specific, it
+// consumed real production jobs, looked up their case IDs against its
+// own (different) database, and failed them. Namespacing by APP_ENV means
+// two environments sharing one Redis instance never share a queue key —
+// a production job simply isn't visible to a `adjudication-development`
+// worker, structurally, not just by convention. See lib/app-env.ts for
+// the second guard (a DB-side check) this pairs with.
+// BullMQ queue names can't contain ":" (used internally as its own key
+// delimiter) — hyphen-separated instead.
+export const ADJUDICATION_QUEUE_NAME = `adjudication-${getAppEnv()}`;
 
 let connection: IORedis | null = null;
 let queue: Queue | null = null;

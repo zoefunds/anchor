@@ -14,18 +14,33 @@
 // somewhere, so it stops also starting an in-process worker (not required
 // for correctness — BullMQ workers on the same queue don't double-process
 // a job — just avoids an idle Redis connection doing nothing there).
+//
+// Requires APP_ENV (development/staging/production) and fails fast if it
+// doesn't match the database this process's DATABASE_URL points at — see
+// lib/app-env.ts. A standalone worker process (e.g. a manually run
+// `docker run` container while testing an image before deploying it) is
+// exactly the shape of process that caused a real incident by pointing
+// at production Redis with a different database underneath it; this
+// exits immediately instead of silently consuming the wrong queue.
 
 import { startAdjudicationWorker } from "@/lib/worker";
 
-const worker = startAdjudicationWorker();
-// eslint-disable-next-line no-console
-console.log("worker: started, connected to Redis, waiting for jobs");
+startAdjudicationWorker()
+  .then((worker) => {
+    // eslint-disable-next-line no-console
+    console.log("worker: started, connected to Redis, waiting for jobs");
 
-function shutdown(signal: string): void {
-  // eslint-disable-next-line no-console
-  console.log(`worker: received ${signal}, finishing in-flight jobs then exiting`);
-  worker.close().then(() => process.exit(0));
-}
+    function shutdown(signal: string): void {
+      // eslint-disable-next-line no-console
+      console.log(`worker: received ${signal}, finishing in-flight jobs then exiting`);
+      worker.close().then(() => process.exit(0));
+    }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
+  })
+  .catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to start:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
