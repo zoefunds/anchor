@@ -23,3 +23,4 @@ test-ledger/
 
 # Hyperlane relayer runtime state (RocksDB) — not source, regenerates on restart
 chains/hyperlane-relayer/db/
+.vercel

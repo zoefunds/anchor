@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.next
+**/.next
+.git
+chains/solana/target
+chains/hyperlane-relayer/db
+**/*.so
+.env
+.env.*
+!.env.example

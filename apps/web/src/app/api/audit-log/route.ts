@@ -21,8 +21,8 @@ export async function GET(req: NextRequest) {
     prisma.apiKey.findMany({ where: { organizationId: member.organizationId }, select: { id: true, name: true } }),
   ]);
 
-  const memberById = new Map(memberEmails.map((m) => [m.id, m.email]));
-  const apiKeyById = new Map(apiKeyNames.map((k) => [k.id, k.name]));
+  const memberById = new Map(memberEmails.map((m: { id: string; email: string }) => [m.id, m.email]));
+  const apiKeyById = new Map(apiKeyNames.map((k: { id: string; name: string }) => [k.id, k.name]));
 
   return NextResponse.json(
     entries.map((e) => ({

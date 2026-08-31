@@ -1,0 +1,13 @@
+app = 'anc-hor-relayer'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[[mounts]]
+  source = 'anchor_relayer_data'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

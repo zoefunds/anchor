@@ -46,6 +46,13 @@ two chains via `config.json`:
 
 ## Running it
 
+**Production runs on Fly** (`anc-hor-relayer` — see `../../DEPLOYMENT.md`),
+not this machine. Don't run the local `docker run` below at the same time
+as the Fly deployment — both would sign transactions with the same
+private keys, and two relayers racing on the same EVM nonce is a real
+failure mode, not just wasted gas. Use the local container for
+development/debugging only, stopped when you're done.
+
 ```bash
 cd chains/hyperlane-relayer
 docker run -d --name anchor-hyperlane-relayer \

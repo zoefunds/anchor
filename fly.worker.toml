@@ -1,0 +1,9 @@
+app = 'anc-hor-worker'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'apps/web/Dockerfile.worker'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

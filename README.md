@@ -55,9 +55,11 @@ EXTERNAL (not in MVP)
 
 ## Status
 
-Scaffolding stage. See `docs/decision-schema.md` and `docs/policy-v1.md` for
-the current case/evidence/decision contracts, and `genlayer/contracts/` for
-the Intelligent Contract implementation.
+Live at **https://anc-hor.vercel.app** — see `DEPLOYMENT.md` for the full
+deployment layout (Vercel + Fly.io) and how to redeploy. See
+`docs/decision-schema.md` and `docs/policy-v1.md` for the current
+case/evidence/decision contracts, and `genlayer/contracts/` for the
+Intelligent Contract implementation.
 
 ## Local development
 

@@ -1,10 +1,24 @@
 import { randomBytes, scryptSync, timingSafeEqual, createHash, createHmac } from "crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import IORedis from "ioredis";
 import { prisma } from "@/lib/prisma";
 
 const SESSION_COOKIE = "anchor_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+let rateLimitRedis: IORedis | null = null;
+
+function getRateLimitRedis(): IORedis {
+  if (!rateLimitRedis) {
+    const url = process.env.REDIS_URL;
+    if (!url) {
+      throw new Error("REDIS_URL is not set — see apps/web/.env.example");
+    }
+    rateLimitRedis = new IORedis(url, { maxRetriesPerRequest: null });
+  }
+  return rateLimitRedis;
+}
 
 function getSessionSecret(): string {
   const secret = process.env.SESSION_SECRET;
@@ -134,31 +148,29 @@ export interface AuthedApiKey {
 }
 
 // --- API key rate limiting ---
-// Fixed-window counter per key, held in process memory. This is
-// intentionally not a DB table: it resets on deploy/restart and doesn't
-// survive multiple instances, which is fine for the current single-process
-// `next start` deployment (see the adjudicate route's caveat about the
-// same limitation for its job runner) — move to Redis before scaling out
-// horizontally.
+// Redis-backed fixed-window counter per key (see lib/genlayer-rate-limit.ts
+// for the same pattern/tradeoffs) — this used to be a plain in-memory Map,
+// which only ever worked because everything ran in one `next start`
+// process. That assumption breaks entirely on Vercel: every request can
+// land on a different serverless invocation with its own fresh memory, so
+// an in-memory counter there wouldn't actually limit anything.
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 120;
-const rateLimitWindows = new Map<string, { count: number; windowStart: number }>();
 
-export function checkApiKeyRateLimit(apiKeyId: string): { allowed: boolean; retryAfterSeconds?: number } {
-  const now = Date.now();
-  const entry = rateLimitWindows.get(apiKeyId);
+export async function checkApiKeyRateLimit(apiKeyId: string): Promise<{ allowed: boolean; retryAfterSeconds?: number }> {
+  const redis = getRateLimitRedis();
+  const bucket = Math.floor(Date.now() / RATE_LIMIT_WINDOW_MS);
+  const key = `apikey_rl:${apiKeyId}:${bucket}`;
 
-  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    rateLimitWindows.set(apiKeyId, { count: 1, windowStart: now });
-    return { allowed: true };
+  const count = await redis.incr(key);
+  if (count === 1) {
+    await redis.expire(key, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000) + 5);
   }
 
-  if (entry.count >= RATE_LIMIT_MAX_REQUESTS) {
-    const retryAfterSeconds = Math.ceil((entry.windowStart + RATE_LIMIT_WINDOW_MS - now) / 1000);
-    return { allowed: false, retryAfterSeconds };
+  if (count > RATE_LIMIT_MAX_REQUESTS) {
+    const windowEnd = (bucket + 1) * RATE_LIMIT_WINDOW_MS;
+    return { allowed: false, retryAfterSeconds: Math.ceil((windowEnd - Date.now()) / 1000) };
   }
-
-  entry.count += 1;
   return { allowed: true };
 }
 
@@ -195,7 +207,7 @@ export type OrgAuthResult =
 export async function resolveOrgFromRequest(req: Request): Promise<OrgAuthResult> {
   const apiKeyAuth = await getApiKeyAuth(req.headers.get("authorization"));
   if (apiKeyAuth) {
-    const rateLimit = checkApiKeyRateLimit(apiKeyAuth.apiKeyId);
+    const rateLimit = await checkApiKeyRateLimit(apiKeyAuth.apiKeyId);
     if (!rateLimit.allowed) {
       return { error: "rate_limited", retryAfterSeconds: rateLimit.retryAfterSeconds! };
     }

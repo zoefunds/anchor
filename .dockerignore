@@ -1,0 +1,15 @@
+# Never bake secrets or local state into any image built from this repo
+# root — apps/web/Dockerfile.worker (and any future Dockerfile using this
+# as its build context) relies on this.
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+node_modules
+**/node_modules
+.next
+**/.next
+.git
+**/target
+chains/hyperlane-relayer/db
