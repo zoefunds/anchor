@@ -17,9 +17,9 @@ import { enqueueJob, ensureJobPoller } from "@/lib/jobs";
 //
 // The actual run is a DB-backed Job row (src/lib/jobs.ts), not a bare
 // fire-and-forget promise — its state survives this process restarting.
-// It's still processed by an in-process poller in this same server,
-// though, not a separate worker; see the Job model's schema comment for
-// what that does and doesn't buy on serverless.
+// ensureJobPoller() below starts this server's in-process poller (a no-op
+// once a standalone worker is running — see src/worker.ts and the Job
+// model's schema comment); either can pick this job up.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   ensureJobPoller();
 

@@ -8,12 +8,17 @@ import { runAdjudicationJob } from "@/lib/adjudication-service";
 // requeue, instead of the case being silently stuck in ADJUDICATING
 // forever with no record anything was ever supposed to happen.
 //
-// This is still one in-process poller, not a separate worker fleet or a
-// real broker (BullMQ/SQS/etc) - see the Job model's schema comment for
-// the honest scope of what durability this buys vs. what horizontal
-// scaling would still need.
+// Can run two ways, and both are safe to run at once (see claimNextJob's
+// optimistic locking): the in-process poller started by ensureJobPoller()
+// below, good enough for a single `next start` process; or the standalone
+// worker at src/worker.ts (`npm run worker`), which is the same runOnce()
+// loop in its own process - for a serverless web deployment (no
+// long-lived process to host setInterval) or for scaling job throughput
+// independently of web request throughput. Set JOB_WORKER_EXTERNAL=1 to
+// stop the web process from also polling once a dedicated worker is
+// running it, so both don't burn a query every tick for nothing.
 
-const POLL_INTERVAL_MS = 3000;
+export const POLL_INTERVAL_MS = 3000;
 const MAX_ATTEMPTS = 3;
 const STUCK_RUNNING_MS = 5 * 60 * 1000; // a RUNNING row older than this is presumed crashed, not slow
 
@@ -60,7 +65,8 @@ async function claimNextJob() {
   return prisma.job.findUnique({ where: { id: candidate.id } });
 }
 
-async function runOnce(): Promise<void> {
+/** Claims and runs at most one pending job. Exported so the standalone worker (src/worker.ts) can drive the exact same logic in its own process, not a reimplementation. */
+export async function runOnce(): Promise<void> {
   const job = await claimNextJob();
   if (!job) return;
 
@@ -88,9 +94,14 @@ async function runOnce(): Promise<void> {
 
 let pollerStarted = false;
 
-/** Idempotent - call on every request that needs the queue running; only actually starts the interval once per process. */
+/**
+ * Idempotent - call on every request that needs the queue running; only
+ * actually starts the interval once per process. No-ops when
+ * JOB_WORKER_EXTERNAL is set, since that means a standalone worker process
+ * (src/worker.ts) is the one polling instead.
+ */
 export function ensureJobPoller(): void {
-  if (pollerStarted) return;
+  if (pollerStarted || process.env.JOB_WORKER_EXTERNAL) return;
   pollerStarted = true;
   setInterval(() => {
     runOnce().catch((err) => {

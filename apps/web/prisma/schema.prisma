@@ -155,11 +155,16 @@ model AuditLog {
 // runs). Replaces the earlier fire-and-forget in-process promise: job
 // state now survives a process restart, and a crashed/killed process
 // leaves the row at RUNNING for a sweep to requeue rather than losing the
-// case silently. Still processed by this same Next.js process (see
-// src/lib/jobs.ts) - the durability gap that's closed is "state survives
-// a restart," not "runs on a separate worker fleet." True horizontal
-// scaling still needs an external worker process polling this table (or
-// a real queue like BullMQ/SQS) instead of the in-process poller.
+// case silently. Can be processed either by the in-process poller in the
+// Next.js server (src/lib/jobs.ts's ensureJobPoller) or by the standalone
+// worker at src/worker.ts (`npm run worker`) - both drive the same
+// runOnce() loop and are safe to run simultaneously (optimistic locking
+// in claimNextJob), so scaling job throughput independently of the web
+// deployment, or running on serverless (no long-lived process for the
+// in-process poller at all), just means running more of the standalone
+// worker. A real broker (BullMQ/SQS/etc) would still buy more - retry
+// backoff strategies, dead-letter queues, cross-region delivery - but
+// "does it run outside the web process" is answered.
 model Job {
   id        String   @id @default(cuid())
   type      String
