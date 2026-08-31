@@ -104,12 +104,15 @@ this document is still accurate for that instance.
    JSON, once per required type per the chosen policy (see Evidence
    Schema below for each policy's required types). For images/PDFs, use
    `POST /api/cases/:id/evidence/upload` (multipart) instead — files are
-   stored on Cloudinary and, for images, the GenLayer contract fetches
-   and genuinely *sees* the image (real multimodal input to the LLM, not
-   a URL string dropped into the prompt); PDFs are only confirmed
-   reachable, their content is never machine-read. The endpoint rejects
-   submission for adjudication until all required types for the policy
-   are present.
+   stored privately (Cloudinary `authenticated` delivery, not a public
+   URL; resolved to a freshly signed URL on demand for whoever actually
+   needs to fetch it — see `lib/storage.ts`). For images, the GenLayer
+   contract fetches and genuinely *sees* the image (real multimodal
+   input to the LLM, not a URL string dropped into the prompt); for
+   PDFs, text is extracted at upload time and sent as real evidence
+   content (best-effort — an encrypted PDF or a scan with no text layer
+   falls back to reachability-only). The endpoint rejects submission for
+   adjudication until all required types for the policy are present.
 4. **Submit for adjudication** — `POST /api/cases/:id/adjudicate`. Returns
    `202` immediately with the case in `ADJUDICATING` status — this call
    does not block on the ~1-2 minute GenLayer consensus round. Poll step 5,
@@ -178,13 +181,27 @@ auto-dispatches a `DecisionRelay` message the moment a case with a
 `settlementChain`/`settlementContract` configured reaches an ACCEPTED
 decision — no manual trigger needed, proven with a real dispatch tx and
 Hyperlane message ID recorded on the decision. `relayMechanism: "hyperlane"`
-is safe to point real deals at for the dispatch half. One caveat: only
-`settlementChain: "sepolia"` is wired as a destination today (see
-`packages/hyperlane-relay`); a real settlement chain (e.g. an actual
-Solana escrow) needs that destination added, plus working out ISM/
-validator-checkpoint reachability for that specific route — see
-`docs/hyperlane-integration.md`'s "Known gap" note before assuming
-delivery, not just dispatch, is guaranteed.
+is safe to point real deals at for the dispatch half. Both
+`settlementChain: "sepolia"` and `"solanatestnet"` are wired as
+destinations (see `packages/hyperlane-relay`), each with a
+destination-side idempotency guard (a duplicate dispatch for the same
+decision is rejected on-chain, not just deduplicated app-side) — but
+delivery, not just dispatch, still depends on the self-hosted relayer
+(`chains/hyperlane-relayer`) actually reaching that specific message;
+see its README for real, current caveats (RPC reliability, recipient
+whitelisting) before assuming delivery is guaranteed just because
+dispatch succeeded.
+
+**Verifying what actually settled, independent of Anchor's own claim**:
+`GET /api/public/decisions/:id/verify` (no auth) publishes every field
+that feeds the decision's `decisionHash` and recomputes it fresh from
+those exact fields — cross-check the result against whatever the
+destination contract's own `processedDecisions(bytes32)` mapping
+recorded as settled. Anchor's current trust model is still "GenLayer
+decides, Anchor's backend chooses the relay payload, a trusted relay
+settles it" — the destination contract does not itself verify a
+GenLayer consensus proof — so this is a way to *detect* a mismatch
+after the fact, not a cryptographic guarantee that one can't happen.
 
 ## Evidence Schema
 
@@ -279,6 +296,43 @@ yet. When a deal doesn't fit the existing policy:
   and the most recent submission per type is what the re-run sees). After
   the appeal resolves, the case is `FINALIZED` — genuinely final, no
   further appeal possible for that case.
+
+## Party-Authenticated Access (No Org Account)
+
+`POST /api/cases` returns `claimantToken`/`respondentToken` (and
+optionally `claimantSigningPrivateKey`/`respondentSigningPrivateKey`)
+**exactly once** in the create-case response — hand the right one to
+the actual claimant/respondent agent so it can act independently,
+without ever needing an org session or API key:
+
+- `GET /api/public/cases/:id?token=...` — read the case, evidence, and
+  decisions.
+- `POST /api/public/cases/:id/evidence` — submit evidence.
+  `{"token": "...", "type": "...", "content": "..."}`. `submittedBy` is
+  derived from the token/session, never a caller-supplied field.
+- `POST /api/public/cases/:id/evidence/upload` — same as above, but
+  multipart for images/PDFs.
+- `POST /api/public/cases/:id/appeal` — trigger an appeal.
+  `{"token": "...", "reason": "..."}`.
+- `POST /api/public/cases/:id/session` — exchange a raw token for a
+  short-lived (2h) HttpOnly session cookie, so a browser-based caller
+  only needs to present the raw token once instead of on every
+  request. Not useful for a server-to-server agent caller — just pass
+  `token` directly on every call instead.
+
+**Optional stronger attribution**: if a raw signing private key was
+issued, an evidence submission can include a `signature` — base64
+Ed25519 over `JSON.stringify({caseId, type, content})` — verified
+against the party's stored public key. A verified signature is
+recorded (`signatureVerified: true`) as materially stronger proof of
+who actually submitted it than bearer-token possession alone. Purely
+additive: omitting `signature` still works, the token/session alone is
+sufficient.
+
+Tokens expire (30 days) and can be reissued by the org via
+`POST /api/cases/:id/party-tokens` — `{"role": "claimant"}` (or
+`"respondent"`, or omit for both) invalidates the old token/session for
+that role and issues a fresh one.
 
 ## References
 

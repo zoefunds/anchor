@@ -36,6 +36,19 @@ decoded the message and emitted the expected event — this proves the
 recipient/decode/business-logic half genuinely works, independent of
 whichever relayer submits the delivery transaction.
 
+**Update (this session):** DecisionRelay.sol was redeployed to
+`0xCDfF36cDA76e08BAd2EA0d5a3fDaDf3761Ed5041` with a destination-side
+idempotency guard (`processedDecisions[proofHash]`, see
+chains/evm/contracts/DecisionRelay.sol), and decision-relay (Solana)
+was upgraded with the matching Solana-side guard and a real
+`RELAYER_PAYER`. A live end-to-end test against the new contract
+(same-chain Sepolia→Sepolia this time, not the EVM↔Solana routes in
+the table above) is in progress as of this writing — dispatch
+confirmed on-chain, delivery not yet confirmed. The recipient
+whitelist and hex-key-parsing fixes above came directly out of
+debugging that live test. Update this note once it's confirmed
+delivered or if a new blocker turns up.
+
 ## What this is
 
 A single `hyperlane-agent` relayer container (`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.3.0`
@@ -223,6 +236,38 @@ swapped for a more reliable set earlier in this investigation (dropped
 dead via direct `eth_blockNumber` curl tests; added
 `sepolia.gateway.tenderly.co` and `sepolia.rpc.thirdweb.com`, both confirmed
 responsive) — unrelated to the three fixes above, but worth keeping.
+
+## Recipient whitelist
+
+`entrypoint.sh` passes `--whitelist`, restricting the relayer to
+messages addressed to the two contracts this deployment actually
+cares about (DecisionRelay on Sepolia, decision-relay on Solana
+Testnet). Without it, the relayer's sequence-aware sync walks and
+retries EVERY historical dispatched message on these chains forever —
+including old ones sent to a recipient whose default ISM is a 2-of-2
+aggregation multisig this self-hosted relayer can only ever produce 1
+of 2 checkpoints for (permanently undeliverable, not just slow).
+Observed live: without the whitelist, the relayer spent all its time
+on "Aggregation threshold not met (2)" retries for old, unrelated
+message IDs and never got a turn at a genuinely new, deliverable one.
+Add new recipient/domain pairs here if this relayer ever needs to
+service another contract.
+
+## Known key-format gotcha
+
+`--defaultSigner.key` / `--chains.*.signer.key` / `--chains.*.identity.key`
+silently break for ANY hex value with no `0x` prefix that happens to
+contain a literal `0` character — the key parser tries base58 before
+hex, and base58 deliberately excludes `0`/`O`/`I`/`l` to avoid visual
+ambiguity, so a bare hex string with an early `0` fails with a
+"provided string contained invalid character '0'" error that reads
+like the key itself is malformed. It isn't — it's a hex/base58 parsing
+ambiguity in the relayer's own key parser. `entrypoint.sh`'s `hexify()`
+helper prefixes every hex-key value with `0x` before passing it,
+regardless of how the underlying Fly secret is stored, so this can't
+recur here — but it's worth knowing if you're ever passing a raw hex
+key to this binary some other way (a one-off `docker run`, a different
+deployment).
 
 ## Chain configs
 
