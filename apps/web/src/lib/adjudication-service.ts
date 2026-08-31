@@ -323,6 +323,31 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       evidence[e.type] = REDACTED_EVIDENCE_TYPES.has(e.type) ? redactPii(value) : value;
     }
 
+    // Hard stop before ever calling GenLayer with a broken evidence map.
+    // Observed live: under concurrent adjudication jobs, this map has come
+    // back empty despite kase.evidence.length being correctly non-zero
+    // moments earlier in the same function call — root cause not yet
+    // isolated (ruled out: shared module state, Prisma query scoping,
+    // BullMQ job-id collisions, a stale deploy - the running code was
+    // byte-identical to source). Whatever the cause, GenLayer still
+    // returned a confident-looking ACCEPTED verdict for zero evidence,
+    // which is far worse than a loud failure: a decision "GenLayer
+    // decided" with nothing backing it, persisted and eligible to
+    // finalize and settle real funds. This check makes that impossible
+    // regardless of why the map ended up wrong - required evidence
+    // missing at this point throws, which the caller's catch block turns
+    // into an UNDETERMINED case and a job-queue retry, not a corrupted
+    // ACCEPTED one.
+    const requiredTypes = requiredEvidenceTypesFor(kase.policyId);
+    const missingTypes = requiredTypes.filter((t) => !evidence[t]);
+    if (missingTypes.length > 0) {
+      throw new Error(
+        `refusing to adjudicate case ${kase.id} with missing evidence [${missingTypes.join(", ")}] — ` +
+          `kase.evidence had ${kase.evidence.length} row(s), evidence map had ${Object.keys(evidence).length} ` +
+          `key(s); this should never happen if evidence validation upstream passed`
+      );
+    }
+
     // Capture the real GenLayer transaction hash of the call that
     // produced this decision — previously discarded, leaving no way to
     // independently verify a decision actually happened on GenLayer
