@@ -35,7 +35,13 @@ export default function CasesPage() {
   const [claimantRef, setClaimantRef] = useState("party_A");
   const [respondentRef, setRespondentRef] = useState("party_B");
   const [creating, setCreating] = useState(false);
-  const [newPartyTokens, setNewPartyTokens] = useState<{ caseId: string; claimantToken: string; respondentToken: string } | null>(null);
+  const [newPartyTokens, setNewPartyTokens] = useState<{
+    caseId: string;
+    claimantToken: string;
+    respondentToken: string;
+    claimantSigningPrivateKey: string;
+    respondentSigningPrivateKey: string;
+  } | null>(null);
 
   // Settlement target — optional. Leaving this at "none" is the common
   // case and behaves exactly as before: the decision is recorded and
@@ -116,7 +122,13 @@ export default function CasesPage() {
       // to the actual claimant/respondent so they can submit evidence or
       // appeal independently, via /api/public/cases/:id/* — see
       // lib/party-auth.ts.
-      setNewPartyTokens({ caseId: body.id, claimantToken: body.claimantToken, respondentToken: body.respondentToken });
+      setNewPartyTokens({
+        caseId: body.id,
+        claimantToken: body.claimantToken,
+        respondentToken: body.respondentToken,
+        claimantSigningPrivateKey: body.claimantSigningPrivateKey,
+        respondentSigningPrivateKey: body.respondentSigningPrivateKey,
+      });
       setSettlementChain("");
       setSettlementContract("");
       setSettlementSolanaClaimant("");
@@ -162,6 +174,26 @@ export default function CasesPage() {
               <span className="field-label">Respondent link</span>
               <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
                 {typeof window !== "undefined" ? window.location.origin : ""}/public/cases/{newPartyTokens.caseId}?token={newPartyTokens.respondentToken}
+              </code>
+            </div>
+          </div>
+
+          <p className="mt-6 mb-2 text-sm text-muted dark:text-muted-dark">
+            Optional — for stronger, cryptographic attribution (a link alone can be forwarded; a signing
+            key can&apos;t be used to forge a submission after the fact once revoked). Give these to a
+            party only if their tooling can sign with an Ed25519 private key.
+          </p>
+          <div className="flex flex-col gap-3">
+            <div>
+              <span className="field-label">Claimant signing key (Ed25519, base64)</span>
+              <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
+                {newPartyTokens.claimantSigningPrivateKey}
+              </code>
+            </div>
+            <div>
+              <span className="field-label">Respondent signing key (Ed25519, base64)</span>
+              <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
+                {newPartyTokens.respondentSigningPrivateKey}
               </code>
             </div>
           </div>

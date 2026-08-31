@@ -263,6 +263,19 @@ model Case {
   claimantTokenExpiresAt   DateTime?
   respondentTokenExpiresAt DateTime?
 
+  // Optional upgrade path on top of the bearer token above — see
+  // lib/party-signing.ts. A hex-encoded Ed25519 public key; the
+  // matching raw private key is generated at the same time as the
+  // token, shown to the party exactly once, and never stored. A
+  // submission signed with it and verified against this key is
+  // materially stronger evidence of attribution than bearer-token
+  // possession alone (see Evidence.signatureVerified) - a leaked
+  // bearer token doesn't let anyone forge a new signed submission.
+  // Optional: a party who never uses their signing key can still
+  // submit evidence/appeals with the bearer token alone.
+  claimantPublicKey   String?
+  respondentPublicKey String?
+
   partySessions PartySession[]
 
   // Optional cross-chain settlement target. When settlementChain +
@@ -350,11 +363,21 @@ model Evidence {
   // policy rather than being one fixed global list.
   type         String
   contentHash  String
-  // For text evidence: the content itself. For file evidence: the public
-  // R2 URL — the GenLayer contract fetches it directly via
-  // gl.nondet.web.get(), so this must be a real public URL, not signed
-  // and never expiring.
+  // For text evidence: the content itself. For file evidence: an
+  // internal Cloudinary reference (not a fetchable URL by itself) - see
+  // lib/storage.ts's resolveEvidenceUri, which resolves it into a
+  // freshly signed URL on demand for whoever actually needs to fetch it
+  // (GenLayer at adjudication time, the org/public dashboard at read
+  // time), each with its own appropriate expiry.
   storageRef   String
+  // True only if this row was submitted with a valid Ed25519 signature
+  // (see lib/party-signing.ts) verified against the submitting party's
+  // stored public key - materially stronger attribution than merely
+  // having presented a valid bearer token/session, which stays the
+  // default and still-sufficient path. False for every org-authenticated
+  // submission and every party submission that didn't include a
+  // signature.
+  signatureVerified Boolean @default(false)
   // Null for inline text evidence. Set for uploaded files — lets the
   // contract (and the dashboard) tell an image it can visually interpret
   // apart from a PDF/other file it can only note the existence of.

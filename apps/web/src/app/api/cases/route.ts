@@ -5,6 +5,7 @@ import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
 import { caseVisibilityWhere } from "@/lib/case-access";
 import { generatePartyToken } from "@/lib/party-auth";
+import { generatePartySigningKeypair } from "@/lib/party-signing";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -93,6 +94,12 @@ export async function POST(req: NextRequest) {
   // the actual claimant/respondent. Only the hashes are persisted.
   const claimantToken = generatePartyToken();
   const respondentToken = generatePartyToken();
+  // Optional signing keypair alongside the token (see
+  // lib/party-signing.ts) — only the public key is persisted, the raw
+  // private key is shown once below same as the tokens. A party that
+  // never uses it can still act on the bearer token alone.
+  const claimantSigningKey = generatePartySigningKeypair();
+  const respondentSigningKey = generatePartySigningKeypair();
 
   const kase = await prisma.case.create({
     data: {
@@ -114,6 +121,8 @@ export async function POST(req: NextRequest) {
       respondentTokenHash: respondentToken.hash,
       claimantTokenExpiresAt: claimantToken.expiresAt,
       respondentTokenExpiresAt: respondentToken.expiresAt,
+      claimantPublicKey: claimantSigningKey.publicKeyHex,
+      respondentPublicKey: respondentSigningKey.publicKeyHex,
     },
   });
 
@@ -139,6 +148,10 @@ export async function POST(req: NextRequest) {
       // had).
       claimantToken: claimantToken.raw,
       respondentToken: respondentToken.raw,
+      // Optional — see lib/party-signing.ts. Never stored; this is the
+      // only time it's ever shown.
+      claimantSigningPrivateKey: claimantSigningKey.privateKeyBase64,
+      respondentSigningPrivateKey: respondentSigningKey.privateKeyBase64,
     },
     { status: 201 }
   );
