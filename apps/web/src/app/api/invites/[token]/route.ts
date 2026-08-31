@@ -64,7 +64,7 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
   });
 
   await createSession(member.id);
-  logAction({
+  await logAction({
     organizationId: invite.organizationId,
     memberId: member.id,
     action: "invite.accepted",

@@ -48,7 +48,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const updated = await prisma.case.update({ where: { id: kase.id }, data: { restricted } });
 
-  logAction({
+  await logAction({
     organizationId: member.organizationId,
     memberId: member.memberId,
     action: restricted ? "case.restricted" : "case.unrestricted",

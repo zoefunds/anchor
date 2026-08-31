@@ -147,6 +147,19 @@ model AuditLog {
   targetId       String?
   metadata       Json?
   createdAt      DateTime     @default(now())
+  // Tamper-evidence: a per-organization hash chain (see lib/audit.ts).
+  // prevHash is the previous row's own hash (a fixed genesis value for
+  // the first row in each organization's chain); hash is sha256 of this
+  // row's own fields concatenated with prevHash. Editing or deleting a
+  // row, or reordering rows, breaks the chain from that point forward in
+  // a way verifyAuditChain() can detect — this doesn't prevent someone
+  // with direct DB write access from rewriting the whole chain (that
+  // needs an external anchor, e.g. periodically publishing the latest
+  // hash somewhere outside this database), but it does mean an
+  // in-place edit of one historical row is detectable, which a bare
+  // mutable table never was.
+  prevHash       String
+  hash           String       @unique
 
   @@index([organizationId])
   @@index([createdAt])

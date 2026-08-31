@@ -26,7 +26,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     prisma.member.delete({ where: { id: target.id } }),
   ]);
 
-  logAction({
+  await logAction({
     organizationId: member.organizationId,
     memberId: member.memberId,
     action: "member.removed",

@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  logAction({
+  await logAction({
     organizationId: member.organizationId,
     memberId: member.memberId,
     action: "webhook.created",

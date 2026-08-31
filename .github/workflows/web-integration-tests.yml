@@ -1,0 +1,57 @@
+name: web integration tests
+
+# Runs the apps/web integration suite against a fresh, ephemeral Postgres
+# and Redis for every run — never a shared/local/production-like database.
+# Each CI run gets its own throwaway container, migrated from scratch by
+# `prisma migrate deploy`, and discarded when the job ends.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: anchor
+          POSTGRES_PASSWORD: anchor
+          POSTGRES_DB: anchor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anchor"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql://anchor:anchor@localhost:5432/anchor
+      REDIS_URL: redis://localhost:6379
+      SESSION_SECRET: ci-only-session-secret-not-a-real-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply migrations to the ephemeral CI database
+        run: npx prisma migrate deploy --schema apps/web/prisma/schema.prisma
+
+      - name: Run integration tests
+        run: npm --workspace @anchor/web run test:integration

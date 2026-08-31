@@ -28,7 +28,7 @@ export async function PUT(_req: NextRequest, { params }: { params: { id: string;
     update: {},
   });
 
-  logAction({
+  await logAction({
     organizationId: owner.organizationId,
     memberId: owner.memberId,
     action: "case.access_granted",
@@ -56,7 +56,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
 
   await prisma.caseAccess.deleteMany({ where: { caseId: kase.id, memberId: params.memberId } });
 
-  logAction({
+  await logAction({
     organizationId: owner.organizationId,
     memberId: owner.memberId,
     action: "case.access_revoked",

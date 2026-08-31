@@ -4,6 +4,19 @@ primary_region = 'iad'
 [build]
   dockerfile = 'apps/web/Dockerfile.worker'
 
+# Runs once, before any worker machine using the new image starts —
+# applies pending Prisma migrations against DATABASE_URL. Without this,
+# a worker image that depends on a new table (e.g. the DeploymentEnvironment
+# guard added for environment isolation) can deploy and start crash-looping
+# before the migration is ever applied, exactly what happened once during
+# manual rollout when the migration step was run against a placeholder
+# DATABASE_URL by mistake. Fly runs this in a temporary machine using the
+# same image/secrets and blocks the actual deploy until it exits 0.
+[deploy]
+  # WORKDIR in Dockerfile.worker is already /repo/apps/web, so the schema
+  # path here is relative to that, not the repo root.
+  release_command = 'npx prisma migrate deploy'
+
 [[vm]]
   size = 'shared-cpu-1x'
   memory = '512mb'

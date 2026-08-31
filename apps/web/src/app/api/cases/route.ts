@@ -5,7 +5,6 @@ import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
 import { caseVisibilityWhere } from "@/lib/case-access";
 import { generatePartyToken } from "@/lib/party-auth";
-import { generatePartySigningKeypair } from "@/lib/party-signing";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -94,12 +93,18 @@ export async function POST(req: NextRequest) {
   // the actual claimant/respondent. Only the hashes are persisted.
   const claimantToken = generatePartyToken();
   const respondentToken = generatePartyToken();
-  // Optional signing keypair alongside the token (see
-  // lib/party-signing.ts) — only the public key is persisted, the raw
-  // private key is shown once below same as the tokens. A party that
-  // never uses it can still act on the bearer token alone.
-  const claimantSigningKey = generatePartySigningKeypair();
-  const respondentSigningKey = generatePartySigningKeypair();
+  // No signing keypair generated here (see lib/party-signing.ts's own
+  // header comment for why this changed) — a key this backend generates
+  // and hands the party is not real non-repudiation, since Anchor itself
+  // briefly held the private key. A party who wants cryptographic
+  // attribution instead generates their OWN keypair client-side and
+  // self-registers the public key via POST
+  // /api/public/cases/:id/signing-key (party-token-authenticated) —
+  // Anchor never sees or touches their private key at any point. Cases
+  // created before this change may still have a claimantPublicKey/
+  // respondentPublicKey Anchor generated; existing submissions signed
+  // against those keys remain verifiable, just weaker than a
+  // self-registered one.
 
   const kase = await prisma.case.create({
     data: {
@@ -121,12 +126,10 @@ export async function POST(req: NextRequest) {
       respondentTokenHash: respondentToken.hash,
       claimantTokenExpiresAt: claimantToken.expiresAt,
       respondentTokenExpiresAt: respondentToken.expiresAt,
-      claimantPublicKey: claimantSigningKey.publicKeyHex,
-      respondentPublicKey: respondentSigningKey.publicKeyHex,
     },
   });
 
-  logAction({
+  await logAction({
     organizationId: auth.organizationId,
     memberId: auth.memberId,
     apiKeyId: auth.apiKeyId,
@@ -148,10 +151,6 @@ export async function POST(req: NextRequest) {
       // had).
       claimantToken: claimantToken.raw,
       respondentToken: respondentToken.raw,
-      // Optional — see lib/party-signing.ts. Never stored; this is the
-      // only time it's ever shown.
-      claimantSigningPrivateKey: claimantSigningKey.privateKeyBase64,
-      respondentSigningPrivateKey: respondentSigningKey.privateKeyBase64,
     },
     { status: 201 }
   );

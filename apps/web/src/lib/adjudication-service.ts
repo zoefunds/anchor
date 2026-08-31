@@ -11,11 +11,16 @@ import { resolveEvidenceUri } from "@/lib/storage";
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 // GenVM fetches evidence URLs itself, independent of this backend, and
 // an appeal can trigger a fresh adjudication run — and therefore a
-// fresh fetch of the same evidence — long after the original upload.
-// Long enough to comfortably outlive any real case's evidence-
-// collection-through-appeal lifecycle; short enough that it isn't
-// effectively the old permanently-public URL again.
-const GENLAYER_EVIDENCE_URL_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+// fresh fetch of the same evidence — as late as the appeal window's own
+// deadline (APPEAL_WINDOW_MS, 48h). Sized to that plus a buffer for
+// consensus/retry latency (a second adjudication round can itself take
+// a couple of minutes, and finalize/appeal sweeps only run every 5
+// minutes), not to some unrelated round number — a signed URL that
+// outlives the window it's actually needed for is pure unnecessary
+// exposure if it leaks (an evidence upload can contain real PII). Was
+// previously 30 days, ~10x longer than anything the appeal lifecycle
+// actually requires.
+const GENLAYER_EVIDENCE_URL_TTL_SECONDS = APPEAL_WINDOW_MS / 1000 + 24 * 60 * 60; // appeal window + 24h buffer
 const MAX_RELAY_ATTEMPTS = 10;
 // How long a relayClaimedAt lease is honored before it's treated as an
 // abandoned attempt (crashed process, killed worker) rather than one

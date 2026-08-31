@@ -72,7 +72,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: false });
 
-  logAction({
+  await logAction({
     organizationId: auth.organizationId,
     memberId: auth.memberId,
     apiKeyId: auth.apiKeyId,

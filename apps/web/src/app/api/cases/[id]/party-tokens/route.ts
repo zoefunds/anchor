@@ -55,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     await prisma.partySession.deleteMany({ where: { caseId: kase.id, role: { in: revokedRoles } } });
   }
 
-  logAction({
+  await logAction({
     organizationId: auth.organizationId,
     memberId: auth.memberId,
     apiKeyId: auth.apiKeyId,

@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
   });
 
   const inviteUrl = `${appOrigin(req)}/invite/${rawToken}`;
-  logAction({
+  await logAction({
     organizationId: member.organizationId,
     memberId: member.memberId,
     action: "invite.created",

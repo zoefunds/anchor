@@ -39,8 +39,6 @@ export default function CasesPage() {
     caseId: string;
     claimantToken: string;
     respondentToken: string;
-    claimantSigningPrivateKey: string;
-    respondentSigningPrivateKey: string;
   } | null>(null);
 
   // Settlement target — optional. Leaving this at "none" is the common
@@ -126,8 +124,6 @@ export default function CasesPage() {
         caseId: body.id,
         claimantToken: body.claimantToken,
         respondentToken: body.respondentToken,
-        claimantSigningPrivateKey: body.claimantSigningPrivateKey,
-        respondentSigningPrivateKey: body.respondentSigningPrivateKey,
       });
       setSettlementChain("");
       setSettlementContract("");
@@ -179,24 +175,13 @@ export default function CasesPage() {
           </div>
 
           <p className="mt-6 mb-2 text-sm text-muted dark:text-muted-dark">
-            Optional — for stronger, cryptographic attribution (a link alone can be forwarded; a signing
-            key can&apos;t be used to forge a submission after the fact once revoked). Give these to a
-            party only if their tooling can sign with an Ed25519 private key.
+            Optional — for stronger, cryptographic attribution (a link alone can be forwarded; a
+            signature can&apos;t be used to forge a submission after the fact). A party who wants this
+            generates their own Ed25519 keypair themselves (Anchor never sees the private key) and
+            registers the public half via <code className="font-mono text-xs">POST /api/public/cases/{newPartyTokens.caseId}/signing-key</code>{" "}
+            (authenticated with their own token/session above), then includes a signature on future
+            evidence submissions.
           </p>
-          <div className="flex flex-col gap-3">
-            <div>
-              <span className="field-label">Claimant signing key (Ed25519, base64)</span>
-              <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
-                {newPartyTokens.claimantSigningPrivateKey}
-              </code>
-            </div>
-            <div>
-              <span className="field-label">Respondent signing key (Ed25519, base64)</span>
-              <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
-                {newPartyTokens.respondentSigningPrivateKey}
-              </code>
-            </div>
-          </div>
           <button
             type="button"
             className="mt-4 font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"

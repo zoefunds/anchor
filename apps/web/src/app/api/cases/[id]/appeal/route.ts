@@ -35,7 +35,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const errorResponse = await triggerAppeal(kase, kase.decisions[0], reasonStr);
   if (errorResponse) return errorResponse;
 
-  logAction({
+  await logAction({
     organizationId: auth.organizationId,
     memberId: auth.memberId,
     apiKeyId: auth.apiKeyId,

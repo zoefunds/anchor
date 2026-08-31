@@ -15,7 +15,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
   }
 
   await prisma.webhook.delete({ where: { id: webhook.id } });
-  logAction({
+  await logAction({
     organizationId: member.organizationId,
     memberId: member.memberId,
     action: "webhook.deleted",
