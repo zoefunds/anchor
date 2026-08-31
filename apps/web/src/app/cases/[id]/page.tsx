@@ -23,6 +23,13 @@ interface Decision {
   reasonCodes: string[];
   consensus: string;
   appealWindowClosesAt: string | null;
+  decisionHash: string | null;
+  proofHash: string | null;
+  adjudicateTxHash: string | null;
+  relayTxHash: string | null;
+  relayMessageId: string | null;
+  relayError: string | null;
+  relayAttempts: number;
 }
 
 interface CaseDetail {
@@ -35,6 +42,8 @@ interface CaseDetail {
   claimantRef: string;
   respondentRef: string;
   contractAddress: string | null;
+  settlementChain: string | null;
+  settlementContract: string | null;
   evidence: Evidence[];
   decision: Decision | null;
   canAppeal: boolean;
@@ -438,6 +447,8 @@ export default function CaseDetailPage() {
         </section>
       )}
 
+      {kase.decision && <SettlementPanel kase={kase} />}
+
       {kase.canAppeal && (
         <section className="mt-10">
           <p className="kicker mb-4 text-status-adjudicating">Appeal window open</p>
@@ -634,6 +645,116 @@ function BackLink() {
     >
       ← Docket
     </Link>
+  );
+}
+
+const SETTLEMENT_CHAIN_LABELS: Record<string, string> = {
+  sepolia: "Sepolia (EVM) — DecisionRelay.sol",
+  solanatestnet: "Solana Testnet — decision-relay program",
+};
+
+// Makes the otherwise-invisible cross-chain pipeline visible: GenLayer
+// decides -> Anchor's backend relays that decision via Hyperlane (since
+// GenLayer itself isn't a Hyperlane chain and can't dispatch the
+// message directly) -> the destination contract settles. Renders only
+// once a decision exists; shows nothing extra if the case never had a
+// settlement target configured (the common case), so this doesn't add
+// noise to cases that were never meant to settle cross-chain.
+function SettlementPanel({ kase }: { kase: CaseDetail }) {
+  if (!kase.settlementChain || !kase.settlementContract) {
+    return (
+      <section className="mt-10">
+        <p className="kicker mb-4">Settlement</p>
+        <div className="dossier">
+          <p className="text-sm text-muted dark:text-muted-dark">
+            No settlement target configured for this case — the decision above is recorded on
+            GenLayer and in Anchor, but nothing was dispatched cross-chain to move funds.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const d = kase.decision;
+  const dispatched = Boolean(d?.relayTxHash);
+  const reconciled = d?.relayTxHash === "reconciled:onchain";
+  const failed = Boolean(d?.relayError) && !dispatched;
+
+  return (
+    <section className="mt-10">
+      <p className="kicker mb-4">Settlement</p>
+      <div className="dossier">
+        <p className="text-sm text-muted dark:text-muted-dark">
+          Target: <span className="font-mono text-ink-950 dark:text-ink">{SETTLEMENT_CHAIN_LABELS[kase.settlementChain] ?? kase.settlementChain}</span>
+        </p>
+        <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">{kase.settlementContract}</p>
+
+        <ol className="mt-6 flex flex-col gap-3 border-t border-line pt-6 dark:border-line-dark">
+          <PipelineStep done label="Adjudicated on GenLayer" detail={d?.adjudicateTxHash ? `tx ${d.adjudicateTxHash}` : undefined} />
+          <PipelineStep
+            done={kase.status === "FINALIZED"}
+            label="Finalized (appeal window closed)"
+            detail={kase.status !== "FINALIZED" ? "waiting — settlement only dispatches once finalized" : undefined}
+          />
+          <PipelineStep
+            done={dispatched}
+            pending={kase.status === "FINALIZED" && !dispatched && !failed}
+            failed={failed}
+            label={
+              reconciled
+                ? "Relayed via Hyperlane (reconciled — no local tx, already settled on-chain)"
+                : "Relayed via Hyperlane to destination contract"
+            }
+            detail={
+              reconciled
+                ? undefined
+                : d?.relayTxHash
+                  ? `tx ${d.relayTxHash}${d.relayMessageId ? ` · message ${d.relayMessageId}` : ""}`
+                  : d?.relayError
+                    ? `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
+                    : undefined
+            }
+          />
+        </ol>
+
+        {d?.decisionHash && (
+          <p className="mt-6 border-t border-line pt-4 font-mono text-[11px] text-muted dark:border-line-dark dark:text-muted-dark">
+            decisionHash {d.decisionHash} — this is what the destination contract's own
+            processedDecisions guard checks to reject a duplicate settlement.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PipelineStep({
+  done,
+  pending,
+  failed,
+  label,
+  detail,
+}: {
+  done: boolean;
+  pending?: boolean;
+  failed?: boolean;
+  label: string;
+  detail?: string;
+}) {
+  const marker = failed ? "✕" : done ? "✓" : pending ? "…" : "○";
+  const markerColor = failed
+    ? "text-status-undetermined"
+    : done
+      ? "text-seal-500 dark:text-seal-400"
+      : "text-muted dark:text-muted-dark";
+  return (
+    <li className="flex items-start gap-3">
+      <span className={`font-mono text-sm ${markerColor}`}>{marker}</span>
+      <div>
+        <p className={`text-sm ${done ? "text-ink-950 dark:text-ink" : "text-muted dark:text-muted-dark"}`}>{label}</p>
+        {detail && <p className="mt-0.5 break-all font-mono text-[11px] text-muted dark:text-muted-dark">{detail}</p>}
+      </div>
+    </li>
   );
 }
 

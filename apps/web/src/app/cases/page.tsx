@@ -37,6 +37,19 @@ export default function CasesPage() {
   const [creating, setCreating] = useState(false);
   const [newPartyTokens, setNewPartyTokens] = useState<{ caseId: string; claimantToken: string; respondentToken: string } | null>(null);
 
+  // Settlement target — optional. Leaving this at "none" is the common
+  // case and behaves exactly as before: the decision is recorded and
+  // nothing is dispatched cross-chain. Setting it wires up the Hyperlane
+  // DecisionRelay dispatch (see lib/hyperlane.ts) once the case reaches
+  // FINALIZED. Previously only settable via a raw API call — a case
+  // filed through this form had no way to configure one at all.
+  const [settlementChain, setSettlementChain] = useState<"" | "sepolia" | "solanatestnet">("");
+  const [settlementContract, setSettlementContract] = useState("");
+  const [settlementSolanaClaimant, setSettlementSolanaClaimant] = useState("");
+  const [settlementSolanaRespondent, setSettlementSolanaRespondent] = useState("");
+  const [settlementSolanaEscrowProgram, setSettlementSolanaEscrowProgram] = useState("");
+  const [settlementSolanaCaseId, setSettlementSolanaCaseId] = useState("");
+
   async function loadCases() {
     setLoading(true);
     try {
@@ -72,7 +85,27 @@ export default function CasesPage() {
       const res = await fetch("/api/cases", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claim, amount: Number(amount), claimantRef, respondentRef, policyId }),
+        body: JSON.stringify({
+          claim,
+          amount: Number(amount),
+          claimantRef,
+          respondentRef,
+          policyId,
+          ...(settlementChain
+            ? {
+                settlementChain,
+                settlementContract,
+                ...(settlementChain === "solanatestnet"
+                  ? {
+                      settlementSolanaClaimant,
+                      settlementSolanaRespondent,
+                      settlementSolanaEscrowProgram,
+                      settlementSolanaCaseId,
+                    }
+                  : {}),
+              }
+            : {}),
+        }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -84,6 +117,12 @@ export default function CasesPage() {
       // appeal independently, via /api/public/cases/:id/* — see
       // lib/party-auth.ts.
       setNewPartyTokens({ caseId: body.id, claimantToken: body.claimantToken, respondentToken: body.respondentToken });
+      setSettlementChain("");
+      setSettlementContract("");
+      setSettlementSolanaClaimant("");
+      setSettlementSolanaRespondent("");
+      setSettlementSolanaEscrowProgram("");
+      setSettlementSolanaCaseId("");
       await loadCases();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -181,6 +220,85 @@ export default function CasesPage() {
               onChange={(e) => setRespondentRef(e.target.value)}
             />
           </label>
+
+          <div className="sm:col-span-2 mt-2 border-t border-line pt-6 dark:border-line-dark">
+            <label className="flex flex-col gap-2">
+              <span className="field-label">Settlement target (optional)</span>
+              <select
+                className="field-input"
+                value={settlementChain}
+                onChange={(e) => setSettlementChain(e.target.value as typeof settlementChain)}
+              >
+                <option value="">None — record the decision only, don&apos;t settle cross-chain</option>
+                <option value="sepolia">Sepolia (EVM) — DecisionRelay.sol</option>
+                <option value="solanatestnet">Solana Testnet — decision-relay program</option>
+              </select>
+              <span className="mt-1 text-xs text-muted dark:text-muted-dark">
+                When set, a finalized decision on GenLayer gets relayed via Hyperlane to this
+                chain/contract, which then calls settle() to move funds. Anchor&apos;s own backend
+                wallet dispatches this — GenLayer itself isn&apos;t a Hyperlane chain, so it can&apos;t
+                send the message directly.
+              </span>
+            </label>
+          </div>
+
+          {settlementChain && (
+            <label className="flex flex-col gap-2 sm:col-span-2">
+              <span className="field-label">
+                {settlementChain === "sepolia" ? "DecisionRelay.sol address" : "decision-relay program ID"}
+              </span>
+              <input
+                className="field-input font-mono text-xs"
+                value={settlementContract}
+                onChange={(e) => setSettlementContract(e.target.value)}
+                placeholder={settlementChain === "sepolia" ? "0x…" : "base58 program ID"}
+                required
+              />
+            </label>
+          )}
+
+          {settlementChain === "solanatestnet" && (
+            <>
+              <label className="flex flex-col gap-2">
+                <span className="field-label">Solana claimant pubkey</span>
+                <input
+                  className="field-input font-mono text-xs"
+                  value={settlementSolanaClaimant}
+                  onChange={(e) => setSettlementSolanaClaimant(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="field-label">Solana respondent pubkey</span>
+                <input
+                  className="field-input font-mono text-xs"
+                  value={settlementSolanaRespondent}
+                  onChange={(e) => setSettlementSolanaRespondent(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="field-label">Escrow program ID</span>
+                <input
+                  className="field-input font-mono text-xs"
+                  value={settlementSolanaEscrowProgram}
+                  onChange={(e) => setSettlementSolanaEscrowProgram(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="field-label">On-chain escrow case ID</span>
+                <input
+                  className="field-input font-mono text-xs"
+                  value={settlementSolanaCaseId}
+                  onChange={(e) => setSettlementSolanaCaseId(e.target.value)}
+                  placeholder="e.g. CASE-RELAY-1"
+                  required
+                />
+              </label>
+            </>
+          )}
+
           <div className="sm:col-span-2">
             <button className="btn-primary mt-2" type="submit" disabled={creating || !policyId}>
               {creating ? "Filing…" : "File case"}
