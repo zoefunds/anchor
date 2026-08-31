@@ -4,13 +4,17 @@ import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { uploadEvidenceFile } from "@/lib/storage";
 import { canAccessCase } from "@/lib/case-access";
+import { extractPdfText } from "@/lib/pdf-extract";
 
 // POST /api/cases/:id/evidence/upload — multipart file evidence (images,
-// PDFs). The file goes to R2 at a real public URL; the GenLayer contract
-// fetches that URL itself over the network (gl.nondet.web.get) and, for
-// images, passes the actual bytes into exec_prompt as genuine visual
-// input — no OCR/text-extraction step on our side, the model sees the
-// image directly.
+// PDFs). The file goes to R2 at a real public URL; for images, the
+// GenLayer contract fetches that URL itself (gl.nondet.web.get) and
+// passes the actual bytes into exec_prompt as genuine visual input. For
+// PDFs, text is extracted HERE at upload time (see lib/pdf-extract.ts)
+// and sent to the contract as real evidence content — the contract
+// itself has no PDF-parsing capability and can only confirm a bare URL
+// is reachable, so extraction has to happen on this side or a PDF's
+// actual content never reaches adjudication at all.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
@@ -64,6 +68,21 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
   }
 
+  // Best-effort: a PDF that fails to parse (encrypted, malformed, a scan
+  // with no text layer) still gets uploaded normally, just without
+  // extractedText — the contract falls back to its existing
+  // reachability-only handling for it, same as before this existed. A
+  // parse failure here must never block evidence submission.
+  let extractedText: string | null = null;
+  if (uploaded.mimeType === "application/pdf") {
+    try {
+      extractedText = await extractPdfText(bytes);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`PDF text extraction failed for case ${kase.id}:`, err instanceof Error ? err.message : err);
+    }
+  }
+
   const evidence = await prisma.evidence.create({
     data: {
       caseId: kase.id,
@@ -73,6 +92,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       mimeType: uploaded.mimeType,
       fileSizeBytes: uploaded.sizeBytes,
       submittedBy: submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null,
+      extractedText,
     },
   });
 

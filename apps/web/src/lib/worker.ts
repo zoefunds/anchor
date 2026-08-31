@@ -1,7 +1,7 @@
 import { Worker, type Job } from "bullmq";
 import IORedis from "ioredis";
 import { ADJUDICATION_QUEUE_NAME, getAdjudicationQueue } from "@/lib/queue";
-import { runAdjudicationJob, finalizeExpiredAppealWindows } from "@/lib/adjudication-service";
+import { runAdjudicationJob, finalizeExpiredAppealWindows, retryFailedSettlements } from "@/lib/adjudication-service";
 import { deliverWebhookAttempt } from "@/lib/webhooks";
 
 // The actual BullMQ job processor — separate from src/worker.ts (the
@@ -12,6 +12,7 @@ import { deliverWebhookAttempt } from "@/lib/webhooks";
 // (standalone, src/worker.ts).
 
 const FINALIZE_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const SETTLEMENT_RETRY_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 let worker: Worker | null = null;
 
@@ -21,6 +22,14 @@ async function processJob(job: Job): Promise<void> {
     if (count > 0) {
       // eslint-disable-next-line no-console
       console.log(`worker: finalized ${count} case(s) with expired appeal windows`);
+    }
+    return;
+  }
+  if (job.name === "retry_failed_settlements") {
+    const count = await retryFailedSettlements();
+    if (count > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`worker: retried settlement for ${count} decision(s)`);
     }
     return;
   }
@@ -55,6 +64,20 @@ async function ensureFinalizeSweepScheduled(): Promise<void> {
   );
 }
 
+/**
+ * Registers the periodic settlement-retry sweep (see
+ * adjudication-service.ts's retryFailedSettlements) — the durable
+ * reconciliation loop for a FINALIZED decision whose relay dispatch
+ * failed. Same upsert-is-idempotent reasoning as the finalize sweep.
+ */
+async function ensureSettlementRetryScheduled(): Promise<void> {
+  await getAdjudicationQueue().upsertJobScheduler(
+    "retry-failed-settlements-sweep",
+    { every: SETTLEMENT_RETRY_INTERVAL_MS },
+    { name: "retry_failed_settlements" }
+  );
+}
+
 /** Idempotent — starts the BullMQ Worker once per process; safe to call more than once. */
 export function startAdjudicationWorker(): Worker {
   if (worker) return worker;
@@ -79,6 +102,10 @@ export function startAdjudicationWorker(): Worker {
   ensureFinalizeSweepScheduled().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to schedule finalize sweep:", err instanceof Error ? err.message : err);
+  });
+  ensureSettlementRetryScheduled().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to schedule settlement retry sweep:", err instanceof Error ? err.message : err);
   });
 
   return worker;

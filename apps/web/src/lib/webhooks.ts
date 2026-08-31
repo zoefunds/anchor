@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdjudicationQueue } from "@/lib/queue";
-import { assertSafeToFetch } from "@/lib/ssrf-guard";
+import { assertSafeToFetch, safeFetch } from "@/lib/ssrf-guard";
 
 // Fixed vocabulary, enforced in application code (not the DB schema,
 // which stores events as a plain string array) - keep this in sync with
@@ -113,7 +113,7 @@ export async function deliverWebhookAttempt(webhookId: string, payload: {
   let responseStatus: number | null = null;
   let error: string | null = null;
   try {
-    const res = await fetch(webhook.url, {
+    const res = await safeFetch(webhook.url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

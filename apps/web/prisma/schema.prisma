@@ -336,6 +336,17 @@ model Evidence {
   mimeType     String?
   fileSizeBytes Int?
   submittedBy  PartyRole?
+  // Real extracted text content for uploaded PDFs (see
+  // api/cases/:id/evidence/upload/route.ts) - previously the contract
+  // could only confirm a PDF's URL was reachable, never read what was
+  // actually in it. When set, adjudication-service.ts sends THIS to the
+  // contract instead of storageRef, so the policy prompt genuinely sees
+  // the document's content rather than "[File evidence confirmed
+  // accessible, content could not be machine-read]". Null for
+  // non-PDF files (images go through the contract's own multimodal
+  // path instead - see adjudicator.py's _resolve_evidence) and for
+  // inline text evidence (storageRef already IS the content there).
+  extractedText String?
   createdAt    DateTime     @default(now())
 
   @@index([caseId])
@@ -358,7 +369,40 @@ model Decision {
   evidenceUsed          String[]
   consensus             String
   confidence            Float?
+  // sha256 of the exact evidence_json calldata the contract adjudicated
+  // against (the contract's own deterministic evidence_hash - see
+  // adjudicator.py). This is an EVIDENCE-binding proof, not a proof of
+  // the decision or of GenLayer finality itself - see the fields below
+  // for those. Kept under its original name (used as the settlement
+  // relay's on-chain proof field) rather than renamed, to avoid touching
+  // every call site for a cosmetic rename.
   proofHash             String?
+  // sha256 of the exact adjudicator.py source deployed for this decision
+  // (see lib/adjudication-service.ts) - the policy engine's own
+  // governance record. Two decisions under the same policyId/policyVersion
+  // string can still have run different actual prompt/logic if the
+  // contract file changed without a version bump; this hash makes that
+  // detectable instead of only trusting the version string.
+  contractCodeHash      String?
+  // The real GenLayer transaction hash of the adjudicate()/appeal() call
+  // that produced this decision - proof this decision actually happened
+  // on GenLayer (independently checkable via `genlayer receipt
+  // <txHash>`), not just data Anchor's backend asserts. Previously
+  // discarded entirely - genlayer.runAdjudication()'s return value was
+  // never captured.
+  adjudicateTxHash      String?
+  // sha256 of the canonical (sorted) evidenceUsed array - lets a verifier
+  // confirm the exact set of evidence type/contentHash pairs this
+  // decision was built from without needing evidenceUsed's raw array
+  // representation to match byte-for-byte.
+  evidenceManifestHash  String?
+  // sha256 of this decision's own canonical content (case/policy ids,
+  // outcome, shares, reason codes, proofHash, contractCodeHash) - a
+  // single fingerprint for "this exact decision," independent of the
+  // database row id, that a verifier can recompute from the decision's
+  // own visible fields and compare against what a settlement relay
+  // actually carried.
+  decisionHash          String?
   explanation           String?
   appealWindowClosesAt  DateTime?
   createdAt             DateTime @default(now())
@@ -370,6 +414,13 @@ model Decision {
   relayTxHash    String?
   relayMessageId String?
   relayError     String?
+  // How many dispatch attempts have been made (the first attempt, inline
+  // in runAdjudicationJob/finalizeExpiredAppealWindows, plus any retries
+  // from retryFailedSettlements' periodic sweep). Capped there at
+  // MAX_RELAY_ATTEMPTS - a FINALIZED decision whose relay keeps failing
+  // needs a human to look at why, not an unbounded retry loop hammering
+  // a permanently broken settlement target forever.
+  relayAttempts  Int      @default(0)
 
   @@index([caseId])
 }

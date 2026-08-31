@@ -89,3 +89,32 @@ export async function assertSafeToFetch(url: string): Promise<void> {
     }
   }
 }
+
+const MAX_SAFE_FETCH_REDIRECTS = 3;
+
+/**
+ * fetch() that validates every hop, not just the initial URL. Plain
+ * `fetch(url)` with default redirect handling auto-follows a 3xx to
+ * wherever it points — an operator-supplied URL that resolves safely at
+ * request time can still redirect to 127.0.0.1 or a cloud metadata
+ * endpoint, and assertSafeToFetch on the *original* URL alone would never
+ * catch that. This fetches with redirect: "manual", validates the
+ * Location header itself before following it, and repeats — capped at
+ * MAX_SAFE_FETCH_REDIRECTS hops so a redirect loop can't hang a delivery
+ * attempt forever.
+ */
+export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+  let currentUrl = url;
+  for (let hop = 0; hop <= MAX_SAFE_FETCH_REDIRECTS; hop++) {
+    await assertSafeToFetch(currentUrl);
+    const res = await fetch(currentUrl, { ...init, redirect: "manual" });
+    if (res.status < 300 || res.status >= 400 || !res.headers.has("location")) {
+      return res;
+    }
+    if (hop === MAX_SAFE_FETCH_REDIRECTS) {
+      throw new Error(`refusing to follow more than ${MAX_SAFE_FETCH_REDIRECTS} redirects for ${url}`);
+    }
+    currentUrl = new URL(res.headers.get("location")!, currentUrl).toString();
+  }
+  throw new Error(`unreachable: redirect loop guard exhausted for ${url}`);
+}

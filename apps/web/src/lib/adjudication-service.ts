@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import type { Case, Decision } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/lib/genlayer";
@@ -6,6 +7,48 @@ import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { dispatchDecisionForCase } from "@/lib/hyperlane";
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
+const MAX_RELAY_ATTEMPTS = 10;
+
+function sha256Hex(input: string): string {
+  return createHash("sha256").update(input).digest("hex");
+}
+
+/** sha256 of the exact contract source deployed for this decision — see Decision.contractCodeHash's schema comment. */
+function computeContractCodeHash(): string {
+  return sha256Hex(getAdjudicatorContractCode());
+}
+
+/** sha256 of the canonical (sorted) evidenceUsed array — see Decision.evidenceManifestHash's schema comment. */
+function computeEvidenceManifestHash(evidenceUsed: string[]): string {
+  return sha256Hex(JSON.stringify([...evidenceUsed].sort()));
+}
+
+/** sha256 of this decision's own canonical content — see Decision.decisionHash's schema comment. */
+function computeDecisionHash(params: {
+  caseId: string;
+  policyId: string;
+  policyVersion: string;
+  outcome: string;
+  claimantShareBps: number | null | undefined;
+  respondentShareBps: number | null | undefined;
+  reasonCodes: string[];
+  proofHash: string | null;
+  contractCodeHash: string;
+}): string {
+  return sha256Hex(
+    JSON.stringify({
+      caseId: params.caseId,
+      policyId: params.policyId,
+      policyVersion: params.policyVersion,
+      outcome: params.outcome,
+      claimantShareBps: params.claimantShareBps ?? null,
+      respondentShareBps: params.respondentShareBps ?? null,
+      reasonCodes: [...params.reasonCodes].sort(),
+      proofHash: params.proofHash,
+      contractCodeHash: params.contractCodeHash,
+    })
+  );
+}
 
 /** Required evidence types for a case's policy — used by the adjudicate route's readiness check. */
 export function requiredEvidenceTypesFor(policyId: string): string[] {
@@ -29,6 +72,8 @@ export function requiredEvidenceTypesFor(policyId: string): string[] {
 async function dispatchSettlementForDecision(kase: Case, decision: Decision): Promise<void> {
   if (!kase.settlementChain || !kase.settlementContract) return;
   if (decision.consensus !== "ACCEPTED") return;
+  if (decision.relayTxHash) return; // already settled — retryFailedSettlements can call this again, must not double-dispatch
+  if (decision.relayAttempts >= MAX_RELAY_ATTEMPTS) return; // see retryFailedSettlements' schema comment
   if (!decision.proofHash) {
     // Every real ACCEPTED decision has a proofHash (set from the
     // contract's own evidence_hash when the Decision row was created -
@@ -61,7 +106,7 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
     });
     await prisma.decision.update({
       where: { id: decision.id },
-      data: { relayTxHash: txHash, relayMessageId: messageId },
+      data: { relayTxHash: txHash, relayMessageId: messageId, relayError: null, relayAttempts: { increment: 1 } },
     });
     dispatchWebhookEvent({
       organizationId: kase.organizationId,
@@ -71,12 +116,51 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
   } catch (relayErr) {
     // A failed relay dispatch doesn't undo the decision itself — the
     // adjudication succeeded and is recorded regardless. Record the
-    // error on the decision so it's visible, but don't fail the job.
+    // error so it's visible; retryFailedSettlements' periodic sweep (not
+    // this function) is what durably retries it later, so a transient
+    // relay failure right after finalization doesn't leave a FINALIZED
+    // decision permanently unsettled just because this one attempt hit
+    // a bad RPC call or a momentary rate limit.
     const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
     // eslint-disable-next-line no-console
     console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
-    await prisma.decision.update({ where: { id: decision.id }, data: { relayError: relayMessage } });
+    await prisma.decision.update({
+      where: { id: decision.id },
+      data: { relayError: relayMessage, relayAttempts: { increment: 1 } },
+    });
   }
+}
+
+/**
+ * Retries settlement for FINALIZED decisions whose relay dispatch failed
+ * (relayError set, relayTxHash still null) and hasn't exhausted
+ * MAX_RELAY_ATTEMPTS. Meant to be run periodically (see lib/worker.ts's
+ * repeatable job), not called from a request path.
+ *
+ * Before this existed, a relay failure after finalization (a transient
+ * RPC error, the destination chain being briefly unreachable, etc.) left
+ * a FINALIZED decision permanently unsettled - the error was recorded,
+ * but nothing ever tried again. This is the durable reconciliation loop
+ * that was missing.
+ */
+export async function retryFailedSettlements(): Promise<number> {
+  const stuck = await prisma.decision.findMany({
+    where: {
+      relayError: { not: null },
+      relayTxHash: null,
+      relayAttempts: { lt: MAX_RELAY_ATTEMPTS },
+      consensus: "ACCEPTED",
+      case: { status: "FINALIZED" },
+    },
+    include: { case: true },
+  });
+
+  let retriedCount = 0;
+  for (const { case: kase, ...decision } of stuck) {
+    retriedCount++;
+    await dispatchSettlementForDecision(kase, decision);
+  }
+  return retriedCount;
 }
 
 /**
@@ -179,10 +263,22 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
     const evidence: Record<string, string> = {};
     const sortedEvidence = [...kase.evidence].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     for (const e of sortedEvidence) {
-      evidence[e.type] = e.storageRef;
+      // A PDF with successfully extracted text (see the evidence upload
+      // route + lib/pdf-extract.ts) sends that real content instead of
+      // the bare URL — the contract has no PDF-parsing capability of its
+      // own, so this is the only way its actual content reaches
+      // adjudication rather than just "this URL is reachable."
+      evidence[e.type] = e.extractedText ?? e.storageRef;
     }
 
-    await genlayer.runAdjudication(contractAddress, { policyId: kase.policyId, evidence });
+    // Capture the real GenLayer transaction hash of the call that
+    // produced this decision — previously discarded, leaving no way to
+    // independently verify a decision actually happened on GenLayer
+    // (`genlayer receipt <txHash>`) short of trusting Anchor's own claim.
+    const { txHash: adjudicateTxHash } = await genlayer.runAdjudication(contractAddress, {
+      policyId: kase.policyId,
+      evidence,
+    });
 
     const decision = await genlayer.getDecision(contractAddress);
     if (!decision) {
@@ -198,6 +294,22 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
     const nextStatus =
       decision.consensus !== "ACCEPTED" ? "UNDETERMINED" : isAppeal ? "FINALIZED" : "APPEAL_WINDOW";
 
+    const evidenceUsed = sortedEvidence.map((e) => `${e.type}:${e.contentHash}`);
+    const proofHash = decision.evidenceHash ?? null;
+    const contractCodeHash = computeContractCodeHash();
+    const evidenceManifestHash = computeEvidenceManifestHash(evidenceUsed);
+    const decisionHash = computeDecisionHash({
+      caseId: kase.id,
+      policyId: decision.policyId,
+      policyVersion: decision.policyVersion,
+      outcome: decision.outcome,
+      claimantShareBps: decision.claimantShareBps,
+      respondentShareBps: decision.respondentShareBps,
+      reasonCodes: decision.reasonCodes,
+      proofHash,
+      contractCodeHash,
+    });
+
     const [createdDecision] = await prisma.$transaction([
       prisma.decision.create({
         data: {
@@ -211,11 +323,17 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
           // The actual evidence type/contentHash pairs sent to the
           // contract for this run — a real record of what was
           // adjudicated on, not a placeholder.
-          evidenceUsed: sortedEvidence.map((e) => `${e.type}:${e.contentHash}`),
+          evidenceUsed,
           // The contract's own deterministic evidence_hash - see
           // dispatchSettlementForDecision for why this, not a hash of
           // the case ID, is what gets relayed as settlement proof.
-          proofHash: decision.evidenceHash ?? null,
+          proofHash,
+          // The rest of the finalized-decision proof bundle — see each
+          // field's schema comment for what it independently verifies.
+          contractCodeHash,
+          adjudicateTxHash,
+          evidenceManifestHash,
+          decisionHash,
           consensus: decision.consensus,
           appealWindowClosesAt: nextStatus === "APPEAL_WINDOW" ? new Date(Date.now() + APPEAL_WINDOW_MS) : null,
         },
