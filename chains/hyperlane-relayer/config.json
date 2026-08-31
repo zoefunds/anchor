@@ -44,26 +44,6 @@
       "rpcUrls": [{ "http": "https://api.testnet.solana.com" }],
       "validatorAnnounce": "8qNYSi9EP1xSnRjtMpyof88A26GBbdcrsa61uSaHiwx3",
       "interchainSecurityModule": "4GHxwWyKB9exhKG4fdyU2hfLgfFzhHp2WcsSKc2uNR1k"
-    },
-    "solanadevnet": {
-      "blockExplorers": [
-        { "apiUrl": "https://explorer.solana.com?cluster=devnet", "family": "other", "name": "Solana Explorer", "url": "https://explorer.solana.com?cluster=devnet" }
-      ],
-      "blocks": { "confirmations": 1, "estimateBlockTime": 0.4, "reorgPeriod": 0 },
-      "chainId": 1399811151,
-      "displayName": "Solana Devnet",
-      "domainId": 1399811151,
-      "index": { "from": 1, "mode": "sequence", "chunk": 20 },
-      "interchainGasPaymaster": "7QRetu6N7iBJEMe7Zd9Ur7toLqegxcHLQSFGQXb9aZLP",
-      "isTestnet": true,
-      "mailbox": "5yM5YrrzHCrp4ZPLKN9Y2eUAqEWsTbBqaorgbngQcR54",
-      "merkleTreeHook": "5yM5YrrzHCrp4ZPLKN9Y2eUAqEWsTbBqaorgbngQcR54",
-      "name": "solanadevnet",
-      "nativeToken": { "decimals": 9, "name": "Solana", "symbol": "SOL", "denom": "lamport" },
-      "protocol": "sealevel",
-      "rpcUrls": [{ "http": "https://api.devnet.solana.com" }],
-      "validatorAnnounce": "7TfjfmTCuZVSq9mour8obQz2pXGNiEz29EqEEDnoexQ9",
-      "interchainSecurityModule": "4Q1eZAovdqhihCCZyabX4u5rCJPq5R8YgyKVDCdjzTNV"
     }
   }
 }

@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  const SUPPORTED_SETTLEMENT_CHAINS = ["sepolia", "solanatestnet", "solanadevnet"];
+  const SUPPORTED_SETTLEMENT_CHAINS = ["sepolia", "solanatestnet"];
   // Both or neither — a settlement target only makes sense as a pair, and
   // half-configuring it would silently never dispatch (see
   // adjudication-service.ts's check) rather than error loudly here.
@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  const isSealevelSettlement = settlementChain === "solanatestnet" || settlementChain === "solanadevnet";
+  const isSealevelSettlement = settlementChain === "solanatestnet";
   if (
     isSealevelSettlement &&
     (!settlementSolanaClaimant || !settlementSolanaRespondent || !settlementSolanaEscrowProgram || !settlementSolanaCaseId)

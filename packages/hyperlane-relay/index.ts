@@ -29,7 +29,6 @@ export const HYPERLANE_DOMAIN: Record<string, number> = {
   // recipient, no padding needed (Solana pubkeys already are 32 bytes).
   // See dispatchDecisionRelayToSealevel below and chains/solana/README.md.
   solanaTestnet: 1399811150,
-  solanaDevnet: 1399811151,
 };
 
 const MAILBOX_ABI = [
@@ -243,8 +242,8 @@ export function encodeSealevelDecisionRelayBody(payload: SealevelDecisionRelayPa
 
 /**
  * Dispatches a DecisionRelay message from an EVM chain Anchor controls to
- * decision-relay's Solana program on `destinationDomain` (solanaTestnet
- * or solanaDevnet). `decisionRelayProgramId` is that program's base58
+ * decision-relay's Solana program on `destinationDomain` (solanaTestnet).
+ * `decisionRelayProgramId` is that program's base58
  * address, used directly as the 32-byte recipient (Solana pubkeys are
  * already 32 bytes — no left-padding like an EVM address needs).
  */

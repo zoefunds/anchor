@@ -48,12 +48,12 @@ function caseIdToBytes32(caseId: string): Hex {
   return keccak256(toHex(caseId));
 }
 
-const SEALEVEL_CHAINS = new Set(["solanatestnet", "solanadevnet"]);
+const SEALEVEL_CHAINS = new Set(["solanatestnet"]);
 
 /**
  * Dispatches a DecisionRelay Hyperlane message for a decided case with a
  * settlement target configured. "sepolia" dispatches to an EVM
- * DecisionRelay.sol recipient; "solanatestnet"/"solanadevnet" dispatch to
+ * DecisionRelay.sol recipient; "solanatestnet" dispatches to
  * decision-relay's Sealevel program, which requires the settlementSolana*
  * fields to be present (validated at case-creation time, see
  * api/cases/route.ts, but re-checked here since this function is the
@@ -95,11 +95,10 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       claimantShareBps: params.claimantShareBps,
       respondentShareBps: params.respondentShareBps,
     };
-    const destinationDomain = HYPERLANE_DOMAIN[params.settlementChain === "solanatestnet" ? "solanaTestnet" : "solanaDevnet"];
-    return dispatchDecisionRelayToSealevel(config, destinationDomain, params.settlementContract, payload);
+    return dispatchDecisionRelayToSealevel(config, HYPERLANE_DOMAIN.solanaTestnet, params.settlementContract, payload);
   }
 
   throw new Error(
-    `unsupported settlementChain "${params.settlementChain}" — supported: sepolia, solanatestnet, solanadevnet (see packages/hyperlane-relay)`
+    `unsupported settlementChain "${params.settlementChain}" — supported: sepolia, solanatestnet (see packages/hyperlane-relay)`
   );
 }

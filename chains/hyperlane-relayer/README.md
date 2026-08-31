@@ -1,11 +1,19 @@
 # Anchor's self-hosted Hyperlane relayer
 
 The shared public Hyperlane testnet4 relayer does not reliably service the
-Solana Testnet/Devnet <-> Sepolia routes Anchor's cross-chain settlement
-path depends on — two real dispatched messages sat undelivered for 7+
-hours before this was stood up. This is Anchor's own relayer, scoped to
-exactly the chains it needs, plus two real bugs found and fixed along the
-way (see Known issues fixed below).
+Solana Testnet <-> Sepolia routes Anchor's cross-chain settlement path
+depends on — two real dispatched messages sat undelivered for 7+ hours
+before this was stood up. This is Anchor's own relayer, scoped to exactly
+the chains it needs, plus two real bugs found and fixed along the way (see
+Known issues fixed below).
+
+(Solana Devnet support was carried here for a while — proven live once for
+CaseOriginate — but was never used for anything real and has since been
+removed entirely: `config.json`'s `solanadevnet` chain entry, the
+`--relayChains`/`--chains.solanadevnet.*` flags below, and every
+`solanadevnet`/`solanaDevnet` reference across `packages/hyperlane-relay`,
+`apps/web`, and `chains/solana`'s deploy/dispatch scripts. If you need it
+back, `git log` has the removal commit and the working config it reverts.)
 
 **Status: both directions proven live end to end, fully automatic.**
 CaseOriginate (Solana -> Sepolia) and DecisionRelay (Sepolia -> Solana) both
@@ -19,11 +27,10 @@ account-ordering bug in decision-relay's own Rust source).
 | Test | Origin | Message ID | Destination tx | Delivered by |
 |---|---|---|---|---|
 | CaseOriginate | Solana Testnet | `0x7ca006278e77c09962ae930f4c3f5f5cbd80dc8234645a66b49cc78c0023d473` | [`0xe7b9b011...`](https://sepolia.etherscan.io/tx/0xe7b9b011c00af0311931ad07e49728d8e6801aa57a9ce18803ba9b25a75119a1) | this relayer |
-| CaseOriginate | Solana Devnet | `0xf77581accc03d17fd3ea76bcbd3ed16d336566310fe31a863a961fb21350e252` | [`0x4ef81e79...`](https://sepolia.etherscan.io/tx/0x4ef81e7972309147aef11687eb2fb2204b18c32d672bceb9e0247b1941bbd1a6) | this relayer |
 | DecisionRelay (self) | Sepolia | (reconstructed, id `0xf2d09a34...`) | [`0x5116fdcc...`](https://sepolia.etherscan.io/tx/0x5116fdcc0fdf25b7abb7f596ce61fb90f3b75990bdf9790126f3d2b87348605e) | manual `cast send` (superseded — see below) |
 | DecisionRelay | Sepolia | `0x0b1548f36ce39cc223e074af62f3cfa444491b775d62a79603167571c965d155` | Solana tx `0x94ae7a01...` — escrow case `CASE-RELAY-1788120485310` went `Disputed` -> `Settled` | this relayer, fully automatic |
 
-All three destination transactions succeeded and the recipient contract
+All destination transactions succeeded and the recipient contract
 (`SolanaCaseReceiver.handle()` or `DecisionRelay.handle()`) correctly
 decoded the message and emitted the expected event — this proves the
 recipient/decode/business-logic half genuinely works, independent of
@@ -33,9 +40,9 @@ whichever relayer submits the delivery transaction.
 
 A single `hyperlane-agent` relayer container (`ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.3.0`
 — see "Known issue, actually fixed" for why not `agents-v2.2.0`), scoped to
-three chains via `config.json`:
+two chains via `config.json`:
 - `sepolia` (both an origin, for DecisionRelay, and a destination, for CaseOriginate)
-- `solanatestnet`, `solanadevnet` (origins for CaseOriginate, destinations for DecisionRelay)
+- `solanatestnet` (an origin for CaseOriginate, a destination for DecisionRelay)
 
 ## Running it
 
@@ -50,14 +57,12 @@ docker run -d --name anchor-hyperlane-relayer \
   ghcr.io/hyperlane-xyz/hyperlane-agent:agents-v2.3.0 \
   ./relayer \
   --db /data \
-  --relayChains solanatestnet,solanadevnet,sepolia \
+  --relayChains solanatestnet,sepolia \
   --defaultSigner.key "$RELAYER_EVM_PRIVATE_KEY" \
   --chains.solanatestnet.signer.type hexKey \
   --chains.solanatestnet.signer.key "$RELAYER_SOLANA_SEED_HEX" \
   --chains.solanatestnet.identity.type hexKey \
   --chains.solanatestnet.identity.key "$RELAYER_SOLANA_IDENTITY_SEED_HEX" \
-  --chains.solanadevnet.signer.type hexKey \
-  --chains.solanadevnet.signer.key "$RELAYER_SOLANA_SEED_HEX" \
   --allowLocalCheckpointSyncers true
 ```
 
@@ -217,16 +222,11 @@ responsive) — unrelated to the three fixes above, but worth keeping.
 `config.json`'s `sepolia`/`solanatestnet` entries are copied verbatim from
 Hyperlane's own agent config
 (`rust/main/config/testnet_config.json` in `hyperlane-xyz/hyperlane-monorepo`) —
-not hand-typed. `solanadevnet` isn't part of Hyperlane's official
-testnet4 config (devnet is a separate, less-maintained tier — no active
-public relayer or validator infra is guaranteed there), so that entry was
-built manually from the Hyperlane registry's
-`chains/solanadevnet/{metadata,addresses}.yaml`, matching the same schema
-shape.
+not hand-typed.
 
 `sepolia.index.from` is set to a recent block (not 0) — indexing the
 entire chain history isn't needed and the destination chain has real
-transaction volume, unlike the two young Solana test mailboxes.
+transaction volume, unlike the young Solana Testnet mailbox.
 
 ## Verifying it's still working
 
