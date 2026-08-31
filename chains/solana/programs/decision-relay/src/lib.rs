@@ -75,12 +75,10 @@ const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVm
 /// signing) among the trailing "recipient accounts" — see handle()'s
 /// account list doc below.
 ///
-/// PLACEHOLDER — replace with the real relayer's Solana public key
-/// before this program is deployed or redeployed. This has NOT been set
-/// to a real value or verified end-to-end against a live Mailbox in
-/// this codebase; no Solana relayer keypair exists anywhere else in
-/// this repo to reuse.
-const RELAYER_PAYER: Pubkey = solana_program::pubkey!("11111111111111111111111111111111111111111");
+/// The relayer's real, funded Solana Testnet signer — same key as
+/// RELAYER_SOLANA_SEED_HEX (see chains/hyperlane-relayer/entrypoint.sh)
+/// and this program's own upgrade authority.
+const RELAYER_PAYER: Pubkey = solana_program::pubkey!("EBea3UVndSrNdgdtfuXC6PoN7573GdS43XDoB6pja9fh");
 
 #[macro_export]
 macro_rules! decision_relay_storage_pda_seeds {
