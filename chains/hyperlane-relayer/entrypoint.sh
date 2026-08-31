@@ -39,6 +39,20 @@ WHITELIST='[
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 
+# Without this, config.json is never actually read. The relayer's
+# settings loader ALWAYS reads its own bundled `./config/*.json`
+# defaults (mainnet_config.json/testnet_config.json baked into the
+# image at /app/config/) first, and only merges in additional files
+# from the CONFIG_FILES env var on top — confirmed straight from the
+# vendored source (hyperlane-base/src/settings/loader/mod.rs). This
+# was never set here, so every customization in this directory's
+# config.json (in particular, dropping a permanently-dead RPC provider
+# from sepolia's rpcUrls) silently never took effect — the relayer ran
+# on 100% bundled defaults the whole time, which is why removing a
+# dead provider from config.json alone didn't fix anything until this
+# was added.
+export CONFIG_FILES=/config/config.json
+
 exec ./relayer \
   --db /data \
   --relayChains solanatestnet,sepolia \
