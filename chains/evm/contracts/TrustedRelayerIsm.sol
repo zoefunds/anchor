@@ -32,11 +32,24 @@ interface IInterchainSecurityModule {
 }
 
 contract TrustedRelayerIsm is IInterchainSecurityModule {
-    // moduleType 0 = UNUSED in Hyperlane's ModuleType enum — this ISM
-    // implements none of the standard schemes (multisig/aggregation/
-    // routing/etc), it's a custom always-valid check.
+    // moduleType 6 = NULL in Hyperlane's ModuleType enum — the "no
+    // metadata required" type, which is what this always-valid check
+    // actually is. Returning 0 (UNUSED) here was a real bug: UNUSED is
+    // explicitly documented in hyperlane-core as "INVALID ISM" and has no
+    // metadata-builder mapping in the relayer at all, so every relayer
+    // attempting to build metadata for a message routed through this ISM
+    // fails deterministically with "Unknown or invalid module type
+    // (Unused)" and the message is stuck retrying forever, never
+    // producing a process() transaction. Confirmed live: this exact
+    // error was observed in the self-hosted relayer's logs for message
+    // 0x18e255fbfe907d167f49c3211bd41ec4a8c831760888e8fa72b012c75a3a1256,
+    // and confirmed against the vendored relayer source
+    // (agents/relayer/src/msg/metadata/message_builder.rs) that
+    // ModuleType::Null (6) is the variant mapped to NullMetadataBuilder,
+    // the correct handler for an always-true, no-metadata ISM like this
+    // one.
     function moduleType() external pure returns (uint8) {
-        return 0;
+        return 6;
     }
 
     function verify(bytes calldata, bytes calldata) external pure returns (bool) {

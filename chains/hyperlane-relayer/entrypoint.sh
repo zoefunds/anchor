@@ -34,8 +34,23 @@ hexify() {
 # a genuinely new, deliverable one. Restricting to the actual live
 # recipients this deployment cares about makes those old entries get
 # skipped outright instead of retried forever.
+#
+# Sepolia recipient updated to a fresh DecisionRelay deployment
+# (0x4D1275...) pointed at a fresh TrustedRelayerIsm whose moduleType()
+# correctly returns 6 (Hyperlane's ModuleType::Null — "no metadata
+# required"). The prior deployment's ISM returned 0 (UNUSED, which
+# hyperlane-core documents as "INVALID ISM" and the relayer's own
+# metadata builder has no handler for at all) — every relay attempt for
+# a message addressed to it failed deterministically with "Unknown or
+# invalid module type (Unused)" during metadata building, before ever
+# reaching the point of submitting a process() transaction. Confirmed
+# live in this deployment's own logs for the old recipient
+# (0xCDfF36cDA76e08BAd2EA0d5a3fDaDf3761Ed5041) and against the vendored
+# relayer source (agents/relayer/src/msg/metadata/message_builder.rs).
+# That old recipient's ISM is immutable and cannot be fixed in place —
+# it is permanently stuck for any message already addressed to it.
 WHITELIST='[
-  {"destinationDomain":"11155111","recipientAddress":"0xCDfF36cDA76e08BAd2EA0d5a3fDaDf3761Ed5041"},
+  {"destinationDomain":"11155111","recipientAddress":"0x4D1275686bB974830f397D43bB8Ae435AAD5a805"},
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 

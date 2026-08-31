@@ -36,18 +36,46 @@ decoded the message and emitted the expected event — this proves the
 recipient/decode/business-logic half genuinely works, independent of
 whichever relayer submits the delivery transaction.
 
-**Update (this session):** DecisionRelay.sol was redeployed to
+**Update (this session): root cause of the same-chain Sepolia→Sepolia
+delivery stall found and fixed — real end-to-end delivery confirmed.**
+DecisionRelay.sol was first redeployed to
 `0xCDfF36cDA76e08BAd2EA0d5a3fDaDf3761Ed5041` with a destination-side
-idempotency guard (`processedDecisions[proofHash]`, see
-chains/evm/contracts/DecisionRelay.sol), and decision-relay (Solana)
-was upgraded with the matching Solana-side guard and a real
-`RELAYER_PAYER`. A live end-to-end test against the new contract
-(same-chain Sepolia→Sepolia this time, not the EVM↔Solana routes in
-the table above) is in progress as of this writing — dispatch
-confirmed on-chain, delivery not yet confirmed. The recipient
-whitelist and hex-key-parsing fixes above came directly out of
-debugging that live test. Update this note once it's confirmed
-delivered or if a new blocker turns up.
+idempotency guard (`processedDecisions[proofHash]`), and a real
+dispatched message to it sat undelivered despite every relayer-infra
+fix in this file (whitelist, `CONFIG_FILES`, region move, dedicated RPC
+key) being individually verified working. The actual cause turned out
+to be unrelated to infra: `TrustedRelayerIsm.moduleType()` returned `0`
+(`UNUSED`), which `hyperlane-core` documents as `INVALID ISM` and which
+the relayer's own metadata builder has no handler for at all
+(`agents/relayer/src/msg/metadata/message_builder.rs`) — every attempt
+to build metadata for a message routed through this ISM failed
+deterministically with `Unknown or invalid module type (Unused)`
+(confirmed live in this relayer's own debug logs), so the message was
+discovered, whitelisted, and endlessly "reprepared" but a `process()`
+transaction was never even attempted. The correct value for an
+always-valid, no-metadata ISM like this one is `6`
+(`ModuleType::Null`, "no metadata required" — confirmed against the
+vendored relayer source). `TrustedRelayerIsm.sol` was fixed and, since
+`DecisionRelay.customIsm` is immutable, both contracts were redeployed
+together: ISM `0x260DD5edD4F798C70F7dc6FA51f3F630B7FF05B3`, DecisionRelay
+`0x4D1275686bB974830f397D43bB8Ae435AAD5a805` (the old
+`0xCDfF36...`/`0x831D95e...` pair is permanently stuck for any message
+already addressed to it — its ISM is immutable and cannot be patched).
+A real decision dispatched through the app's own `dispatchDecisionForCase`
+to the new contract was confirmed fully delivered: dispatch tx
+`0x2b384a05...`, message ID `0xd63f2e5e...`, relayer `process()` tx
+`0xc21095d5...` (status success), `Mailbox.delivered(messageId) ==
+true`, `DecisionRelay.processedDecisions(decisionHash) == true`,
+`DecisionReceived` emitted.
+
+**This was a same-chain Sepolia→Sepolia test, not a cross-chain one —
+it proves message discovery, ISM metadata building, and destination
+execution all work, but does not exercise real cross-chain relaying
+(different origin/destination domains).** A real Sepolia→Solana or
+Sepolia→Base-Sepolia delivery has not been re-proven against the
+current contracts (with the idempotency guard and the fixed ISM) this
+session; the Sepolia→Solana row in the table above is from an earlier
+version of the contracts, before this round's guard/payer/ISM changes.
 
 ## What this is
 
