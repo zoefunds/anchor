@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { uploadEvidenceFile } from "@/lib/storage";
+import { canAccessCase } from "@/lib/case-access";
 
 // POST /api/cases/:id/evidence/upload — multipart file evidence (images,
 // PDFs). The file goes to R2 at a real public URL; the GenLayer contract
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     where: { id: params.id },
     include: { evidence: true },
   });
-  if (!kase || kase.organizationId !== auth.organizationId) {
+  if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 

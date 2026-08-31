@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { canAccessCase } from "@/lib/case-access";
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await resolveOrgFromRequest(req);
@@ -13,9 +14,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     include: { evidence: true, decisions: { orderBy: { createdAt: "desc" } } },
   });
 
-  // Same 404 whether the case doesn't exist or belongs to another org —
-  // don't leak which case IDs exist to callers outside the org.
-  if (!kase || kase.organizationId !== auth.organizationId) {
+  // Same 404 whether the case doesn't exist, belongs to another org, or
+  // is restricted and this caller isn't granted access — don't leak which
+  // case IDs exist (or that a restricted one exists) to callers who can't
+  // see it.
+  if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 

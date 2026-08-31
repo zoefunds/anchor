@@ -71,6 +71,7 @@ model Member {
   sessions           Session[]
   passwordResets     PasswordReset[]
   emailVerifications EmailVerification[]
+  caseAccess         CaseAccess[]
 }
 
 // Single-use token proving control of the signup email. Verification is
@@ -287,6 +288,19 @@ model Case {
   // settlementSolana* fields when settlementChain is a Sealevel chain.
   settlementSolanaCaseId String?
 
+  // Per-case access control, on top of the org-wide role model
+  // (OWNER/MEMBER/VIEWER). Defaults to false — every case is visible to
+  // the whole org, exactly the pre-existing behavior, so this is opt-in
+  // per case rather than a breaking change. When true, MEMBER/VIEWER
+  // session callers can only see/act on this case if a CaseAccess row
+  // grants them explicit access; OWNER and API-key callers always see
+  // every case regardless (same full-trust posture those two already
+  // have everywhere else - see requireWriteAccess()'s API-key carve-out
+  // and OWNER's existing unrestricted-admin role). See lib/case-access.ts
+  // for the actual enforcement.
+  restricted Boolean @default(false)
+  caseAccess CaseAccess[]
+
   evidence  Evidence[]
   // One-to-many, not one-to-one: an appeal produces a fresh Decision
   // rather than overwriting the first, so the full history (original
@@ -299,6 +313,24 @@ model Case {
 
   @@index([status])
   @@index([organizationId])
+}
+
+// The allow-list for a restricted Case (see Case.restricted). A row here
+// means that specific member can see/act on that specific case even
+// though it's restricted — irrelevant for unrestricted cases (everyone in
+// the org already sees those) and irrelevant for OWNER/API-key callers
+// (they bypass restriction entirely).
+model CaseAccess {
+  id        String   @id @default(cuid())
+  case      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    String
+  member    Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  memberId  String
+  createdAt DateTime @default(now())
+
+  @@unique([caseId, memberId])
+  @@index([caseId])
+  @@index([memberId])
 }
 
 model Evidence {

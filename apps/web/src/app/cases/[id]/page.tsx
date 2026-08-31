@@ -46,6 +46,12 @@ interface PolicyDefinition {
   requiredEvidence: { type: string; label: string }[];
 }
 
+interface OrgMember {
+  id: string;
+  email: string;
+  role: "OWNER" | "MEMBER" | "VIEWER";
+}
+
 export default function CaseDetailPage() {
   const params = useParams();
   const id = params.id as string;
@@ -65,6 +71,12 @@ export default function CaseDetailPage() {
   const [appealReason, setAppealReason] = useState("");
   const [appealing, setAppealing] = useState(false);
   const [correctType, setCorrectType] = useState<string>("");
+
+  const [isOwner, setIsOwner] = useState(false);
+  const [restricted, setRestricted] = useState(false);
+  const [grantedMembers, setGrantedMembers] = useState<{ id: string; email: string }[]>([]);
+  const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
+  const [accessBusy, setAccessBusy] = useState(false);
 
   async function load() {
     const res = await fetch(`/api/cases/${id}`);
@@ -88,8 +100,64 @@ export default function CaseDetailPage() {
     }
   }
 
+  // Access control (restrict this case to specific members) is
+  // OWNER-only — see api/cases/:id/access. Loaded separately from the
+  // main case fetch since a non-owner's request would just 403/404.
+  async function loadAccess() {
+    const meRes = await fetch("/api/auth/me");
+    if (!meRes.ok) return;
+    const me = await meRes.json();
+    if (me.member.role !== "OWNER") return;
+    setIsOwner(true);
+
+    const [accessRes, membersRes] = await Promise.all([fetch(`/api/cases/${id}/access`), fetch("/api/members")]);
+    if (accessRes.ok) {
+      const data = await accessRes.json();
+      setRestricted(data.restricted);
+      setGrantedMembers(data.grantedMembers);
+    }
+    if (membersRes.ok) {
+      setOrgMembers(await membersRes.json());
+    }
+  }
+
+  async function toggleRestricted(next: boolean) {
+    setAccessBusy(true);
+    try {
+      const res = await fetch(`/api/cases/${id}/access`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restricted: next }),
+      });
+      if (res.ok) setRestricted(next);
+    } finally {
+      setAccessBusy(false);
+    }
+  }
+
+  async function grantAccess(memberId: string) {
+    setAccessBusy(true);
+    try {
+      const res = await fetch(`/api/cases/${id}/access/${memberId}`, { method: "PUT" });
+      if (res.ok) await loadAccess();
+    } finally {
+      setAccessBusy(false);
+    }
+  }
+
+  async function revokeAccess(memberId: string) {
+    setAccessBusy(true);
+    try {
+      const res = await fetch(`/api/cases/${id}/access/${memberId}`, { method: "DELETE" });
+      if (res.ok) await loadAccess();
+    } finally {
+      setAccessBusy(false);
+    }
+  }
+
   useEffect(() => {
     load();
+    loadAccess();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -292,6 +360,46 @@ export default function CaseDetailPage() {
           </a>
         </p>
       </header>
+
+      {isOwner && (
+        <section className="mt-8 border-b border-line pb-8 dark:border-line-dark">
+          <p className="kicker mb-4">Access</p>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={restricted}
+              disabled={accessBusy}
+              onChange={(e) => toggleRestricted(e.target.checked)}
+            />
+            Restrict this case to specific members (you always have access)
+          </label>
+          {restricted && (
+            <div className="mt-4 flex flex-col gap-2">
+              {orgMembers
+                .filter((m) => m.role !== "OWNER")
+                .map((m) => {
+                  const granted = grantedMembers.some((g) => g.id === m.id);
+                  return (
+                    <div key={m.id} className="flex items-center justify-between text-sm">
+                      <span>{m.email}</span>
+                      <button
+                        type="button"
+                        className="font-mono text-xs text-seal-500 hover:underline disabled:opacity-50 dark:text-seal-400"
+                        disabled={accessBusy}
+                        onClick={() => (granted ? revokeAccess(m.id) : grantAccess(m.id))}
+                      >
+                        {granted ? "Revoke" : "Grant"}
+                      </button>
+                    </div>
+                  );
+                })}
+              {orgMembers.filter((m) => m.role !== "OWNER").length === 0 && (
+                <p className="text-sm text-muted dark:text-muted-dark">No other members to grant access to.</p>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {note && (
         <p className="mt-6 border-l-2 border-status-active bg-status-active/5 py-2 pl-4 text-sm text-status-active">

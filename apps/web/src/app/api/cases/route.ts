@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
+import { caseVisibilityWhere } from "@/lib/case-access";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -121,7 +122,7 @@ export async function GET(req: NextRequest) {
   }
 
   const cases = await prisma.case.findMany({
-    where: { organizationId: auth.organizationId },
+    where: { organizationId: auth.organizationId, ...caseVisibilityWhere(auth) },
     orderBy: { createdAt: "desc" },
   });
   return NextResponse.json(cases);

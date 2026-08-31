@@ -5,6 +5,7 @@ import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/
 import { logAction } from "@/lib/audit";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { enqueueJob, ensureJobPoller } from "@/lib/jobs";
+import { canAccessCase } from "@/lib/case-access";
 
 // POST /api/cases/:id/adjudicate — the Adjudication Builder step: validate
 // evidence completeness against the policy, then hand off to GenLayer via
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     where: { id: params.id },
     include: { evidence: true },
   });
-  if (!kase || kase.organizationId !== auth.organizationId) {
+  if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
   if (kase.status !== "EVIDENCE_COLLECTION") {

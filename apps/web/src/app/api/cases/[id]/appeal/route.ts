@@ -4,6 +4,7 @@ import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/
 import { logAction } from "@/lib/audit";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { enqueueJob, ensureJobPoller } from "@/lib/jobs";
+import { canAccessCase } from "@/lib/case-access";
 
 // POST /api/cases/:id/appeal — contest a decision within its appeal
 // window and trigger exactly one re-adjudication round. The contract
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     where: { id: params.id },
     include: { decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
-  if (!kase || kase.organizationId !== auth.organizationId) {
+  if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
   if (kase.status !== "APPEAL_WINDOW") {
