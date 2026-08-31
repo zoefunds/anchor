@@ -21,8 +21,8 @@ def _mock_llm(direct_vm, response: dict):
 
 
 def test_full_release_agent_data_task(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-1", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-1", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "RELEASE_FULL",
@@ -48,8 +48,8 @@ def test_full_release_agent_data_task(direct_vm, direct_deploy, direct_alice):
 
 
 def test_full_refund_agent_data_task(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-2", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-2", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "REFUND_FULL",
@@ -74,8 +74,8 @@ def test_full_refund_agent_data_task(direct_vm, direct_deploy, direct_alice):
 
 
 def test_escrow_release_policy(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-3", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-3", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "RELEASE_PARTIAL",
@@ -101,8 +101,8 @@ def test_escrow_release_policy(direct_vm, direct_deploy, direct_alice):
 
 
 def test_invoice_dispute_policy(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-4", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-4", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "REFUND_FULL",
@@ -127,16 +127,16 @@ def test_invoice_dispute_policy(direct_vm, direct_deploy, direct_alice):
 
 
 def test_rejects_unknown_policy(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-5", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-5", "party_A", "party_B", 10**18)
 
     with direct_vm.expect_revert("[EXPECTED]"):
         contract.adjudicate("not_a_real_policy", json.dumps({}))
 
 
 def test_rejects_missing_required_evidence(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-6", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-6", "party_A", "party_B", 10**18)
 
     evidence = json.dumps({"task_spec": "Return trades.", "delivery_payload": ""})
     with direct_vm.expect_revert("[EXPECTED]"):
@@ -144,16 +144,16 @@ def test_rejects_missing_required_evidence(direct_vm, direct_deploy, direct_alic
 
 
 def test_rejects_malformed_evidence_json(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-7", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-7", "party_A", "party_B", 10**18)
 
     with direct_vm.expect_revert("[EXPECTED]"):
         contract.adjudicate("agent_data_task_v1", "not json")
 
 
 def test_rejects_re_adjudication_of_decided_case(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-8", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-8", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "RELEASE_FULL",
@@ -174,8 +174,8 @@ def test_rejects_re_adjudication_of_decided_case(direct_vm, direct_deploy, direc
 
 
 def test_malformed_llm_json_raises_llm_error(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-9", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-9", "party_A", "party_B", 10**18)
 
     direct_vm.mock_llm(r".*", "not json at all, just prose")
 
@@ -188,8 +188,8 @@ def test_malformed_llm_json_raises_llm_error(direct_vm, direct_deploy, direct_al
 
 
 def test_appeal_allows_one_re_adjudication(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-10", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-10", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "RELEASE_FULL",
@@ -233,8 +233,8 @@ def test_appeal_allows_one_re_adjudication(direct_vm, direct_deploy, direct_alic
 
 
 def test_rejects_appeal_beyond_limit(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-11", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-11", "party_A", "party_B", 10**18)
 
     _mock_llm(direct_vm, {
         "outcome": "RELEASE_FULL",
@@ -257,8 +257,119 @@ def test_rejects_appeal_beyond_limit(direct_vm, direct_deploy, direct_alice):
 
 
 def test_rejects_appeal_before_decided(direct_vm, direct_deploy, direct_alice):
-    contract = direct_deploy(CONTRACT, "CASE-12", "party_A", "party_B", 10**18)
     direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-12", "party_A", "party_B", 10**18)
 
     with direct_vm.expect_revert("is not in a decided state"):
         contract.appeal()
+
+
+def test_rejects_adjudicate_from_non_owner(direct_vm, direct_deploy, direct_alice, direct_bob):
+    direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-13", "party_A", "party_B", 10**18)
+
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Only the deploying account"):
+        contract.adjudicate("agent_data_task_v1", evidence)
+
+
+def test_rejects_appeal_from_non_owner(direct_vm, direct_deploy, direct_alice, direct_bob):
+    direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-14", "party_A", "party_B", 10**18)
+
+    _mock_llm(direct_vm, {
+        "outcome": "RELEASE_FULL",
+        "claimant_share_bps": 0,
+        "respondent_share_bps": 10000,
+        "reason_codes": ["SPEC_FULLY_MET"],
+        "requirements_total": 3,
+        "requirements_met": 3,
+    })
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    contract.adjudicate("agent_data_task_v1", evidence)
+
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Only the deploying account"):
+        contract.appeal()
+
+
+def test_rejects_outcome_split_mismatch(direct_vm, direct_deploy, direct_alice):
+    direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-15", "party_A", "party_B", 10**18)
+
+    # A malformed leader response: RELEASE_FULL should mean
+    # claimant_share_bps=0, but the LLM handed back a split that
+    # contradicts its own stated outcome. The contract must reject this
+    # deterministically, not relay a self-inconsistent decision.
+    _mock_llm(direct_vm, {
+        "outcome": "RELEASE_FULL",
+        "claimant_share_bps": 3000,
+        "respondent_share_bps": 7000,
+        "reason_codes": ["SPEC_FULLY_MET"],
+        "requirements_total": 3,
+        "requirements_met": 3,
+    })
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    with direct_vm.expect_revert("[LLM_ERROR]"):
+        contract.adjudicate("agent_data_task_v1", evidence)
+
+
+def test_undetermined_outcome_forces_zero_split(direct_vm, direct_deploy, direct_alice):
+    direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-16", "party_A", "party_B", 10**18)
+
+    # Even if the LLM hands back a nonzero split alongside UNDETERMINED,
+    # the contract must zero it - no money should ever move on a
+    # non-financial outcome.
+    _mock_llm(direct_vm, {
+        "outcome": "UNDETERMINED",
+        "claimant_share_bps": 5000,
+        "respondent_share_bps": 5000,
+        "reason_codes": ["SPEC_AMBIGUOUS"],
+        "requirements_total": 0,
+        "requirements_met": 0,
+    })
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    contract.adjudicate("agent_data_task_v1", evidence)
+
+    decision = json.loads(contract.get_decision())
+    assert decision["outcome"] == "UNDETERMINED"
+    assert decision["claimant_share_bps"] == 0
+    assert decision["respondent_share_bps"] == 0
+
+
+def test_decision_includes_evidence_hash(direct_vm, direct_deploy, direct_alice):
+    import hashlib
+
+    direct_vm.sender = direct_alice
+    contract = direct_deploy(CONTRACT, "CASE-17", "party_A", "party_B", 10**18)
+
+    _mock_llm(direct_vm, {
+        "outcome": "RELEASE_FULL",
+        "claimant_share_bps": 0,
+        "respondent_share_bps": 10000,
+        "reason_codes": ["SPEC_FULLY_MET"],
+        "requirements_total": 3,
+        "requirements_met": 3,
+    })
+    evidence = json.dumps({
+        "task_spec": "spec", "delivery_payload": "payload",
+        "claimant_statement": "stmt", "respondent_statement": "stmt",
+    })
+    contract.adjudicate("agent_data_task_v1", evidence)
+
+    decision = json.loads(contract.get_decision())
+    assert decision["evidence_hash"] == hashlib.sha256(evidence.encode("utf-8")).hexdigest()

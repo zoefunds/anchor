@@ -29,6 +29,7 @@
 # before deploying; it validates the runner header and storage typing this
 # file depends on.
 
+import hashlib
 import json
 import re
 
@@ -305,6 +306,40 @@ def _coerce_decision_fields(obj: dict, reason_codes: tuple) -> dict:
     if not (0 <= claimant_bps <= 10000) or not (0 <= respondent_bps <= 10000):
         raise gl.vm.UserError(f"{ERROR_LLM} share_bps out of range 0-10000")
 
+    # Outcome<->split invariants, enforced deterministically here rather
+    # than trusted from the LLM's own arithmetic - an LLM can produce an
+    # internally-consistent-looking JSON object whose outcome and split
+    # don't actually agree (e.g. outcome=RELEASE_FULL but
+    # claimant_share_bps=3000), which would otherwise reach a real
+    # settlement relay unexamined. Rejecting here (forcing a disagree/
+    # retry, the same mechanism used for any other malformed LLM output)
+    # means a case can only ever reach DECIDED with a split that actually
+    # matches its outcome.
+    if outcome == "RELEASE_FULL":
+        if claimant_bps != 0 or respondent_bps != 10000:
+            raise gl.vm.UserError(
+                f"{ERROR_LLM} RELEASE_FULL requires claimant_share_bps=0, respondent_share_bps=10000 "
+                f"(got {claimant_bps}/{respondent_bps})"
+            )
+    elif outcome == "REFUND_FULL":
+        if claimant_bps != 10000 or respondent_bps != 0:
+            raise gl.vm.UserError(
+                f"{ERROR_LLM} REFUND_FULL requires claimant_share_bps=10000, respondent_share_bps=0 "
+                f"(got {claimant_bps}/{respondent_bps})"
+            )
+    elif outcome in ("RELEASE_PARTIAL", "REFUND_PARTIAL"):
+        if claimant_bps + respondent_bps != 10000:
+            raise gl.vm.UserError(
+                f"{ERROR_LLM} shares must sum to 10000, got {claimant_bps}+{respondent_bps}="
+                f"{claimant_bps + respondent_bps}"
+            )
+    else:
+        # REQUEST_MORE_EVIDENCE / UNDETERMINED never move money - force the
+        # split to zero regardless of what the model returned, rather than
+        # trusting/relaying a split that shouldn't be acted on at all.
+        claimant_bps = 0
+        respondent_bps = 0
+
     return {
         "outcome": outcome,
         "claimant_share_bps": claimant_bps,
@@ -318,6 +353,7 @@ MAX_APPEALS = 1
 
 class Adjudicator(gl.Contract):
     # Storage fields are class-level annotations - __init__ only sets values.
+    owner: Address  # the account that deployed this contract (Anchor's own backend wallet)
     case_id: str
     claimant_ref: str
     respondent_ref: str
@@ -327,6 +363,7 @@ class Adjudicator(gl.Contract):
     appeal_count: u256
 
     def __init__(self, case_id: str, claimant_ref: str, respondent_ref: str, atto_amount: u256):
+        self.owner = gl.message.sender_address
         self.case_id = case_id
         self.claimant_ref = claimant_ref
         self.respondent_ref = respondent_ref
@@ -334,6 +371,15 @@ class Adjudicator(gl.Contract):
         self.status = "PENDING"
         self.decision_json = ""
         self.appeal_count = u256(0)
+
+    def _require_owner(self) -> None:
+        # Deploy address only - knowing a contract's address (public,
+        # visible on-chain) must not be enough to submit evidence-bearing
+        # calls against it. Without this, anyone could call adjudicate()
+        # with their own evidence_json, or consume the one appeal, on a
+        # case they have no relationship to.
+        if gl.message.sender_address != self.owner:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only the deploying account may call this")
 
     @gl.public.write
     def appeal(self) -> None:
@@ -344,6 +390,7 @@ class Adjudicator(gl.Contract):
         decision. Capped at MAX_APPEALS to prevent an unbounded appeal
         loop; the cap is enforced here (deterministically, on-chain) so a
         compromised backend can't grant itself extra appeal rounds."""
+        self._require_owner()
         if self.status != "DECIDED":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Case {self.case_id} is not in a decided state")
         if self.appeal_count >= MAX_APPEALS:
@@ -358,6 +405,7 @@ class Adjudicator(gl.Contract):
 
     @gl.public.write
     def adjudicate(self, policy_id: str, evidence_json: str) -> None:
+        self._require_owner()
         if self.status == "DECIDED":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Case {self.case_id} already decided")
 
@@ -423,6 +471,17 @@ class Adjudicator(gl.Contract):
 
         result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
+        # A deterministic hash of the exact evidence_json calldata every
+        # validator agreed to adjudicate against - not the nondeterministic
+        # LLM output, just the plain input bytes, so this needs no
+        # consensus of its own and every node computes the identical
+        # value. This is what makes the decision genuinely verifiable:
+        # anyone holding the evidence can recompute this hash and confirm
+        # it matches what's permanently recorded in decision_json, instead
+        # of only trusting Anchor's own database that it adjudicated on
+        # the evidence it claims to have.
+        evidence_hash = hashlib.sha256(evidence_json.encode("utf-8")).hexdigest()
+
         decision = {
             "case_id": self.case_id,
             "policy_id": policy_id,
@@ -432,6 +491,7 @@ class Adjudicator(gl.Contract):
             "respondent_share_bps": result["respondent_share_bps"],
             "reason_codes": result["reason_codes"],
             "consensus": "ACCEPTED",
+            "evidence_hash": evidence_hash,
         }
         self.decision_json = json.dumps(decision)
         self.status = "DECIDED"
