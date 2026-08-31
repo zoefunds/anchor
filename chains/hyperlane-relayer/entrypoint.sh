@@ -51,7 +51,20 @@ WHITELIST='[
 # on 100% bundled defaults the whole time, which is why removing a
 # dead provider from config.json alone didn't fix anything until this
 # was added.
-export CONFIG_FILES=/config/config.json
+#
+# config.json is baked into the image and can't hold a real API key
+# (that would commit a live credential to git). It has a
+# __ALCHEMY_SEPOLIA_RPC_URL__ placeholder instead, substituted here at
+# container start from the ALCHEMY_SEPOLIA_RPC_URL Fly secret — never
+# baked into the image, never written to disk except this generated
+# runtime copy. If the secret isn't set, the substitution falls back
+# to an unreachable placeholder host — the fallback provider list (the
+# other free providers) will just keep failing to connect to it,
+# which is harmless: one more failed fallback attempt per rotation,
+# same as any other down provider.
+sed "s#__ALCHEMY_SEPOLIA_RPC_URL__#${ALCHEMY_SEPOLIA_RPC_URL:-https://invalid.example.invalid}#g" \
+  /config/config.json > /tmp/config.json
+export CONFIG_FILES=/tmp/config.json
 
 exec ./relayer \
   --db /data \
