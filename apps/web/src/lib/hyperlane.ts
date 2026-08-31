@@ -6,7 +6,18 @@ import {
   type SealevelDecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
-import { pad } from "viem";
+import { pad, createPublicClient, http } from "viem";
+import { sepolia } from "viem/chains";
+
+const PROCESSED_DECISIONS_ABI = [
+  {
+    type: "function",
+    name: "processedDecisions",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
 
 // GenLayer isn't a Hyperlane domain (checked - not supported by Hyperlane
 // or LayerZero), so Anchor's backend dispatches the DecisionRelay message
@@ -58,6 +69,34 @@ function hashToBytes32(hash: string, label: string): Hex {
 
 const SEALEVEL_CHAINS = new Set(["solanatestnet"]);
 
+/** Thrown when reconciliation (see isDecisionSettledOnSepolia below) finds the destination contract already marked this exact decision settled — a prior dispatch's transaction landed even though Anchor's own record of it (relayTxHash) never got written, e.g. a crash between the on-chain call succeeding and the DB update. Distinct from a normal dispatch failure so the caller can record "already settled, no local txHash to show" instead of treating this as an error to keep retrying. */
+export class DecisionAlreadySettledError extends Error {
+  constructor(decisionHash: string) {
+    super(`decision ${decisionHash} is already marked processed on the destination contract`);
+    this.name = "DecisionAlreadySettledError";
+  }
+}
+
+/**
+ * Destination-side reconciliation: checks DecisionRelay.sol's own
+ * processedDecisions(bytes32) mapping (see the contract's idempotency
+ * guard) before dispatching, so a retry after a lost local record (the
+ * relay transaction succeeded but this process crashed or the DB write
+ * failed before relayTxHash was saved) doesn't even attempt a redundant
+ * send — it can only ever be rejected on-chain anyway, but checking
+ * first avoids wasting a real transaction and gas on a guaranteed
+ * revert, and gives the caller a clean signal to stop retrying.
+ */
+async function isDecisionSettledOnSepolia(settlementContract: Address, decisionHashBytes32: Hex): Promise<boolean> {
+  const client = createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
+  return client.readContract({
+    address: settlementContract,
+    abi: PROCESSED_DECISIONS_ABI,
+    functionName: "processedDecisions",
+    args: [decisionHashBytes32],
+  });
+}
+
 /**
  * Dispatches a DecisionRelay Hyperlane message for a decided case with a
  * settlement target configured. "sepolia" dispatches to an EVM
@@ -77,13 +116,19 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
     // decision missing real evidence binding still fails loudly here
     // rather than only surfacing as a malformed decisionHash later.
     hashToBytes32(params.evidenceHash, "evidenceHash");
+    const decisionHashBytes32 = hashToBytes32(params.decisionHash, "decisionHash");
+
+    if (await isDecisionSettledOnSepolia(params.settlementContract as Address, decisionHashBytes32)) {
+      throw new DecisionAlreadySettledError(params.decisionHash);
+    }
+
     const payload: DecisionRelayPayload = {
       caseId: params.caseId,
       outcome: params.outcome,
       claimantAmount: params.claimantAmountAtto,
       respondentAmount: params.respondentAmountAtto,
       escrowId: pad("0x0", { size: 32 }), // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
-      proofHash: hashToBytes32(params.decisionHash, "decisionHash"),
+      proofHash: decisionHashBytes32,
     };
     return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
   }
@@ -106,6 +151,7 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       escrowProgram: params.settlementSolanaEscrowProgram,
       claimantShareBps: params.claimantShareBps,
       respondentShareBps: params.respondentShareBps,
+      decisionHash: hashToBytes32(params.decisionHash, "decisionHash"),
     };
     return dispatchDecisionRelayToSealevel(config, HYPERLANE_DOMAIN.solanaTestnet, params.settlementContract, payload);
   }

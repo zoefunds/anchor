@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/lib/genlayer";
 import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
-import { dispatchDecisionForCase } from "@/lib/hyperlane";
+import { dispatchDecisionForCase, DecisionAlreadySettledError } from "@/lib/hyperlane";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
@@ -140,6 +140,27 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
       data: { caseId: kase.id, txHash, messageId },
     });
   } catch (relayErr) {
+    if (relayErr instanceof DecisionAlreadySettledError) {
+      // Reconciliation caught what a lost local record would otherwise
+      // have retried forever: the destination contract already has this
+      // exact decisionHash marked processed, so a prior dispatch's
+      // transaction genuinely landed even though relayTxHash never got
+      // written here (crash, dropped connection, etc. between the send
+      // and the DB update). There's no local txHash to show for it —
+      // "reconciled:onchain" records that this was detected via
+      // destination-chain state, not a transaction this process itself
+      // observed succeeding — but relayTxHash being non-null is what
+      // stops every future dispatch attempt (see the guard at the top
+      // of this function and the atomic claim above), which is what
+      // actually matters here.
+      // eslint-disable-next-line no-console
+      console.error(`decision ${decision.id} for case ${kase.id} already settled on-chain — reconciled, not re-sent`);
+      await prisma.decision.update({
+        where: { id: decision.id },
+        data: { relayTxHash: "reconciled:onchain", relayError: null, relayAttempts: { increment: 1 } },
+      });
+      return;
+    }
     // A failed relay dispatch doesn't undo the decision itself — the
     // adjudication succeeded and is recorded regardless. Record the
     // error so it's visible; retryFailedSettlements' periodic sweep (not

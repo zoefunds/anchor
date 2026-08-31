@@ -118,6 +118,15 @@ pub struct DecisionRelayBody {
     pub escrow_program: Pubkey,
     pub claimant_share_bps: u16,
     pub respondent_share_bps: u16,
+    /// sha256 fingerprint of the full decision (case/policy ids, outcome,
+    /// shares, reason codes, proofHash, contractCodeHash — see
+    /// adjudication-service.ts's computeDecisionHash on the Anchor
+    /// backend). The same value carried as EVM DecisionRelay.sol's
+    /// proofHash, so this side can bind settlement to the exact decision
+    /// Anchor claims to have made, not just the shares it derived from
+    /// it. Checked against `processed` in `handle` for the same
+    /// destination-side idempotency the EVM contract enforces.
+    pub decision_hash: [u8; 32],
 }
 
 /// The CASE_ORIGINATE message body this program dispatches outbound.

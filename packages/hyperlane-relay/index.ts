@@ -175,6 +175,8 @@ export interface SealevelDecisionRelayPayload {
   escrowProgram: string;
   claimantShareBps: number;
   respondentShareBps: number;
+  /** sha256 fingerprint of the full decision (see adjudication-service.ts's computeDecisionHash), 32 raw bytes — the same value carried as EVM DecisionRelay's proofHash, so a Solana destination can bind settlement to the exact policy/outcome/proof bundle Anchor decided on, not just the shares. Must match decision-relay's Rust DecisionRelayBody struct exactly (chains/solana/programs/decision-relay/src/lib.rs). */
+  decisionHash: Hex;
 }
 
 function base58Decode(input: string): Uint8Array {
@@ -210,6 +212,16 @@ function pubkeyBytes(base58: string): Uint8Array {
   return bytes;
 }
 
+function decisionHashBytes(hash: Hex): Uint8Array {
+  const hex = hash.startsWith("0x") ? hash.slice(2) : hash;
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(`decisionHash must be a 32-byte hex string (sha256 hex digest), got: ${hash}`);
+  }
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
 /** Matches decision-relay's `DecisionRelayBody` Borsh layout exactly — see module comment above. */
 export function encodeSealevelDecisionRelayBody(payload: SealevelDecisionRelayPayload): Hex {
   const caseIdBytes = new TextEncoder().encode(payload.caseId);
@@ -229,6 +241,7 @@ export function encodeSealevelDecisionRelayBody(payload: SealevelDecisionRelayPa
     pubkeyBytes(payload.escrowProgram),
     claimantSharePrefix,
     respondentSharePrefix,
+    decisionHashBytes(payload.decisionHash),
   ];
   const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
   const out = new Uint8Array(totalLength);

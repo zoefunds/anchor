@@ -63,6 +63,18 @@ contract DecisionRelay is IMessageRecipient {
     mapping(uint32 => bytes32) public trustedSender;
     mapping(uint32 => address) public settlementTarget;
 
+    // Destination-side idempotency: proofHash now carries the decision's
+    // own content hash (case/policy/outcome/shares/reasonCodes — see
+    // adjudication-service.ts's computeDecisionHash), not just an
+    // evidence-binding hash, so it uniquely identifies "this exact
+    // decision, settled." Anchor's backend can retry a dispatch after a
+    // process/DB failure without knowing whether the prior attempt's
+    // transaction actually landed; this guard makes that safe — a second
+    // Hyperlane message carrying the same proofHash reverts here instead
+    // of calling settle() twice, regardless of how many times Anchor
+    // (mistakenly or not) sends it.
+    mapping(bytes32 => bool) public processedDecisions;
+
     event DecisionReceived(bytes32 indexed caseId, string outcome, bytes32 proofHash);
     event CaseOriginated(bytes32 indexed caseId, uint32 destinationDomain, bytes32 messageId);
 
@@ -115,6 +127,9 @@ contract DecisionRelay is IMessageRecipient {
             bytes32 escrowId,
             bytes32 proofHash
         ) = abi.decode(_messageBody, (bytes32, string, uint256, uint256, bytes32, bytes32));
+
+        require(!processedDecisions[proofHash], "decision already settled");
+        processedDecisions[proofHash] = true;
 
         emit DecisionReceived(caseId, outcome, proofHash);
 
