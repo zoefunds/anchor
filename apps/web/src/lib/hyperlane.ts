@@ -36,8 +36,10 @@ export interface DispatchDecisionParams {
   respondentAmountAtto: bigint;
   settlementChain: string;
   settlementContract: string;
-  /** The contract's own evidence_hash (sha256 hex, no 0x prefix) — see adjudicator.py's adjudicate(). Required; a decision with no real evidence_hash shouldn't be relayed with a fabricated stand-in. */
+  /** The contract's own evidence_hash (sha256 hex, no 0x prefix) — see adjudicator.py's adjudicate(). Required; a decision with no real evidence_hash shouldn't be relayed with a fabricated stand-in. Used only for local validation here — decisionHash below is what's actually carried on-chain as proofHash, since it's the field a destination can use to verify outcome/shares/policy, not just evidence binding. */
   evidenceHash: string;
+  /** sha256 fingerprint of the full decision (case/policy ids, outcome, shares, reason codes, evidenceHash, contractCodeHash) — see adjudication-service.ts's computeDecisionHash. This is what's actually transmitted as DecisionRelay's proofHash field, so a destination can verify the settled outcome against the decision Anchor claims to have made, not just that some evidence existed. */
+  decisionHash: string;
   /** Sealevel-only — see schema.prisma's settlementSolana* fields for why these can't reuse claimantRef/respondentRef/id. */
   settlementSolanaClaimant?: string | null;
   settlementSolanaRespondent?: string | null;
@@ -45,11 +47,11 @@ export interface DispatchDecisionParams {
   settlementSolanaCaseId?: string | null;
 }
 
-/** Formats the contract's own hex-encoded evidence_hash (sha256, no 0x prefix) as a bytes32 for DecisionRelay.sol. */
-function evidenceHashToBytes32(evidenceHash: string): Hex {
-  const hex = evidenceHash.startsWith("0x") ? evidenceHash.slice(2) : evidenceHash;
+/** Formats a sha256 hex digest (evidenceHash or decisionHash, no 0x prefix) as a bytes32 for DecisionRelay.sol. */
+function hashToBytes32(hash: string, label: string): Hex {
+  const hex = hash.startsWith("0x") ? hash.slice(2) : hash;
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-    throw new Error(`evidenceHash must be a 32-byte hex string (sha256 hex digest), got: ${evidenceHash}`);
+    throw new Error(`${label} must be a 32-byte hex string (sha256 hex digest), got: ${hash}`);
   }
   return `0x${hex}` as Hex;
 }
@@ -71,13 +73,17 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
   const config = getRelayConfig();
 
   if (params.settlementChain === "sepolia") {
+    // Validate evidenceHash even though it isn't transmitted, so a
+    // decision missing real evidence binding still fails loudly here
+    // rather than only surfacing as a malformed decisionHash later.
+    hashToBytes32(params.evidenceHash, "evidenceHash");
     const payload: DecisionRelayPayload = {
       caseId: params.caseId,
       outcome: params.outcome,
       claimantAmount: params.claimantAmountAtto,
       respondentAmount: params.respondentAmountAtto,
       escrowId: pad("0x0", { size: 32 }), // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
-      proofHash: evidenceHashToBytes32(params.evidenceHash),
+      proofHash: hashToBytes32(params.decisionHash, "decisionHash"),
     };
     return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
   }

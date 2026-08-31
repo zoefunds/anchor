@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolvePartyToken } from "@/lib/party-auth";
 
-// GET /api/public/cases/:id — no auth. For the counterparty in a dispute
-// who doesn't hold an org session or API key but still needs to see the
-// case's evidence and verdict — e.g. the respondent when the claimant's
-// org is the one that filed the case in Anchor.
+// GET /api/public/cases/:id?token=... — for the counterparty in a
+// dispute who doesn't hold an org session or API key but still needs to
+// see the case's evidence and verdict. Requires a valid per-case party
+// token (see lib/party-auth.ts) — a bare case ID is not a credential,
+// and evidence/statements are exactly the kind of thing that must not
+// be readable by anyone who merely learns the ID (forwarded link,
+// referrer leak, log line, etc).
 //
 // Deliberately a narrow field set, not `prisma.case` wholesale: no
 // organizationId, no internal contractAddress-adjacent org context, and
@@ -12,7 +16,16 @@ import { prisma } from "@/lib/prisma";
 // literal submitted text — that's the whole point of showing evidence to
 // the other party) but nothing about which org filed it or its API
 // keys/members/billing.
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  const token = req.nextUrl.searchParams.get("token");
+  if (!token) {
+    return NextResponse.json({ error: "token query parameter is required" }, { status: 401 });
+  }
+  const resolved = await resolvePartyToken(token);
+  if (!resolved || resolved.caseId !== params.id) {
+    return NextResponse.json({ error: "invalid token" }, { status: 401 });
+  }
+
   const kase = await prisma.case.findUnique({
     where: { id: params.id },
     include: {

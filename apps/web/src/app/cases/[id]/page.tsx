@@ -355,9 +355,8 @@ export default function CaseDetailPage() {
           </p>
         )}
         <p className="mt-2 font-mono text-[11px] text-muted dark:text-muted-dark">
-          <a href={`/public/cases/${kase.id}`} target="_blank" rel="noreferrer" className="hover:text-seal-500 dark:hover:text-seal-400">
-            Public link for the other party →
-          </a>
+          Party links require a token — see the panel shown once when this case was filed, or reissue
+          via <code className="font-mono">POST /api/cases/{kase.id}/party-tokens</code>.
         </p>
       </header>
 
@@ -606,7 +605,8 @@ export default function CaseDetailPage() {
                 </label>
                 <p className="text-xs text-muted dark:text-muted-dark">
                   Images are seen and interpreted directly by the GenLayer contract — no text
-                  extraction. PDFs are only confirmed reachable; their content isn&apos;t machine-read.
+                  extraction. PDF text is extracted at upload time and sent as real evidence content
+                  (best-effort — an encrypted PDF or a scan with no text layer falls back to reachability only).
                 </p>
                 <button className="btn-primary self-start" type="submit" disabled={submitting || !file}>
                   {submitting ? "Uploading…" : "File exhibit"}

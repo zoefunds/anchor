@@ -114,15 +114,15 @@ export default function CasesPage() {
           </p>
           <div className="flex flex-col gap-3">
             <div>
-              <span className="field-label">Claimant token</span>
+              <span className="field-label">Claimant link</span>
               <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
-                {newPartyTokens.claimantToken}
+                {typeof window !== "undefined" ? window.location.origin : ""}/public/cases/{newPartyTokens.caseId}?token={newPartyTokens.claimantToken}
               </code>
             </div>
             <div>
-              <span className="field-label">Respondent token</span>
+              <span className="field-label">Respondent link</span>
               <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-xs dark:bg-white/5">
-                {newPartyTokens.respondentToken}
+                {typeof window !== "undefined" ? window.location.origin : ""}/public/cases/{newPartyTokens.caseId}?token={newPartyTokens.respondentToken}
               </code>
             </div>
           </div>

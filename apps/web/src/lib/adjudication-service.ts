@@ -9,6 +9,12 @@ import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 const MAX_RELAY_ATTEMPTS = 10;
+// How long a relayClaimedAt lease is honored before it's treated as an
+// abandoned attempt (crashed process, killed worker) rather than one
+// still in flight — long enough that a normal RPC round-trip to Sepolia
+// never trips it, short enough that a real crash doesn't stall
+// settlement for hours.
+const RELAY_CLAIM_TTL_MS = 5 * 60 * 1000;
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -75,14 +81,32 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
   if (decision.consensus !== "ACCEPTED") return;
   if (decision.relayTxHash) return; // already settled — retryFailedSettlements can call this again, must not double-dispatch
   if (decision.relayAttempts >= MAX_RELAY_ATTEMPTS) return; // see retryFailedSettlements' schema comment
-  if (!decision.proofHash) {
-    // Every real ACCEPTED decision has a proofHash (set from the
-    // contract's own evidence_hash when the Decision row was created -
-    // see runAdjudicationJob). Missing here means something upstream
-    // regressed; refuse to relay with no real proof rather than silently
-    // fabricating one.
+  if (!decision.proofHash || !decision.decisionHash) {
+    // Every real ACCEPTED decision has both (set when the Decision row
+    // was created - see runAdjudicationJob). Missing either means
+    // something upstream regressed; refuse to relay with no real proof
+    // rather than silently fabricating one.
     // eslint-disable-next-line no-console
-    console.error(`decision ${decision.id} for case ${kase.id} has no proofHash — refusing to dispatch settlement`);
+    console.error(`decision ${decision.id} for case ${kase.id} has no proofHash/decisionHash — refusing to dispatch settlement`);
+    return;
+  }
+
+  // Atomic claim/lease (see Decision.relayClaimedAt's schema comment) —
+  // only proceeds if no other worker holds an unexpired claim on this
+  // decision, so a concurrent retry sweep firing at the same moment as
+  // this call can't both pass the checks above and both dispatch.
+  const claimCutoff = new Date(Date.now() - RELAY_CLAIM_TTL_MS);
+  const claimed = await prisma.decision.updateMany({
+    where: {
+      id: decision.id,
+      relayTxHash: null,
+      OR: [{ relayClaimedAt: null }, { relayClaimedAt: { lt: claimCutoff } }],
+    },
+    data: { relayClaimedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    // eslint-disable-next-line no-console
+    console.error(`decision ${decision.id} for case ${kase.id} already has an in-flight relay claim — skipping`);
     return;
   }
 
@@ -104,6 +128,7 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
       settlementSolanaEscrowProgram: kase.settlementSolanaEscrowProgram,
       settlementSolanaCaseId: kase.settlementSolanaCaseId,
       evidenceHash: decision.proofHash,
+      decisionHash: decision.decisionHash,
     });
     await prisma.decision.update({
       where: { id: decision.id },
@@ -300,7 +325,13 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
     const nextStatus =
       decision.consensus !== "ACCEPTED" ? "UNDETERMINED" : isAppeal ? "FINALIZED" : "APPEAL_WINDOW";
 
-    const evidenceUsed = sortedEvidence.map((e) => `${e.type}:${e.contentHash}`);
+    // Hashes of what was actually sent to the contract (post-redaction,
+    // PDF-text-extraction) — not e.contentHash, which is the hash of the
+    // original uploaded evidence. Those two diverge for any statement
+    // that got redacted or any PDF whose extracted text replaced its
+    // storageRef, so hashing the original would let evidenceManifestHash
+    // "verify" content the adjudication never actually saw.
+    const evidenceUsed = Object.entries(evidence).map(([type, value]) => `${type}:${sha256Hex(value)}`);
     const proofHash = decision.evidenceHash ?? null;
     const contractCodeHash = computeContractCodeHash();
     const evidenceManifestHash = computeEvidenceManifestHash(evidenceUsed);

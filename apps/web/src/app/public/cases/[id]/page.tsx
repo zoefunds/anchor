@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { StatusStamp } from "@/components/StatusStamp";
 
 interface PublicEvidence {
@@ -38,12 +38,18 @@ interface PublicCase {
 
 export default function PublicCasePage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const id = params.id as string;
+  const token = searchParams.get("token");
   const [kase, setKase] = useState<PublicCase | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/public/cases/${id}`)
+    if (!token) {
+      setError("This link is missing its access token — ask whoever sent it for the full link.");
+      return;
+    }
+    fetch(`/api/public/cases/${id}?token=${encodeURIComponent(token)}`)
       .then(async (res) => {
         if (!res.ok) {
           const body = await res.json();
@@ -52,7 +58,7 @@ export default function PublicCasePage() {
         setKase(await res.json());
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [id]);
+  }, [id, token]);
 
   if (error) {
     return (

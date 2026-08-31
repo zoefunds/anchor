@@ -436,6 +436,17 @@ model Decision {
   // needs a human to look at why, not an unbounded retry loop hammering
   // a permanently broken settlement target forever.
   relayAttempts  Int      @default(0)
+  // A short-lived claim/lease: set atomically (via updateMany's WHERE
+  // guard, not read-then-write) immediately before a dispatch attempt
+  // starts, so a concurrent retry sweep can't also see relayTxHash=null
+  // and fire a second dispatch for the same decision while the first is
+  // still in flight. Cleared implicitly by relayTxHash being set on
+  // success; a stale claim (older than RELAY_CLAIM_TTL_MS, see
+  // adjudication-service.ts) is treated as an abandoned attempt and can
+  // be reclaimed - this bounds, but doesn't eliminate, the double-send
+  // window, since the real fix is destination-side idempotency keyed by
+  // decisionHash.
+  relayClaimedAt DateTime?
 
   @@index([caseId])
 }
