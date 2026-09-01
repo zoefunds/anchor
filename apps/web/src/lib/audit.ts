@@ -103,29 +103,59 @@ function computeRowHash(params: {
  * lifetime, released automatically at commit/rollback) while leaving
  * different organizations' chains fully concurrent with each other.
  */
-export async function logAction(params: LogActionParams): Promise<void> {
+/**
+ * `tx` lets a caller that's already inside its own `prisma.$transaction`
+ * pass that client through, so the audit write becomes part of the SAME
+ * atomic transaction as the mutation it's recording — either both commit
+ * or neither does, closing the real gap a re-audit flagged: without this,
+ * "the mutation succeeded but the audit write silently failed" was
+ * possible (this function used to catch and swallow that error), which
+ * is not an acceptable posture for a compliance trail. Omit `tx` for
+ * call sites that log AFTER an already-committed mutation (most of them
+ * — the mutation isn't naturally re-doable inside the audit write's own
+ * transaction); those still propagate a write failure to the caller
+ * (no more silent catch) so it surfaces as a real error instead of
+ * vanishing into a console.error, but can't retroactively undo a
+ * mutation that already committed. Case creation is the one call site
+ * this repo wraps with `tx`, since a false "creation failed" response
+ * with no audit-write atomicity would risk a client retry creating a
+ * duplicate case — see api/cases/route.ts.
+ */
+export async function logAction(params: LogActionParams, tx?: Prisma.TransactionClient): Promise<void> {
   const memberId = params.memberId ?? null;
   const apiKeyId = params.apiKeyId ?? null;
   const targetId = params.targetId ?? null;
   const metadata = (params.metadata as Prisma.InputJsonValue) ?? undefined;
 
-  try {
-    await prisma.$transaction(async (tx) => {
-      // hashtext() maps the organizationId string to a stable bigint-ish
-      // lock key; a 64-bit hash collision between two different real
-      // organization ids is astronomically unlikely and, even if it
-      // happened, would only ever cause extra (harmless) serialization
-      // between two unrelated orgs' writes, never a correctness issue.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.organizationId}))`;
+  const run = async (client: Prisma.TransactionClient) => {
+    // hashtext() maps the organizationId string to a stable bigint-ish
+    // lock key; a 64-bit hash collision between two different real
+    // organization ids is astronomically unlikely and, even if it
+    // happened, would only ever cause extra (harmless) serialization
+    // between two unrelated orgs' writes, never a correctness issue.
+    await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.organizationId}))`;
 
-      const previous = await tx.auditLog.findFirst({
-        where: { organizationId: params.organizationId },
-        orderBy: { createdAt: "desc" },
-        select: { hash: true },
-      });
-      const prevHash = previous?.hash ?? GENESIS_HASH;
-      const createdAt = new Date();
-      const hash = computeRowHash({
+    const previous = await client.auditLog.findFirst({
+      where: { organizationId: params.organizationId },
+      orderBy: { createdAt: "desc" },
+      select: { hash: true },
+    });
+    const prevHash = previous?.hash ?? GENESIS_HASH;
+    const createdAt = new Date();
+    const hash = computeRowHash({
+      organizationId: params.organizationId,
+      memberId,
+      apiKeyId,
+      action: params.action,
+      targetType: params.targetType,
+      targetId,
+      metadata,
+      createdAt,
+      prevHash,
+    });
+
+    await client.auditLog.create({
+      data: {
         organizationId: params.organizationId,
         memberId,
         apiKeyId,
@@ -135,27 +165,16 @@ export async function logAction(params: LogActionParams): Promise<void> {
         metadata,
         createdAt,
         prevHash,
-      });
-
-      await tx.auditLog.create({
-        data: {
-          organizationId: params.organizationId,
-          memberId,
-          apiKeyId,
-          action: params.action,
-          targetType: params.targetType,
-          targetId,
-          metadata,
-          createdAt,
-          prevHash,
-          hash,
-        },
-      });
+        hash,
+      },
     });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("audit log write failed:", err instanceof Error ? err.message : err);
+  };
+
+  if (tx) {
+    await run(tx);
+    return;
   }
+  await prisma.$transaction(run);
 }
 
 /**

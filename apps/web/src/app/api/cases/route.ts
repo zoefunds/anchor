@@ -106,37 +106,52 @@ export async function POST(req: NextRequest) {
   // against those keys remain verifiable, just weaker than a
   // self-registered one.
 
-  const kase = await prisma.case.create({
-    data: {
-      organizationId: auth.organizationId,
-      claim,
-      amount,
-      claimantRef,
-      respondentRef,
-      policyId: policy.id,
-      policyVersion: policy.version,
-      status: "EVIDENCE_COLLECTION",
-      settlementChain: settlementChain || null,
-      settlementContract: settlementContract || null,
-      settlementSolanaClaimant: isSealevelSettlement ? settlementSolanaClaimant : null,
-      settlementSolanaRespondent: isSealevelSettlement ? settlementSolanaRespondent : null,
-      settlementSolanaEscrowProgram: isSealevelSettlement ? settlementSolanaEscrowProgram : null,
-      settlementSolanaCaseId: isSealevelSettlement ? settlementSolanaCaseId : null,
-      claimantTokenHash: claimantToken.hash,
-      respondentTokenHash: respondentToken.hash,
-      claimantTokenExpiresAt: claimantToken.expiresAt,
-      respondentTokenExpiresAt: respondentToken.expiresAt,
-    },
-  });
+  // Case creation and its audit-log entry are wrapped in one transaction
+  // — see lib/audit.ts's `tx` param doc comment for why: this endpoint
+  // has no idempotency key, so a client that saw a 500 (from what would
+  // otherwise be "case created, but the audit write failed separately")
+  // would have no safe way to tell "did that actually create a case?"
+  // and a naive retry would create a duplicate. Wrapping both in one
+  // transaction means that failure mode can't happen — either both
+  // commit, or neither does and the response is honestly a failure.
+  const kase = await prisma.$transaction(async (tx) => {
+    const created = await tx.case.create({
+      data: {
+        organizationId: auth.organizationId,
+        claim,
+        amount,
+        claimantRef,
+        respondentRef,
+        policyId: policy.id,
+        policyVersion: policy.version,
+        status: "EVIDENCE_COLLECTION",
+        settlementChain: settlementChain || null,
+        settlementContract: settlementContract || null,
+        settlementSolanaClaimant: isSealevelSettlement ? settlementSolanaClaimant : null,
+        settlementSolanaRespondent: isSealevelSettlement ? settlementSolanaRespondent : null,
+        settlementSolanaEscrowProgram: isSealevelSettlement ? settlementSolanaEscrowProgram : null,
+        settlementSolanaCaseId: isSealevelSettlement ? settlementSolanaCaseId : null,
+        claimantTokenHash: claimantToken.hash,
+        respondentTokenHash: respondentToken.hash,
+        claimantTokenExpiresAt: claimantToken.expiresAt,
+        respondentTokenExpiresAt: respondentToken.expiresAt,
+      },
+    });
 
-  await logAction({
-    organizationId: auth.organizationId,
-    memberId: auth.memberId,
-    apiKeyId: auth.apiKeyId,
-    action: "case.created",
-    targetType: "case",
-    targetId: kase.id,
-    metadata: { policyId: policy.id, claim },
+    await logAction(
+      {
+        organizationId: auth.organizationId,
+        memberId: auth.memberId,
+        apiKeyId: auth.apiKeyId,
+        action: "case.created",
+        targetType: "case",
+        targetId: created.id,
+        metadata: { policyId: policy.id, claim },
+      },
+      tx
+    );
+
+    return created;
   });
 
   // Hashes aren't secret, but echoing them back is just noise the caller

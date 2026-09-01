@@ -14,6 +14,7 @@ no-entrypoint = []
 borsh = "1.5"
 solana-program = "=3.0.0"
 solana-system-interface = { version = "=2.0.0", features = ["bincode"] }
+solana-instructions-sysvar = "=3.0.1"
 
 account-utils = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
 hyperlane-sealevel-mailbox = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b", features = [
@@ -21,6 +22,15 @@ hyperlane-sealevel-mailbox = { git = "https://github.com/hyperlane-xyz/hyperlane
 ] }
 hyperlane-sealevel-message-recipient-interface = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
 serializable-account-meta = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+
+[dev-dependencies]
+# Only for the unit test building a real Ed25519 verify instruction to
+# parse against — the runtime program never needs this crate itself, it
+# parses the instructions sysvar's raw bytes directly (see
+# attested_settle's doc comment).
+solana-ed25519-program = "=3.0.0"
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+rand = "0.8"
 
 [lib]
 crate-type = ["cdylib", "lib"]

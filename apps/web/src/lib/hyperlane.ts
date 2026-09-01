@@ -1,11 +1,9 @@
 import {
   dispatchDecisionRelay,
-  dispatchDecisionRelayToSealevel,
   computeDecisionAttestationHash,
   caseIdToBytes32,
   HYPERLANE_DOMAIN,
   type DecisionRelayPayload,
-  type SealevelDecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
 import { pad, createPublicClient, http } from "viem";
@@ -127,7 +125,7 @@ async function isDecisionSettledOnSepolia(settlementContract: Address, decisionH
  * no-opping, so a misconfigured case surfaces immediately instead of
  * quietly never settling.
  */
-export async function dispatchDecisionForCase(params: DispatchDecisionParams): Promise<{ txHash: Hex; messageId: Hex }> {
+export async function dispatchDecisionForCase(params: DispatchDecisionParams): Promise<{ txHash: string; messageId: string }> {
   const config = getRelayConfig();
 
   if (params.settlementChain === "sepolia") {
@@ -177,16 +175,34 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
         `settlementChain "${params.settlementChain}" requires settlementSolanaClaimant/Respondent/EscrowProgram/CaseId to be set on the case`
       );
     }
-    const payload: SealevelDecisionRelayPayload = {
-      caseId: params.settlementSolanaCaseId,
-      claimant: params.settlementSolanaClaimant,
-      respondent: params.settlementSolanaRespondent,
-      escrowProgram: params.settlementSolanaEscrowProgram,
-      claimantShareBps: params.claimantShareBps,
-      respondentShareBps: params.respondentShareBps,
-      decisionHash: hashToBytes32(params.decisionHash, "decisionHash"),
-    };
-    return dispatchDecisionRelayToSealevel(config, HYPERLANE_DOMAIN.solanaTestnet, params.settlementContract, payload);
+    // Settlement itself is submitted directly (submitAttestedSettle), NOT
+    // via Hyperlane — see decision-relay's attested_settle doc comment
+    // for why Hyperlane delivery alone can no longer authorize moving
+    // funds on this chain (no way to attach an Ed25519 attestation
+    // verification instruction to a transaction the Hyperlane relayer
+    // binary builds itself). The Hyperlane dispatch path
+    // (dispatchDecisionRelayToSealevel) still exists and remains a valid
+    // way to deliver a notification-only record, but this function's
+    // job is settling real funds, so it calls the real settlement path.
+    const rpcUrl = process.env.SOLANA_RPC_URL;
+    if (!rpcUrl) {
+      throw new Error("SOLANA_RPC_URL is not set — see apps/web/.env.example");
+    }
+    const { submitAttestedSettle } = await import("@/lib/solana-settle");
+    const { signature } = await submitAttestedSettle(
+      {
+        decisionRelayProgramId: params.settlementContract,
+        caseId: params.settlementSolanaCaseId,
+        claimant: params.settlementSolanaClaimant,
+        respondent: params.settlementSolanaRespondent,
+        escrowProgram: params.settlementSolanaEscrowProgram,
+        claimantShareBps: params.claimantShareBps,
+        respondentShareBps: params.respondentShareBps,
+        decisionHash: Buffer.from(hashToBytes32(params.decisionHash, "decisionHash").slice(2), "hex"),
+      },
+      rpcUrl
+    );
+    return { txHash: signature, messageId: signature };
   }
 
   throw new Error(

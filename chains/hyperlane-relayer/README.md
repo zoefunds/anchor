@@ -15,6 +15,43 @@ removed entirely: `config.json`'s `solanadevnet` chain entry, the
 `apps/web`, and `chains/solana`'s deploy/dispatch scripts. If you need it
 back, `git log` has the removal commit and the working config it reverts.)
 
+**Update (this session, continued): Solana settlement no longer trusts
+Hyperlane delivery alone either.** A re-audit correctly flagged that the
+EVM attestor fix above didn't touch the Solana path at all — Hyperlane's
+own delivery to decision-relay's Solana program still CPI'd straight
+into escrow.settle() with no cryptographic check on the decision content,
+same permissive-relayer posture as before. Solana's equivalent of EVM's
+`ecrecover` is Ed25519 verification, but it requires a SEPARATE
+instruction in the same transaction — and this program has no control
+over how the Hyperlane relayer binary builds its own `process()`
+transaction, so an attestation check couldn't be bolted onto that path
+at all. Fixed per the re-audit's own recommended design: `handle()`
+(the Hyperlane-triggered entry point) is now notification-only — it
+validates and logs, but no longer calls `escrow.settle()`. A new
+`AttestedSettle` instruction (`chains/solana/programs/decision-relay/
+src/lib.rs`'s `attested_settle`) is the only path that moves funds,
+submitted by Anchor's backend directly (`apps/web/src/lib/
+solana-settle.ts`, not via Hyperlane) as a transaction containing a real
+Ed25519 signature-verification instruction immediately before it,
+checked via instruction introspection against a dedicated
+`ATTESTOR_PUBKEY` (`4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq` —
+Solana-native Ed25519, distinct from the EVM attestor's secp256k1 key,
+since neither chain's native signature scheme works on the other).
+
+Verified end to end against a real disputed escrow case
+(`CASE-RELAY-1788240381580`) on Solana Testnet: real `AttestedSettle`
+transaction [`2kKTvQpm...`](https://explorer.solana.com/tx/2kKTvQpm7t51hbMNfe8o2HioLghebn3pUDR38pUtv4vYmNMUWNyWMmVGMEKbdsJtnLGtpjtgPWQb7dMVCd9UYQDJ?cluster=testnet)
+— program log `decision-relay: attested-settled case
+CASE-RELAY-1788240381580`, `escrow.case.status` confirmed `Settled` via
+direct account read. A second AttestedSettle for the same case was
+correctly rejected on-chain with `AlreadySettled` (escrow's own guard,
+unchanged) — replay protection still holds under the new design. 5 Rust
+unit tests (`chains/solana/programs/decision-relay/src/lib.rs`'s
+`attestation_tests` module) cover the parsing/verification logic against
+a real `solana-ed25519-program`-generated instruction: real valid
+signature accepted, wrong signer rejected, tampered content rejected,
+non-Ed25519-program instruction rejected.
+
 **Update (this session): destination-side decision attestation added and
 proven live.** DecisionRelay.sol previously trusted whichever address
 dispatched the Hyperlane message (trustedSender) plus an opaque

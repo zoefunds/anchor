@@ -14,6 +14,7 @@
   "dependencies": {
     "@anchor/hyperlane-relay": "*",
     "@prisma/client": "^5.20.0",
+    "@solana/web3.js": "^1.98.4",
     "bullmq": "^6.3.2",
     "cloudinary": "^2.11.0",
     "genlayer-js": "^1.1.8",
