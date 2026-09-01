@@ -30,6 +30,14 @@ const MAX_RELAY_ATTEMPTS = 10;
 // never trips it, short enough that a real crash doesn't stall
 // settlement for hours.
 const RELAY_CLAIM_TTL_MS = 5 * 60 * 1000;
+// Sentinel relayError values for a dispatch blocked by an operator-imposed
+// gate (pause / settlement limit) rather than a real dispatch failure —
+// see dispatchSettlementForDecision's pause/limit branches and
+// retryFailedSettlements, which both rely on these being stable strings
+// so a blocked decision is neither silently stranded nor mistaken for a
+// row worth alerting on as "relay keeps genuinely failing."
+export const SETTLEMENT_BLOCKED_PAUSED = "SETTLEMENT_PAUSED";
+export const SETTLEMENT_BLOCKED_LIMIT_EXCEEDED = "LIMIT_EXCEEDED";
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
@@ -149,12 +157,32 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
   if (decision.relayTxHash) return; // already settled — retryFailedSettlements can call this again, must not double-dispatch
   if (decision.relayAttempts >= MAX_RELAY_ATTEMPTS) return; // see retryFailedSettlements' schema comment
   if (isSettlementPaused()) {
+    // Durably record the block as a relayError (WITHOUT incrementing
+    // relayAttempts) so retryFailedSettlements' periodic sweep — which
+    // only looks at relayError-set/relayTxHash-null rows — picks this
+    // decision back up automatically once SETTLEMENT_PAUSED is cleared,
+    // instead of the decision silently never being retried. A prior
+    // version of this gate returned here with no durable state at all,
+    // which stranded any decision finalized while paused forever, since
+    // nothing about "the pause got lifted" would ever re-trigger
+    // dispatch for it. Not counted as a real attempt because the block
+    // is operator-imposed, not a failure of this dispatch attempt.
+    if (decision.relayError !== SETTLEMENT_BLOCKED_PAUSED) {
+      await prisma.decision.update({ where: { id: decision.id }, data: { relayError: SETTLEMENT_BLOCKED_PAUSED } });
+    }
     // eslint-disable-next-line no-console
     console.error(`settlement dispatch paused (SETTLEMENT_PAUSED) — refusing to dispatch decision ${decision.id} for case ${kase.id}`);
     return;
   }
   const settlementLimitAtto = getSettlementLimitAtto(kase.settlementChain);
   if (settlementLimitAtto !== null && toAttoAmount(kase.amount.toString()) > settlementLimitAtto) {
+    // Same durable-block reasoning as the pause branch above — raising
+    // the configured limit later must be able to un-strand this decision
+    // via the same retry sweep, not require someone to notice and
+    // manually re-trigger dispatch.
+    if (decision.relayError !== SETTLEMENT_BLOCKED_LIMIT_EXCEEDED) {
+      await prisma.decision.update({ where: { id: decision.id }, data: { relayError: SETTLEMENT_BLOCKED_LIMIT_EXCEEDED } });
+    }
     // eslint-disable-next-line no-console
     console.error(`case ${kase.id} amount exceeds configured settlement limit for chain ${kase.settlementChain} — refusing to dispatch decision ${decision.id}`);
     return;

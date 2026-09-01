@@ -23,7 +23,7 @@
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { createPublicClient, http, type Address, type Hex } from "viem";
+import { createPublicClient, http, keccak256, type Address, type Hex } from "viem";
 import { sepolia } from "viem/chains";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -332,12 +332,20 @@ function checkOperatorIndependence(): void {
 // events) so this works even if the recipient contract changes shape —
 // Dispatch is Hyperlane's own canonical "a message left this chain"
 // event, emitted by the Mailbox regardless of recipient.
+// `destination` is indexed on Hyperlane's real Mailbox.sol (3 indexed
+// params total: sender, destination, recipient, + non-indexed message) —
+// a first version of this ABI marked it non-indexed, which decoded fine
+// structurally but threw decoding the uint32 from the wrong slice of
+// `data` (real error hit while building this check: "not in safe integer
+// range" on a garbage 256-bit number). Confirmed correct against a real
+// dispatch's raw log topics (4 topics: signature + 3 indexed args) before
+// relying on this for message ID derivation below.
 const MAILBOX_DISPATCH_EVENT = {
   type: "event",
   name: "Dispatch",
   inputs: [
     { name: "sender", type: "address", indexed: true },
-    { name: "destination", type: "uint32", indexed: false },
+    { name: "destination", type: "uint32", indexed: true },
     { name: "recipient", type: "bytes32", indexed: true },
     { name: "message", type: "bytes", indexed: false },
   ],
@@ -368,24 +376,41 @@ async function checkRecentDelivery(): Promise<void> {
     const block = await client.getBlock({ blockNumber: latest.blockNumber! });
     const ageSeconds = Date.now() / 1000 - Number(block.timestamp);
 
-    // Hyperlane's message id is keccak256 of the raw message bytes, not
-    // derivable from the Dispatch log's args alone without re-encoding
-    // the message header — rather than reimplementing that here (real
-    // risk of a subtle bytes mismatch silently producing a false
-    // negative), this reports the dispatch TRANSACTION's age and points
-    // the operator at the exact lookup command instead of guessing the
-    // message id itself.
-    if (ageSeconds > deployment.undeliveredMessageSlaSeconds) {
+    // The Dispatch event's own `message` field IS the exact raw message
+    // bytes the Mailbox already assembled (header + body) — Hyperlane's
+    // message id is simply keccak256 of those bytes. No re-encoding of
+    // the header is needed (that was the earlier, overly-cautious
+    // concern this comment used to describe); reading it straight off
+    // the log and hashing it is the same computation the Mailbox/relayer
+    // themselves do, not a reimplementation with its own bug surface.
+    const messageId = keccak256(latest.args.message as Hex);
+    const delivered = await client.readContract({
+      address: deployment.sepolia.mailbox,
+      abi: MAILBOX_DELIVERED_ABI,
+      functionName: "delivered",
+      args: [messageId],
+    });
+
+    if (delivered) {
+      record(
+        "delivery:recent",
+        "pass",
+        `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old and confirmed delivered`
+      );
+    } else if (ageSeconds > deployment.undeliveredMessageSlaSeconds) {
+      record(
+        "delivery:recent",
+        "fail",
+        `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old (SLA ${deployment.undeliveredMessageSlaSeconds}s) and NOT delivered — ` +
+          `check validator freshness above first (a stalled/stale validator is the most common real cause found during this project's own verification), then check ` +
+          `https://explorer.hyperlane.xyz for tx ${latest.transactionHash} for relayer-side detail.`
+      );
+    } else {
       record(
         "delivery:recent",
         "warn",
-        `most recent dispatch (tx ${latest.transactionHash}) is ${Math.round(ageSeconds)}s old (SLA ${deployment.undeliveredMessageSlaSeconds}s) — ` +
-          `confirm delivery manually: cast call ${deployment.sepolia.mailbox} "delivered(bytes32)(bool)" <messageId> --rpc-url ${deployment.sepolia.rpcUrl}, ` +
-          `or check https://explorer.hyperlane.xyz for tx ${latest.transactionHash}. If false/undelivered past SLA, check validator freshness above first — ` +
-          `a stalled/stale validator is the most common real cause found during this project's own verification.`
+        `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old and not yet delivered, but still within the ${deployment.undeliveredMessageSlaSeconds}s SLA`
       );
-    } else {
-      record("delivery:recent", "pass", `most recent dispatch (tx ${latest.transactionHash}) is ${Math.round(ageSeconds)}s old, within SLA`);
     }
   } catch (err) {
     record("delivery:recent", "warn", `could not check recent dispatches: ${err instanceof Error ? err.message : String(err)}`);
