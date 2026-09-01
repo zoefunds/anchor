@@ -217,36 +217,31 @@ async function checkFreshness(byValidator: Record<string, string[]>): Promise<vo
       }
       try {
         if (!res || !res.ok) {
-          record(`agent-liveness:${v.label}`, "warn", "skipped — metadata_latest.json not reachable (see reachability check above)");
+          record(`boot-metadata:${v.label}`, "warn", "skipped — metadata_latest.json not reachable (see reachability check above)");
           continue;
         }
         const lastModifiedHeader = res.headers.get("last-modified");
         if (!lastModifiedHeader) {
-          record(`agent-liveness:${v.label}`, "warn", "S3 response had no Last-Modified header — cannot determine freshness");
+          record(`boot-metadata:${v.label}`, "warn", "S3 response had no Last-Modified header — cannot determine age");
           continue;
         }
         const ageSeconds = (Date.now() - new Date(lastModifiedHeader).getTime()) / 1000;
-        // Renamed from "freshness" to "agent-liveness": metadata_latest.json
-        // is a per-boot heartbeat file the agent writes on startup,
-        // independent of whether it's actually keeping its SIGNED
-        // CHECKPOINT INDEX current against the chain tip — a real gap
-        // found live this pass. A validator can restart-loop (writing a
-        // fresh metadata_latest.json each boot) while its checkpoint
-        // index stays frozen far behind the tip, which is exactly what
-        // happened here: metadata_latest.json read as "fresh" seconds
-        // after each OOM-triggered restart, while the real checkpoint
-        // index hadn't advanced in over 15 minutes. See
-        // checkCheckpointCurrency below for the check that actually
-        // matters for delivery — this one only proves the process is
-        // alive and touching S3 at all, which is necessary but not
-        // sufficient.
-        if (ageSeconds > deployment.checkpointFreshnessThresholdSeconds) {
-          record(`agent-liveness:${v.label}`, "fail", `metadata_latest.json is ${Math.round(ageSeconds)}s old (threshold ${deployment.checkpointFreshnessThresholdSeconds}s) — validator process is not running or not reaching S3 at all`);
-        } else {
-          record(`agent-liveness:${v.label}`, "pass", `metadata_latest.json is ${Math.round(ageSeconds)}s old (process is alive — does NOT by itself prove checkpoint index is current, see checkpoint-currency below)`);
-        }
+        // Renamed from "agent-liveness" to "boot-metadata": confirmed live
+        // this pass that metadata_latest.json is written ONCE at agent
+        // startup, not on any periodic cadence — checked directly by
+        // observing it stay unchanged for 35-59+ minutes on validators that
+        // were simultaneously, demonstrably healthy (delivering real
+        // messages end-to-end during that same window). Its age therefore
+        // answers "how long since this process last restarted," not "is it
+        // alive now" or "is its checkpoint index current" — a real
+        // validator can run correctly for a long time and this file will
+        // still look "stale" the whole while. This can NEVER be a `fail`:
+        // an old boot-metadata file is not evidence of anything wrong.
+        // checkCheckpointCurrency and checkMessageCheckpointCoverage below
+        // are the checks that actually reflect live-route health.
+        record(`boot-metadata:${v.label}`, "warn", `metadata_latest.json last written ${Math.round(ageSeconds)}s ago — this is a write-once-at-boot timestamp, not a liveness signal; a long-uptime healthy validator will show a large value here. Ignore in isolation.`);
       } catch (err) {
-        record(`agent-liveness:${v.label}`, "fail", err instanceof Error ? err.message : String(err));
+        record(`boot-metadata:${v.label}`, "warn", err instanceof Error ? err.message : String(err));
       }
     }
   }
@@ -353,7 +348,19 @@ async function checkCheckpointCurrency(byValidator: Record<string, string[]>): P
       }
       const detail = `latest signed index: ${latestIndex}, root: ${root}, mailbox nonce: ${currentNonce}, lag: ${lag} leaves`;
       if (lag > deployment.maxCheckpointLagLeaves) {
-        record(`checkpoint-currency:${v.label}`, "fail", `${detail} — lag exceeds maxCheckpointLagLeaves (${deployment.maxCheckpointLagLeaves}); this validator cannot attest to recent messages`);
+        // Careful wording: this is CONTIGUOUS backfill lag (how far behind
+        // the sequential "latest index" pointer is), not proof that any
+        // specific recent message is undeliverable — backfill writes
+        // individual per-index checkpoints out of strict order, so a
+        // message dispatched at a high nonce can already have its own
+        // checkpoint written and be fully deliverable while the sequential
+        // pointer still lags behind it. Confirmed live: a message at nonce
+        // 872850 delivered successfully while this pointer sat at 871512,
+        // a reported "lag" of 1370. See checkMessageCheckpointCoverage
+        // below for the check that actually answers "is THIS message
+        // deliverable" — this one only answers "has backfill finished
+        // catching up sequentially," a slower and separate question.
+        record(`checkpoint-currency:${v.label}`, "fail", `${detail} — contiguous backfill lag exceeds maxCheckpointLagLeaves (${deployment.maxCheckpointLagLeaves}). This does NOT by itself mean a specific recent message is undeliverable — see message-checkpoint-coverage below for that.`);
       } else {
         record(`checkpoint-currency:${v.label}`, "pass", detail);
       }
@@ -559,12 +566,77 @@ async function checkRecentDelivery(): Promise<void> {
   }
 }
 
+// --- Check: does each validator's OWN published checkpoint actually
+// cover the most recently dispatched message's leaf, regardless of
+// where the sequential "latest index" backfill pointer sits? This is
+// the check checkCheckpointCurrency's own fail message points to —
+// confirmed live this pass that a message can be fully deliverable
+// (its own checkpoint exists and validates) while the sequential
+// pointer still reports a large contiguous lag, since backfill writes
+// individual per-index checkpoints out of strict order.
+function decodeMessageNonce(message: Hex): number {
+  // Hyperlane message header: version(1) + nonce(4) + origin(4) +
+  // sender(32) + destination(4) + recipient(32) + body. Nonce is bytes
+  // 1..5.
+  const hex = message.slice(2);
+  return parseInt(hex.slice(2, 10), 16);
+}
+
+async function checkMessageCheckpointCoverage(byValidator: Record<string, string[]>): Promise<void> {
+  try {
+    const currentBlock = await client.getBlockNumber();
+    const fromBlock = currentBlock - BigInt(deployment.dispatchLookbackBlocks);
+    const logs = await client.getLogs({
+      address: deployment.sepolia.mailbox,
+      event: MAILBOX_DISPATCH_EVENT,
+      args: { sender: deployment.sepolia.dispatcherAddress },
+      fromBlock,
+      toBlock: currentBlock,
+    });
+    if (logs.length === 0) {
+      record("message-checkpoint-coverage", "warn", "no recent dispatch to check coverage for");
+      return;
+    }
+    const latest = logs[logs.length - 1];
+    const nonce = decodeMessageNonce(latest.args.message as Hex);
+
+    for (const v of deployment.validators) {
+      const locs = byValidator[v.address] ?? [];
+      let found = false;
+      for (const loc of locs) {
+        if (!loc.startsWith("s3://") || found) continue;
+        const [, , bucket, ...prefixParts] = loc.split("/");
+        const announcedPrefix = prefixParts.join("/");
+        const regionStrippedPrefix = prefixParts.slice(1).join("/");
+        for (const prefix of [announcedPrefix, regionStrippedPrefix]) {
+          const url = `https://${bucket}.s3.amazonaws.com/${prefix}/checkpoint_${nonce}_with_id.json`;
+          const res = await fetch(url).catch(() => null);
+          if (res?.ok) {
+            found = true;
+            break;
+          }
+        }
+      }
+      record(
+        `message-checkpoint-coverage:${v.label}`,
+        found ? "pass" : "warn",
+        found
+          ? `validator has published its own checkpoint covering the most recent dispatch's leaf (nonce ${nonce}) — this message is deliverable by this validator's own attestation regardless of contiguous backfill lag`
+          : `no published checkpoint found yet for the most recent dispatch's leaf (nonce ${nonce}) — this validator cannot yet contribute to delivering this specific message (informational: if backfill is still in progress, this can resolve without any other action)`
+      );
+    }
+  } catch (err) {
+    record("message-checkpoint-coverage", "warn", `could not check: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function main() {
   const byValidator = await checkAnnouncements();
   await checkReachability(byValidator);
   await checkFreshness(byValidator);
   await checkCheckpointCurrency(byValidator);
   await checkRecentDelivery();
+  await checkMessageCheckpointCoverage(byValidator);
   await checkIsm();
   await checkDecisionRelayIsm();
   await checkTrustedSender();

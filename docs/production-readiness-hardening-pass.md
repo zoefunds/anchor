@@ -800,3 +800,58 @@ noted as a genuinely good property of how that test happened to be
 built — it proved delivery without creating any financial side effect —
 but this is not treated as informing whether the gate above should
 loosen; it doesn't change what real settlement dispatch requires.
+
+## Seventh addendum: progress against gate item 2, plus a clean pass on item 7
+
+**Gate item 2 (`verify-deployment.ts` failure semantics) — partially
+addressed.** Two real fixes, both against the specific complaints:
+- The old `agent-liveness` check (renamed `boot-metadata`) could `fail`
+  and claimed a stale `metadata_latest.json` meant the validator "is
+  not running" — false, since that file is write-once-at-boot, not a
+  heartbeat. It is now **warn-only, and worded honestly**: it reports
+  the age and explicitly says not to treat it as a liveness signal.
+- `checkCheckpointCurrency`'s `fail` message previously implied a
+  validator "cannot attest to recent messages" whenever contiguous
+  backfill lag was high — contradicted by a message that delivered
+  successfully at a lag of 1370. The wording now explicitly says this
+  measures *contiguous* lag, not deliverability, and points to the new
+  `message-checkpoint-coverage` check for the latter.
+- **New check added**: `checkMessageCheckpointCoverage` — checks
+  whether each validator has published a checkpoint for the SPECIFIC
+  most-recently-dispatched message's own leaf (`checkpoint_{nonce}_with_id.json`,
+  now readable thanks to the `ListBucket` fix), independent of where
+  the contiguous backfill pointer sits. This is the check that actually
+  answers "is this message deliverable right now."
+
+Current run: **12 pass, 5 warn, 4 fail** (down from 6 fails). The 4
+remaining fails are all real and unresolved: 2× literal
+`ValidatorAnnounce` path (gate item 1, not yet fixed), 2× genuine
+contiguous backfill lag (still real — the sequential pointer has not
+caught up, only specific messages ahead of it have). **Not yet fully
+satisfying gate item 2**: this is real progress on failure-semantics
+accuracy, not a claim that the tool is now complete or that a "0 fails"
+run would currently mean the live route is fully healthy — the
+contiguous-lag fails are correctly still failing and still need real
+resolution (backfill genuinely finishing), not just better wording.
+
+**Gate item 7 (local sensitive material) — checked, clean.** Both
+`apps/web/.env` and `chains/solana/target/deploy/*-keypair.json` are
+confirmed `git check-ignore`'d (never committed). The Solana keypair
+files' public keys were checked against the real deployed program
+IDs: `decision_relay-keypair.json` matches the live `decision-relay`
+program ID (`DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN`) — a program
+*identity* key, not the more sensitive upgrade-authority key. Confirmed
+directly via `solana program show` for both `decision-relay` and
+`escrow` on Testnet: both programs' real upgrade authority
+(`EBea3UVndSrNdgdtfuXC6PoN7573GdS43XDoB6pja9fh`) is a separate keypair
+not present in either local `target/deploy/*-keypair.json` file. Clean
+result — nothing to remediate here.
+
+**Not touched this round, deliberately**: gate items 1 (ValidatorAnnounce
+re-announcement), 3 (ReplayGuard Testnet deployment), 4 (independent
+validator operator), and 5 (dedicated RPC endpoint) — all remain real,
+unresolved operator/infra decisions, not something to fix blind. Item
+6 (alerting) is documentation-only progress (the stale undelivered-
+message claim in `ALERTING.md` was corrected to reflect the now-
+confirmed delivery), not a live-wired notification channel — that part
+of gate item 5/6 still needs a real destination and owner.
