@@ -44,6 +44,7 @@ interface Deployment {
   checkpointFreshnessThresholdSeconds: number;
   undeliveredMessageSlaSeconds: number;
   dispatchLookbackBlocks: number;
+  maxCheckpointLagLeaves: number;
 }
 
 const deployment: Deployment = JSON.parse(readFileSync(join(__dirname, "..", "deployment.json"), "utf-8"));
@@ -140,8 +141,8 @@ async function checkReachability(byValidator: Record<string, string[]>): Promise
       const announcedPrefix = prefixParts.join("/");
       const regionStrippedPrefix = prefixParts.slice(1).join("/"); // drop a leading region-looking segment, if any
       const candidates = [
-        { label: "as literally announced", url: `https://${bucket}.s3.amazonaws.com/${announcedPrefix}/metadata_latest.json` },
-        { label: "region-segment stripped (real object path)", url: `https://${bucket}.s3.amazonaws.com/${regionStrippedPrefix}/metadata_latest.json` },
+        { key: "literal", label: "as literally announced", url: `https://${bucket}.s3.amazonaws.com/${announcedPrefix}/metadata_latest.json` },
+        { key: "region-stripped", label: "region-segment stripped (real object path)", url: `https://${bucket}.s3.amazonaws.com/${regionStrippedPrefix}/metadata_latest.json` },
       ];
       let anyOk = false;
       for (const c of candidates) {
@@ -150,24 +151,42 @@ async function checkReachability(byValidator: Record<string, string[]>): Promise
           if (res.ok) {
             anyOk = true;
             record(`reachability:${v.label}`, "pass", `${c.label}: ${c.url} -> HTTP ${res.status}`);
+          } else if (c.key === "literal") {
+            // The literally-announced URI is what the ValidatorAnnounce
+            // contract actually publishes, and what a generic third-party
+            // Hyperlane relayer is expected to trust verbatim — it does
+            // NOT know about this project's own region-stripped fallback.
+            // A prior version of this check let a passing fallback launder
+            // this into an overall "reachable" pass, which is exactly the
+            // kind of false confidence a production-readiness audit
+            // flagged: the announced path being broken is a real,
+            // standalone problem regardless of whether this project's own
+            // verifier happens to know a workaround. This is now always a
+            // hard fail, never offset by the fallback below.
+            record(`reachability:${v.label}`, "fail", `${c.label}: ${c.url} -> HTTP ${res.status} — this is the URI actually announced on-chain; a generic relayer trusts it verbatim and has no reason to try a region-stripped variant`);
           } else {
             record(`reachability:${v.label}`, "warn", `${c.label}: ${c.url} -> HTTP ${res.status}`);
           }
         } catch (err) {
-          record(`reachability:${v.label}`, "warn", `${c.label}: ${c.url} -> ${err instanceof Error ? err.message : String(err)}`);
+          if (c.key === "literal") {
+            record(`reachability:${v.label}`, "fail", `${c.label}: ${c.url} -> ${err instanceof Error ? err.message : String(err)}`);
+          } else {
+            record(`reachability:${v.label}`, "warn", `${c.label}: ${c.url} -> ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
-      if (!anyOk) {
-        record(
-          `reachability:${v.label}:summary`,
-          "fail",
-          `neither the literally-announced path nor the region-stripped path is reachable — a REAL relayer with no AWS ` +
-            `credentials fetches checkpoints via plain HTTPS; if nothing here is public-read, no third-party relayer can ` +
-            `ever deliver a message this validator signed`
-        );
-      } else {
-        record(`reachability:${v.label}:summary`, "pass", "at least one real checkpoint path is publicly reachable");
-      }
+      // Informational only — deliberately NOT the check that gates overall
+      // pass/fail for the announced path itself (see the per-candidate
+      // "literal" fail above, which is unconditional). This just tells a
+      // human "is there at least some way to fetch this validator's
+      // checkpoints today, via this project's own known fallback."
+      record(
+        `reachability:${v.label}:any-path-info`,
+        anyOk ? "pass" : "warn",
+        anyOk
+          ? "at least one path (possibly only the non-standard fallback above) is publicly reachable — informational only, does not offset a literal-path failure"
+          : "no known path (literal or fallback) is reachable at all"
+      );
     }
   }
 }
@@ -249,24 +268,96 @@ async function checkFreshness(byValidator: Record<string, string[]>): Promise<vo
 // directly. Rather than silently skip currency checking entirely (the
 // original bug this check fixes), it says so explicitly — a WARN naming
 // exactly what's unverifiable — instead of a false PASS.
-async function checkCheckpointCurrency(): Promise<void> {
+// Real Hyperlane S3 checkpoint syncer key layout (confirmed against
+// hyperlane-monorepo's rust/main/hyperlane-base/src/types/s3_storage.rs,
+// not guessed): a per-index checkpoint is
+// "checkpoint_{index}_with_id.json" (NOT "checkpoint_{index}.json" — an
+// earlier version of this script guessed wrong and got misleading 403s
+// that looked identical to a real permissions problem), and the pointer
+// to the latest published index is "checkpoint_latest_index.json". Both
+// are prefixed with "{folder}/" the same way metadata_latest.json is.
+function checkpointLatestIndexUrl(bucket: string, prefix: string): string {
+  return `https://${bucket}.s3.amazonaws.com/${prefix}/checkpoint_latest_index.json`;
+}
+function checkpointWithIdUrl(bucket: string, prefix: string, index: number): string {
+  return `https://${bucket}.s3.amazonaws.com/${prefix}/checkpoint_${index}_with_id.json`;
+}
+
+async function checkCheckpointCurrency(byValidator: Record<string, string[]>): Promise<void> {
+  let currentNonce: number;
   try {
-    const currentNonce = await client.readContract({
+    currentNonce = await client.readContract({
       address: deployment.sepolia.mailbox,
       abi: [{ type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint32" }] }] as const,
       functionName: "nonce",
     });
-    record(
-      "checkpoint-currency",
-      "warn",
-      `could not independently verify validator checkpoint index against live Mailbox nonce (${currentNonce}) — ` +
-        `the real per-index checkpoint files were not reachable at any filename this script tried, only the unrelated ` +
-        `metadata_latest.json/announcement.json heartbeat files. Do not treat agent-liveness above as proof the checkpoint ` +
-        `index is current — cross-check via validator logs directly: 'flyctl logs -a <validator-app> --no-tail | grep "Latest checkpoint"' ` +
-        `and compare its index to this Mailbox nonce.`
-    );
   } catch (err) {
     record("checkpoint-currency", "warn", `could not read Mailbox nonce for comparison: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  for (const v of deployment.validators) {
+    const locs = byValidator[v.address] ?? [];
+    for (const loc of locs) {
+      if (!loc.startsWith("s3://")) continue;
+      const [, , bucket, ...prefixParts] = loc.split("/");
+      const announcedPrefix = prefixParts.join("/");
+      const regionStrippedPrefix = prefixParts.slice(1).join("/");
+      const urlCandidates = [checkpointLatestIndexUrl(bucket, announcedPrefix), checkpointLatestIndexUrl(bucket, regionStrippedPrefix)];
+      let res: Response | null = null;
+      for (const candidate of urlCandidates) {
+        const attempt = await fetch(candidate).catch(() => null);
+        if (attempt?.ok) {
+          res = attempt;
+          break;
+        }
+      }
+      if (!res) {
+        record(
+          `checkpoint-currency:${v.label}`,
+          "warn",
+          `checkpoint_latest_index.json (the REAL Hyperlane checkpoint pointer — confirmed key name, not a guess) is not ` +
+            `publicly reachable at either path tried, so the signed checkpoint index cannot be independently verified over ` +
+            `HTTPS. Live Mailbox nonce for comparison: ${currentNonce}. This project found the same object also 403s for the ` +
+            `validator's own AUTHENTICATED requests (real "AccessDenied" errors on signed S3 calls in the validator's own ` +
+            `logs, hundreds of retries) — see docs/production-readiness-hardening-pass.md. That is a stronger, different ` +
+            `problem than public-read config: the validator may not actually be able to publish real checkpoint objects at ` +
+            `all right now, independent of any bucket-policy/announcement-path issue. Cross-check directly: ` +
+            `'flyctl logs -a <validator-app> --no-tail | grep "Latest checkpoint"' for the in-memory-computed index, and ` +
+            `'flyctl logs -a <validator-app> --no-tail | grep -c AccessDenied' for authenticated S3 failures.`
+        );
+        continue;
+      }
+      let latestIndex: number;
+      try {
+        const body = (await res.json()) as unknown;
+        // Hyperlane's own format wraps the index as {"value": N}; accept a
+        // bare number too rather than assume one shape and crash on the other.
+        latestIndex = typeof body === "number" ? body : Number((body as { value?: number })?.value);
+        if (!Number.isFinite(latestIndex)) throw new Error(`unrecognized checkpoint_latest_index.json shape: ${JSON.stringify(body)}`);
+      } catch (err) {
+        record(`checkpoint-currency:${v.label}`, "warn", `checkpoint_latest_index.json reachable but unparseable: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      const lag = currentNonce - latestIndex;
+      const checkpointUrl = checkpointWithIdUrl(bucket, res.url.includes(announcedPrefix) ? announcedPrefix : regionStrippedPrefix, latestIndex);
+      const checkpointRes = await fetch(checkpointUrl).catch(() => null);
+      let root = "unavailable";
+      if (checkpointRes?.ok) {
+        try {
+          const cpBody = (await checkpointRes.json()) as { checkpoint?: { root?: string } };
+          root = cpBody?.checkpoint?.root ?? "unavailable";
+        } catch {
+          /* leave root as "unavailable" */
+        }
+      }
+      const detail = `latest signed index: ${latestIndex}, root: ${root}, mailbox nonce: ${currentNonce}, lag: ${lag} leaves`;
+      if (lag > deployment.maxCheckpointLagLeaves) {
+        record(`checkpoint-currency:${v.label}`, "fail", `${detail} — lag exceeds maxCheckpointLagLeaves (${deployment.maxCheckpointLagLeaves}); this validator cannot attest to recent messages`);
+      } else {
+        record(`checkpoint-currency:${v.label}`, "pass", detail);
+      }
+    }
   }
 }
 
@@ -472,7 +563,7 @@ async function main() {
   const byValidator = await checkAnnouncements();
   await checkReachability(byValidator);
   await checkFreshness(byValidator);
-  await checkCheckpointCurrency();
+  await checkCheckpointCurrency(byValidator);
   await checkRecentDelivery();
   await checkIsm();
   await checkDecisionRelayIsm();

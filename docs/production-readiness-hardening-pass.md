@@ -346,3 +346,118 @@ None of these are regressions introduced this pass — they're the honest
 state of what's still missing, stated the way this pass's own tooling
 (`verify-deployment.ts`'s independence check) already insists on: no
 silent "looks secure enough," only what's actually verified.
+
+## Addendum (same day, follow-up round): a deeper root cause found, still unresolved
+
+A further round of read-only investigation (no announcements changed, no
+programs/contracts redeployed, per explicit instruction) found the OOM
+fix, while real and necessary, is **not sufficient** — there is a second,
+deeper problem underneath it.
+
+**Real finding: the validators' own AUTHENTICATED S3 requests are being
+denied.** `flyctl logs -a anc-hor-validator1/-2 --no-tail | grep -c
+AccessDenied` returns real, nonzero counts (18 and 10 respectively at
+time of writing), and the underlying log lines show hundreds of retries
+(`retries: 190`, `191`, `192`, `193`, climbing) against genuine signed S3
+calls — not the already-known public-read 403s, a completely different
+and more serious problem: **the validator's own credentials, which
+should have full read/write access, cannot successfully read or write
+its own checkpoint objects at all.**
+
+Investigated (read-only, via the AWS console) without exposing or
+recording any secret value:
+- The IAM user (`anchor-hyperlane-validators`) has `AmazonS3FullAccess`
+  (AWS-managed, directly attached) — the broadest possible S3 grant. This
+  rules out an under-scoped IAM policy as the cause.
+- Its access key (only one exists) shows `Active`, `Used today. Created
+  today.` — actively being used, not a stale/orphaned credential.
+- The bucket's policy has only `Allow` statements (public read on
+  `validator1/*`/`validator2/*` — the same policy documented earlier);
+  no `Deny` statement was visible in what this pass reviewed.
+- Object Ownership is `Bucket owner enforced` (ACLs disabled, policy-only
+  access) — a standard, unremarkable configuration.
+- Default encryption is `SSE-S3` (Amazon-managed keys), not SSE-KMS —
+  rules out a missing-KMS-grant explanation, which would otherwise be the
+  single most common cause of "full S3 access, still AccessDenied."
+
+**None of the ordinary explanations fit.** What remains unruled-out and
+would explain full-access-still-denied: an AWS Organizations Service
+Control Policy (SCP) restricting S3 actions at the account level, a
+bucket-policy statement further down in the document this pass's review
+didn't scroll to, or some other account-level guardrail. **This pass did
+not attempt to view Organizations/SCP settings or edit the bucket
+policy** — diagnosing further requires either broader AWS account access
+this pass wasn't given, or the account owner's own investigation.
+Flagged as a hard operator-escalation item, not something to guess at
+with further live changes.
+
+**Corrected finding: the real Hyperlane S3 checkpoint key format was
+confirmed from `hyperlane-monorepo`'s actual source** (not memory/guess):
+a per-index checkpoint is `checkpoint_{index}_with_id.json` (a previous
+version of this project's tooling guessed `checkpoint_{index}.json`,
+which is wrong), and the latest-index pointer is
+`checkpoint_latest_index.json` — both confirmed against the real Rust
+source, and both still return 403/AccessDenied on this project's live
+bucket, consistent with the authenticated-AccessDenied finding above:
+these objects likely don't exist in the bucket at all, because the
+validator has never successfully written one.
+
+**`checkCheckpointCurrency` was rewritten** to use these confirmed real
+filenames (previously it used unconfirmed guesses and reported a generic
+"can't verify" warning; it now attempts the real official path first,
+and its warning message — when it still can't reach the object — points
+directly at this authenticated-AccessDenied evidence instead of leaving
+the cause as a mystery).
+
+**`checkReachability` was fixed per this round's explicit instruction**:
+a literal-announced-path failure is now always a `fail`, on its own,
+never offset by the region-stripped fallback into an overall pass. The
+fallback path is still checked and reported, but only as a separate,
+clearly-labeled informational line that says it does not excuse the
+literal-path failure.
+
+**Corrected finding: `agent-liveness` (the renamed freshness check)
+turned out to be a weaker signal than assumed even after the earlier
+fix.** Checked again ~25 minutes after the OOM-fix restart with the
+validator process confirmed still running (`flyctl status`: `started`)
+and confirmed NOT OOM-killing again (`grep -c "Out of memory"` → `0`) —
+yet `metadata_latest.json` had gone stale (fails the 900s threshold).
+This suggests `metadata_latest.json` may only be written once at agent
+startup, not on any periodic cadence — meaning "fresh" only ever proved
+"restarted recently," and "stale" doesn't distinguish a genuinely broken
+process from a long-uptime healthy one. This further reduces how much
+weight this check should carry; `checkCheckpointCurrency` (once it can
+actually read real checkpoint objects) is the check that matters, not
+this one.
+
+**Current honest live state as of this addendum**: 11 pass, 3 warn, **5
+fail** (worse-looking than the previous round's 13/4/1, entirely because
+checks are now stricter and more honest — `agent-liveness` now correctly
+fails since the heartbeat file went stale, `reachability` now correctly
+fails on the literal path instead of laundering it through a fallback
+pass, per this round's explicit instruction). This is not a regression in
+the underlying infrastructure — it is the verifier telling the truth
+more completely than it did before.
+
+**Priority items from this round explicitly NOT done, and why:**
+- **Re-announcing a corrected S3 path**: blocked on the deeper
+  AccessDenied problem above — re-announcing without first fixing why
+  authenticated writes fail would just move the URL of a system that
+  still can't publish real checkpoints. Diagnose-then-fix ordering
+  matters here; doing it out of order risks a second broken
+  announcement.
+- **24-hour reliability observation**: not possible within a single
+  pass's timeframe — needs real wall-clock time to mean anything, and
+  reporting a short window as if it were 24 hours would be dishonest.
+- **ReplayGuard Testnet deployment**: explicitly gated on Priority 1
+  (real delivery) being healthy first, per instruction — not done, since
+  Priority 1 is not healthy.
+- **Live notification webhook wiring**: needs a real credential
+  (Slack/PagerDuty) this pass cannot fabricate — still a template, not a
+  live integration.
+- **Fly health checks, OOM/restart-count alerting, S3/RPC error
+  metrics, bounded backoff**: not implemented this round — these are
+  real operational-hardening code/config changes, but attempting them
+  before the AccessDenied root cause is understood risks building
+  monitoring around symptoms rather than the actual failure. Tracked as
+  next steps once the AccessDenied investigation has an answer.

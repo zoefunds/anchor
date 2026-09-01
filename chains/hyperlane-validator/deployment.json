@@ -33,5 +33,6 @@
   "relayerWhitelistFile": "chains/hyperlane-relayer/entrypoint.sh",
   "checkpointFreshnessThresholdSeconds": 900,
   "undeliveredMessageSlaSeconds": 3600,
-  "dispatchLookbackBlocks": 50000
+  "dispatchLookbackBlocks": 50000,
+  "maxCheckpointLagLeaves": 100
 }
