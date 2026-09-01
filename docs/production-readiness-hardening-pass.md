@@ -568,12 +568,85 @@ both out of scope for this pass.
 delete (`Disabled`), Object Lock (`Disabled`) — none of the remaining
 plausible bucket-configuration explanations hold up either.
 
-**Conclusion: this now needs AWS Support.** Every angle available from
-read-only console/CLI access has been exhausted and has come back
-clean. The evidence trail above — real ARN, real request IDs (visible
-in the validator's own error logs, e.g. `aws_request_id: "X8PRDTHA8AA6XW1P"`),
-exact failing operation (`GetObject`/`HeadObject` inside
-`BackfillCheckpointSubmitter`, `hyperlane-base/src/types/s3_storage.rs:126`),
-and a proven-clean identity — is exactly what an AWS Support case needs
-to get a definitive, server-side answer. No credential values appear
-anywhere in this document, this repository, or its history.
+**Conclusion at that point: everything read-only pointed at AWS Support.**
+The evidence trail — real ARN, real request IDs, exact failing
+operation, proven-clean identity — was exactly what a Support case
+would need. See the next addendum for the actual resolution, found by
+going one level deeper into the validator's own source.
+
+## Fourth addendum (same day): actual root cause found — not an AWS bug
+
+Before opening an AWS Support case, one more source-grounded check was
+done: locating `ValidatorSubmitter`'s exact implementation for the git
+SHA this project's validators are actually running
+(`97cbefba2716c1de060ebd527f4a64fdfbc1c13d`, confirmed from
+`metadata_latest.json`).
+
+**Found the mechanism.** `fetch_checkpoint(index)` — called once per
+historical index during backfill, working sequentially from index 0 up
+to the chain tip — calls `anonymously_read_from_bucket()`, i.e. it
+deliberately reads with **no AWS credentials at all**, by design (this
+mirrors what a real third-party relayer without any AWS access does).
+Its `get_object()` call treats a `NoSuchKey` (`404`) response as
+`Ok(None)` — "checkpoint not written yet, that's fine, keep going."
+
+The problem: **S3 returns `403 AccessDenied`, not `404 NotFound`, for
+an anonymous `GetObject` on a missing key when the anonymous principal
+lacks `s3:ListBucket`** — this is standard, documented S3 behavior
+(anti-enumeration: a requester who can't list a bucket shouldn't be
+able to distinguish "doesn't exist" from "exists but you can't see
+it"). This project's bucket policy (`PublicReadCheckpoints`) grants the
+public principal `s3:GetObject` only — never `s3:ListBucket`. So every
+one of the ~872,850 not-yet-backfilled indices anonymously returns
+`403`, which `fetch_checkpoint` has no special handling for (only
+`NoSuchKey`/404 is treated as "fine") — so it retries indefinitely,
+exactly matching the `n: 18446744073709551615` (effectively infinite)
+retry behavior observed since the very first log capture this pass.
+
+**Reproduced directly**: `curl -s -o /dev/null -w "%{http_code}"
+".../validator1/checkpoint_0_with_id.json"` (the literal first key
+`fetch_checkpoint(0)` requests, anonymous, no credentials) → `403`,
+confirming the mechanism precisely, not just the theory.
+
+**This resolves the entire investigation.** Every earlier finding is
+now explained and consistent, not contradictory:
+- The authenticated CLI test (via `diagnose-s3-auth.sh`) got clean
+  `404`s because that identity has `s3:ListBucket` (from
+  `AmazonS3FullAccess`) — a fundamentally different code path than the
+  validator's own anonymous reads.
+- Neither credential rotation nor IAM/SCP/KMS/Object-Lock/Versioning
+  checks ever had anything to find, because none of them were the
+  actual cause.
+- The earlier "OOM crash-loop" and "public RPC rate-limiting" findings
+  were real and worth fixing, but were never going to be sufficient —
+  even a perfectly healthy, well-resourced validator would still hit
+  this exact wall on every backfill attempt.
+
+**Not an AWS Support case.** This is an application-behavior interacting
+with an incomplete bucket policy, fully explainable from public S3
+documentation and the validator's own open-source code — nothing here
+needs AWS's side of the story.
+
+**Proposed fix, not yet applied**: add `s3:ListBucket` to the public
+bucket policy, scoped via an `s3:prefix` condition to just the
+checkpoint prefixes (`validator1/*`, `validator2/*`) rather than
+granting bucket-wide anonymous listing — this lets anonymous
+`GetObject` on a genuinely-missing key return `404` (which
+`fetch_checkpoint` already handles correctly) instead of `403` (which
+it doesn't). This is a live, security-relevant bucket policy change and
+was **not applied without explicit go-ahead**, consistent with this
+pass's standing instruction not to change bucket policy/IAM blindly —
+it is now grounded in source-level evidence, not a blind guess, but
+still needs a deliberate yes before touching production.
+
+**Temporary safety measure applied**: `SETTLEMENT_PAUSED=true` set on
+`anc-hor-worker` (Fly) to halt the periodic settlement retry sweep
+while validator backfill cannot complete. **The web app's inline
+dispatch path (`runAdjudicationJob`) is not covered** — it appears to
+run on Vercel, which this pass has no confirmed access to; the same
+flag needs to be set there too to fully close the settlement-dispatch
+surface. The delivery SLA check in `verify-deployment.ts` remains
+active and unaffected by the pause. No case data, message IDs, or
+transaction hashes were deleted or modified — all undelivered-message
+evidence gathered this pass remains exactly as captured above for a
+Support case if one is still wanted for a different reason.
