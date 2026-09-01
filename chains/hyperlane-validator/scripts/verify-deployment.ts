@@ -118,17 +118,29 @@ async function checkAnnouncements(): Promise<Record<string, string[]>> {
 
 // --- Check 2: announced checkpoint locations are actually reachable (anonymous HTTPS GET, same as a real relayer would do — NOT using our own AWS credentials, since a third-party relayer never has those) ---
 //
-// A real bug found running this check live: the Hyperlane agent's
-// announced storage location string includes the AWS region as an
-// extra path segment ("s3://bucket/eu-north-1/validator1") that does
-// NOT match where the checkpointSyncer actually writes objects
-// ("validator1/..." — confirmed by listing the bucket directly). This
-// function therefore tries the literal announced path FIRST (what a
-// real relayer that trusts the announcement literally would do), and
-// falls back to the region-stripped path second, reporting which one
-// (if either) actually works — so this stays a genuine reachability
-// check, not one that's silently been "fixed" to only ever test the
-// path we know is right.
+// A real bug found running this check live — but not the one first
+// suspected. This project's own Hyperlane S3 checkpoint syncer
+// announces "s3://bucket/eu-north-1/validator1", and an earlier version
+// of this script constructed the literal HTTPS URL as
+// "https://bucket.s3.amazonaws.com/eu-north-1/validator1/..." (region
+// treated as a literal path segment on the generic global endpoint),
+// which 403s. That looked like a validator misconfiguration. It wasn't:
+// Hyperlane's own S3 checkpoint syncer config format is literally
+// "s3://bucket/region/folder" (confirmed from hyperlane-monorepo's own
+// checkpoint_syncer.rs parsing logic), where `region` selects the S3
+// REGIONAL ENDPOINT HOSTNAME, not a path prefix — the correct literal
+// URL is "https://bucket.s3.<region>.amazonaws.com/<folder>/...".
+// Confirmed directly: that URL returns a clean 200 for a real object
+// and a clean 404 (not 403) for a missing one, with zero validator
+// config changes needed. This function now builds the CORRECT literal
+// URL per Hyperlane's own convention — no fallback path needed, because
+// there's nothing to fall back from once the URL is built correctly.
+function s3ObjectUrl(loc: string, key: string): string {
+  const [, , bucket, region, ...folderParts] = loc.split("/");
+  const folder = folderParts.join("/");
+  return `https://${bucket}.s3.${region}.amazonaws.com/${folder}/${key}`;
+}
+
 async function checkReachability(byValidator: Record<string, string[]>): Promise<void> {
   for (const v of deployment.validators) {
     const locs = byValidator[v.address] ?? [];
@@ -137,56 +149,17 @@ async function checkReachability(byValidator: Record<string, string[]>): Promise
         record(`reachability:${v.label}`, "warn", `non-S3 storage location "${loc}" — this script only knows how to check S3`);
         continue;
       }
-      const [, , bucket, ...prefixParts] = loc.split("/");
-      const announcedPrefix = prefixParts.join("/");
-      const regionStrippedPrefix = prefixParts.slice(1).join("/"); // drop a leading region-looking segment, if any
-      const candidates = [
-        { key: "literal", label: "as literally announced", url: `https://${bucket}.s3.amazonaws.com/${announcedPrefix}/metadata_latest.json` },
-        { key: "region-stripped", label: "region-segment stripped (real object path)", url: `https://${bucket}.s3.amazonaws.com/${regionStrippedPrefix}/metadata_latest.json` },
-      ];
-      let anyOk = false;
-      for (const c of candidates) {
-        try {
-          const res = await fetch(c.url);
-          if (res.ok) {
-            anyOk = true;
-            record(`reachability:${v.label}`, "pass", `${c.label}: ${c.url} -> HTTP ${res.status}`);
-          } else if (c.key === "literal") {
-            // The literally-announced URI is what the ValidatorAnnounce
-            // contract actually publishes, and what a generic third-party
-            // Hyperlane relayer is expected to trust verbatim — it does
-            // NOT know about this project's own region-stripped fallback.
-            // A prior version of this check let a passing fallback launder
-            // this into an overall "reachable" pass, which is exactly the
-            // kind of false confidence a production-readiness audit
-            // flagged: the announced path being broken is a real,
-            // standalone problem regardless of whether this project's own
-            // verifier happens to know a workaround. This is now always a
-            // hard fail, never offset by the fallback below.
-            record(`reachability:${v.label}`, "fail", `${c.label}: ${c.url} -> HTTP ${res.status} — this is the URI actually announced on-chain; a generic relayer trusts it verbatim and has no reason to try a region-stripped variant`);
-          } else {
-            record(`reachability:${v.label}`, "warn", `${c.label}: ${c.url} -> HTTP ${res.status}`);
-          }
-        } catch (err) {
-          if (c.key === "literal") {
-            record(`reachability:${v.label}`, "fail", `${c.label}: ${c.url} -> ${err instanceof Error ? err.message : String(err)}`);
-          } else {
-            record(`reachability:${v.label}`, "warn", `${c.label}: ${c.url} -> ${err instanceof Error ? err.message : String(err)}`);
-          }
+      const url = s3ObjectUrl(loc, "metadata_latest.json");
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          record(`reachability:${v.label}`, "pass", `announced location resolves correctly: ${url} -> HTTP ${res.status}`);
+        } else {
+          record(`reachability:${v.label}`, "fail", `announced location did not resolve: ${url} -> HTTP ${res.status}`);
         }
+      } catch (err) {
+        record(`reachability:${v.label}`, "fail", `${url} -> ${err instanceof Error ? err.message : String(err)}`);
       }
-      // Informational only — deliberately NOT the check that gates overall
-      // pass/fail for the announced path itself (see the per-candidate
-      // "literal" fail above, which is unconditional). This just tells a
-      // human "is there at least some way to fetch this validator's
-      // checkpoints today, via this project's own known fallback."
-      record(
-        `reachability:${v.label}:any-path-info`,
-        anyOk ? "pass" : "warn",
-        anyOk
-          ? "at least one path (possibly only the non-standard fallback above) is publicly reachable — informational only, does not offset a literal-path failure"
-          : "no known path (literal or fallback) is reachable at all"
-      );
     }
   }
 }
@@ -197,24 +170,8 @@ async function checkFreshness(byValidator: Record<string, string[]>): Promise<vo
     const locs = byValidator[v.address] ?? [];
     for (const loc of locs) {
       if (!loc.startsWith("s3://")) continue;
-      const [, , bucket, ...prefixParts] = loc.split("/");
-      const announcedPrefix = prefixParts.join("/");
-      const regionStrippedPrefix = prefixParts.slice(1).join("/");
-      // Same fallback reasoning as checkReachability — try both known path shapes, use whichever actually responds.
-      const urlCandidates = [
-        `https://${bucket}.s3.amazonaws.com/${announcedPrefix}/metadata_latest.json`,
-        `https://${bucket}.s3.amazonaws.com/${regionStrippedPrefix}/metadata_latest.json`,
-      ];
-      let res: Response | null = null;
-      let url = urlCandidates[0];
-      for (const candidate of urlCandidates) {
-        const attempt = await fetch(candidate).catch(() => null);
-        if (attempt?.ok) {
-          res = attempt;
-          url = candidate;
-          break;
-        }
-      }
+      const url = s3ObjectUrl(loc, "metadata_latest.json");
+      const res = await fetch(url).catch(() => null);
       try {
         if (!res || !res.ok) {
           record(`boot-metadata:${v.label}`, "warn", "skipped — metadata_latest.json not reachable (see reachability check above)");
@@ -271,13 +228,6 @@ async function checkFreshness(byValidator: Record<string, string[]>): Promise<vo
 // that looked identical to a real permissions problem), and the pointer
 // to the latest published index is "checkpoint_latest_index.json". Both
 // are prefixed with "{folder}/" the same way metadata_latest.json is.
-function checkpointLatestIndexUrl(bucket: string, prefix: string): string {
-  return `https://${bucket}.s3.amazonaws.com/${prefix}/checkpoint_latest_index.json`;
-}
-function checkpointWithIdUrl(bucket: string, prefix: string, index: number): string {
-  return `https://${bucket}.s3.amazonaws.com/${prefix}/checkpoint_${index}_with_id.json`;
-}
-
 async function checkCheckpointCurrency(byValidator: Record<string, string[]>): Promise<void> {
   let currentNonce: number;
   try {
@@ -295,29 +245,13 @@ async function checkCheckpointCurrency(byValidator: Record<string, string[]>): P
     const locs = byValidator[v.address] ?? [];
     for (const loc of locs) {
       if (!loc.startsWith("s3://")) continue;
-      const [, , bucket, ...prefixParts] = loc.split("/");
-      const announcedPrefix = prefixParts.join("/");
-      const regionStrippedPrefix = prefixParts.slice(1).join("/");
-      const urlCandidates = [checkpointLatestIndexUrl(bucket, announcedPrefix), checkpointLatestIndexUrl(bucket, regionStrippedPrefix)];
-      let res: Response | null = null;
-      for (const candidate of urlCandidates) {
-        const attempt = await fetch(candidate).catch(() => null);
-        if (attempt?.ok) {
-          res = attempt;
-          break;
-        }
-      }
-      if (!res) {
+      const res = await fetch(s3ObjectUrl(loc, "checkpoint_latest_index.json")).catch(() => null);
+      if (!res?.ok) {
         record(
           `checkpoint-currency:${v.label}`,
           "warn",
-          `checkpoint_latest_index.json (the REAL Hyperlane checkpoint pointer — confirmed key name, not a guess) is not ` +
-            `publicly reachable at either path tried, so the signed checkpoint index cannot be independently verified over ` +
-            `HTTPS. Live Mailbox nonce for comparison: ${currentNonce}. This project found the same object also 403s for the ` +
-            `validator's own AUTHENTICATED requests (real "AccessDenied" errors on signed S3 calls in the validator's own ` +
-            `logs, hundreds of retries) — see docs/production-readiness-hardening-pass.md. That is a stronger, different ` +
-            `problem than public-read config: the validator may not actually be able to publish real checkpoint objects at ` +
-            `all right now, independent of any bucket-policy/announcement-path issue. Cross-check directly: ` +
+          `checkpoint_latest_index.json is not publicly reachable, so the signed checkpoint index cannot be independently ` +
+            `verified over HTTPS. Live Mailbox nonce for comparison: ${currentNonce}. Cross-check directly: ` +
             `'flyctl logs -a <validator-app> --no-tail | grep "Latest checkpoint"' for the in-memory-computed index, and ` +
             `'flyctl logs -a <validator-app> --no-tail | grep -c AccessDenied' for authenticated S3 failures.`
         );
@@ -335,8 +269,7 @@ async function checkCheckpointCurrency(byValidator: Record<string, string[]>): P
         continue;
       }
       const lag = currentNonce - latestIndex;
-      const checkpointUrl = checkpointWithIdUrl(bucket, res.url.includes(announcedPrefix) ? announcedPrefix : regionStrippedPrefix, latestIndex);
-      const checkpointRes = await fetch(checkpointUrl).catch(() => null);
+      const checkpointRes = await fetch(s3ObjectUrl(loc, `checkpoint_${latestIndex}_with_id.json`)).catch(() => null);
       let root = "unavailable";
       if (checkpointRes?.ok) {
         try {
@@ -605,17 +538,8 @@ async function checkMessageCheckpointCoverage(byValidator: Record<string, string
       let found = false;
       for (const loc of locs) {
         if (!loc.startsWith("s3://") || found) continue;
-        const [, , bucket, ...prefixParts] = loc.split("/");
-        const announcedPrefix = prefixParts.join("/");
-        const regionStrippedPrefix = prefixParts.slice(1).join("/");
-        for (const prefix of [announcedPrefix, regionStrippedPrefix]) {
-          const url = `https://${bucket}.s3.amazonaws.com/${prefix}/checkpoint_${nonce}_with_id.json`;
-          const res = await fetch(url).catch(() => null);
-          if (res?.ok) {
-            found = true;
-            break;
-          }
-        }
+        const res = await fetch(s3ObjectUrl(loc, `checkpoint_${nonce}_with_id.json`)).catch(() => null);
+        if (res?.ok) found = true;
       }
       record(
         `message-checkpoint-coverage:${v.label}`,

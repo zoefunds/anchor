@@ -847,11 +847,64 @@ directly via `solana program show` for both `decision-relay` and
 not present in either local `target/deploy/*-keypair.json` file. Clean
 result — nothing to remediate here.
 
-**Not touched this round, deliberately**: gate items 1 (ValidatorAnnounce
-re-announcement), 3 (ReplayGuard Testnet deployment), 4 (independent
-validator operator), and 5 (dedicated RPC endpoint) — all remain real,
-unresolved operator/infra decisions, not something to fix blind. Item
-6 (alerting) is documentation-only progress (the stale undelivered-
-message claim in `ALERTING.md` was corrected to reflect the now-
-confirmed delivery), not a live-wired notification channel — that part
-of gate item 5/6 still needs a real destination and owner.
+**Not touched this round, deliberately**: gate items 3 (ReplayGuard
+Testnet deployment), 4 (independent validator operator), and 5
+(dedicated RPC endpoint) — all remain real, unresolved operator/infra
+decisions, not something to fix blind. Item 6 (alerting) is
+documentation-only progress (the stale undelivered-message claim in
+`ALERTING.md` was corrected to reflect the now-confirmed delivery), not
+a live-wired notification channel — that part of gate item 5/6 still
+needs a real destination and owner.
+
+## Eighth addendum: gate item 1 (ValidatorAnnounce) resolved — no config or re-announcement needed
+
+Before touching any validator config or announcing a new URI, checked
+one thing first: whether the "mismatch" was actually a validator
+misconfiguration, or a bug in how this project's own verification
+script interpreted the announced URI.
+
+**It was the script.** Hyperlane's own S3 checkpoint syncer config
+format is literally `s3://bucket/region/folder` (confirmed from
+`hyperlane-monorepo`'s own `checkpoint_syncer.rs` parsing logic) —
+`region` selects the **S3 regional endpoint hostname**
+(`s3.<region>.amazonaws.com`), not a literal URL path segment. A prior
+version of `verify-deployment.ts` built the literal HTTPS URL as
+`https://bucket.s3.amazonaws.com/<region>/<folder>/...` (region as a
+path prefix on the generic global endpoint), which correctly 403s —
+but that's not what a real, standards-compliant Hyperlane relayer does.
+The correct literal URL,
+`https://bucket.s3.<region>.amazonaws.com/<folder>/...`, was tested
+directly and confirmed to work with **zero changes** to the validator's
+own announcement, config, or any re-announcement transaction: `curl`
+returns a clean `200` on a real object and a clean `404` (not `403`) on
+a missing one.
+
+**Fix applied**: `verify-deployment.ts` rewritten to build S3 object
+URLs the correct way (`s3ObjectUrl()` helper, region in the hostname),
+replacing every call site that previously needed a "literal vs.
+region-stripped fallback" — that fallback machinery no longer exists in
+the script at all, because there's nothing to fall back from once the
+URL is built correctly.
+
+**Verified, per the requested checklist** — items 3 and 4 aren't
+applicable (nothing was re-announced, since nothing was wrong on-chain
+to begin with) but the reachability/behavior checks all pass now:
+- `reachability:validatorN` now `pass`es directly on the literal
+  announced-derived URL — no fallback needed, confirmed by removing the
+  fallback code entirely and re-running.
+- `checkpoint-currency` and `message-checkpoint-coverage` (which read
+  real checkpoint objects) also now resolve correctly using the same
+  corrected URL construction.
+- Existing checkpoint publication and real delivery are unaffected —
+  re-ran `verify-deployment.ts` after the fix: **17 checks: 10 pass, 5
+  warn, 2 fail** (down from 4 fails), the 2 remaining being the
+  genuine, still-unresolved contiguous backfill lag (unrelated to this
+  item).
+- No old/new announcement transaction hashes to record — nothing was
+  re-announced. No rollback needed for the same reason. If this is
+  ever revisited, the actual validator-side announcement string itself
+  remains `s3://anchor-hyperlane-validator-checkpoints/eu-north-1/validator1`
+  (and `validator2`) unchanged throughout this investigation.
+
+**Consequence for the six-point unpause gate**: item 1 is now
+satisfied. Items 3, 4, and 5 remain open.
