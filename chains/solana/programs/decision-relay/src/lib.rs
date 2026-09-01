@@ -124,6 +124,139 @@ pub struct DecisionRelayStorage {
     pub escrow_program: Pubkey,
 }
 
+/// Fixed-size (never grows, never per-message) PDA guarding `handle()`
+/// against replay/spam — a re-audit asked for message-level replay
+/// controls on the notification-only inbound path "without introducing
+/// the relayer-payer dynamic-account bug" (see `required_handle_account_metas`'s
+/// own doc comment for that real production incident). A per-message
+/// idempotency record would need a fresh PDA created (and therefore
+/// rent-paid, therefore payer-signed) on every single `handle()` call —
+/// exactly the pattern that bug came from. This account is instead
+/// allocated ONCE, ahead of time, via `InitReplayGuard` (a normal
+/// payer-funded instruction Anchor's own operator calls directly, never
+/// through Hyperlane's relayer/`handle_account_metas` path), and reused
+/// forever as a small ring buffer of the last `REPLAY_GUARD_CAPACITY`
+/// distinct `decision_hash` values seen. `handle()` only ever needs
+/// `[]`/writable access to this ONE fixed, already-existing account —
+/// same "no payer, no dynamic accounts" shape `handle_account_metas`
+/// already requires.
+pub const REPLAY_GUARD_CAPACITY: usize = 32;
+
+#[macro_export]
+macro_rules! decision_relay_replay_guard_pda_seeds {
+    () => {{
+        &[b"decision_relay", b"-", b"replay_guard"]
+    }};
+    ($bump_seed:expr) => {{
+        &[b"decision_relay", b"-", b"replay_guard", &[$bump_seed]]
+    }};
+}
+
+pub type ReplayGuardAccount = AccountData<ReplayGuard>;
+
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub struct ReplayGuard {
+    /// Ring buffer of the last REPLAY_GUARD_CAPACITY distinct
+    /// decision_hash values `handle()` has accepted. Bounded and
+    /// fixed-size by construction — never resized, never per-message.
+    pub seen: [[u8; 32]; REPLAY_GUARD_CAPACITY],
+    /// Next slot to overwrite (wraps around) — a simple ring buffer,
+    /// not a set: after REPLAY_GUARD_CAPACITY distinct decisions, the
+    /// oldest one's replay protection ages out. This is a bounded
+    /// spam/replay deterrent for the notification-only path (handle()
+    /// moves no funds either way — see its own doc comment), not a
+    /// permanent global dedup ledger; unbounded retention would require
+    /// unbounded account growth, which is exactly the kind of unbounded
+    /// resource use a re-audit's "bounded retention mechanism" phrasing
+    /// asked to avoid.
+    pub next_index: u8,
+}
+
+impl Default for ReplayGuard {
+    fn default() -> Self {
+        ReplayGuard { seen: [[0u8; 32]; REPLAY_GUARD_CAPACITY], next_index: 0 }
+    }
+}
+
+impl SizedData for ReplayGuard {
+    fn size(&self) -> usize {
+        32 * REPLAY_GUARD_CAPACITY + 1
+    }
+}
+
+impl ReplayGuard {
+    /// True if `hash` is already in the ring buffer.
+    pub fn contains(&self, hash: &[u8; 32]) -> bool {
+        self.seen.iter().any(|h| h == hash)
+    }
+
+    /// Records `hash`, evicting the oldest entry if the buffer is full.
+    /// Caller's responsibility to have already checked `contains` first
+    /// — this always writes, it doesn't itself guard against duplicates.
+    pub fn record(&mut self, hash: [u8; 32]) {
+        self.seen[self.next_index as usize] = hash;
+        self.next_index = ((self.next_index as usize + 1) % REPLAY_GUARD_CAPACITY) as u8;
+    }
+}
+
+#[cfg(test)]
+mod replay_guard_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_replay_of_the_same_decision_hash() {
+        let mut guard = ReplayGuard::default();
+        let hash = [42u8; 32];
+
+        assert!(!guard.contains(&hash));
+        guard.record(hash);
+        assert!(guard.contains(&hash), "hash must be seen immediately after record()");
+    }
+
+    #[test]
+    fn accepts_two_distinct_decisions() {
+        let mut guard = ReplayGuard::default();
+        let hash_a = [1u8; 32];
+        let hash_b = [2u8; 32];
+
+        assert!(!guard.contains(&hash_a));
+        guard.record(hash_a);
+        assert!(!guard.contains(&hash_b), "a distinct hash must not be flagged as a replay");
+        guard.record(hash_b);
+        assert!(guard.contains(&hash_a));
+        assert!(guard.contains(&hash_b));
+    }
+
+    #[test]
+    fn ring_buffer_evicts_oldest_entry_after_capacity_exceeded() {
+        let mut guard = ReplayGuard::default();
+
+        // Fill the buffer with REPLAY_GUARD_CAPACITY distinct hashes.
+        for i in 0..REPLAY_GUARD_CAPACITY {
+            let mut hash = [0u8; 32];
+            hash[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+            guard.record(hash);
+        }
+        let mut hash_0 = [0u8; 32];
+        hash_0[0..8].copy_from_slice(&0u64.to_le_bytes());
+        assert!(guard.contains(&hash_0), "the first entry must still be present before the buffer wraps");
+
+        // One more distinct hash pushes the buffer past capacity, evicting
+        // the oldest (index 0) entry — this is the documented "bounded
+        // retention," not a permanent ledger.
+        let mut overflow_hash = [0u8; 32];
+        overflow_hash[0..8].copy_from_slice(&(REPLAY_GUARD_CAPACITY as u64).to_le_bytes());
+        guard.record(overflow_hash);
+
+        assert!(!guard.contains(&hash_0), "oldest entry must be evicted once the ring buffer wraps");
+        assert!(guard.contains(&overflow_hash));
+
+        let mut hash_1 = [0u8; 32];
+        hash_1[0..8].copy_from_slice(&1u64.to_le_bytes());
+        assert!(guard.contains(&hash_1), "entries other than the evicted oldest one must remain");
+    }
+}
+
 impl SizedData for DecisionRelayStorage {
     fn size(&self) -> usize {
         32 + 32
@@ -176,6 +309,12 @@ pub enum DecisionRelayInstruction {
     /// `attested_settle`'s doc comment for why this, not `handle`, is
     /// the only path that actually moves funds.
     AttestedSettle(DecisionRelayBody),
+    /// One-time setup, called directly by Anchor's operator (never
+    /// through Hyperlane/`handle_account_metas`) — allocates the fixed
+    /// ReplayGuard PDA `handle()` then reuses forever. See
+    /// `ReplayGuard`'s own doc comment for why this is a fixed
+    /// allocate-once account rather than a per-message one.
+    InitReplayGuard,
 }
 
 pub fn process_instruction(
@@ -224,6 +363,7 @@ pub fn process_instruction(
             dispatch(program_id, accounts, outbox_dispatch)
         }
         DecisionRelayInstruction::AttestedSettle(body) => attested_settle(program_id, accounts, body),
+        DecisionRelayInstruction::InitReplayGuard => init_replay_guard(program_id, accounts),
     }
 }
 
@@ -270,6 +410,52 @@ fn init(
         decision_relay_storage_pda_seeds!(storage_bump),
     )?;
     storage_account.store(storage_info, false)?;
+
+    Ok(())
+}
+
+/// One-time setup — see `ReplayGuard`'s own doc comment for why this
+/// exists as a separate, explicitly payer-funded instruction rather
+/// than something `handle()` allocates lazily on first use (that would
+/// need `handle()` itself to have a payer/signer, exactly the shape a
+/// real production incident already ruled out — see
+/// `required_handle_account_metas`'s doc comment).
+///
+/// Accounts:
+/// 0. `[executable]` System program.
+/// 1. `[signer]` Payer.
+/// 2. `[writeable]` ReplayGuard PDA.
+fn init_replay_guard(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let accounts_iter = &mut accounts.iter();
+
+    let system_program_info = next_account_info(accounts_iter)?;
+    if system_program_info.key != &system_program::id() {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let payer_info = next_account_info(accounts_iter)?;
+    if !payer_info.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    let replay_guard_info = next_account_info(accounts_iter)?;
+    let (replay_guard_pda_key, replay_guard_bump) =
+        Pubkey::find_program_address(decision_relay_replay_guard_pda_seeds!(), program_id);
+    if replay_guard_info.key != &replay_guard_pda_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let replay_guard_account = ReplayGuardAccount::from(ReplayGuard::default());
+    create_pda_account(
+        payer_info,
+        &Rent::get()?,
+        replay_guard_account.size(),
+        program_id,
+        system_program_info,
+        replay_guard_info,
+        decision_relay_replay_guard_pda_seeds!(replay_guard_bump),
+    )?;
+    replay_guard_account.store(replay_guard_info, false)?;
 
     Ok(())
 }
@@ -359,6 +545,9 @@ fn dispatch(program_id: &Pubkey, accounts: &[AccountInfo], outbox_dispatch: Outb
 /// 0. `[]` Process authority specific to this program (signer).
 /// 1. `[]` Storage PDA account.
 /// 2. `[executable]` Escrow program (consistency-checked against storage).
+/// 3. `[writeable]` ReplayGuard PDA — fixed, pre-allocated via
+///    `InitReplayGuard` (never per-message, no payer here — see
+///    `ReplayGuard`'s own doc comment).
 pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleInstruction) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
 
@@ -380,11 +569,29 @@ pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleIn
         return Err(ProgramError::InvalidArgument);
     }
 
+    let replay_guard_info = next_account_info(accounts_iter)?;
+    let (expected_replay_guard_key, _replay_guard_bump) =
+        Pubkey::find_program_address(decision_relay_replay_guard_pda_seeds!(), program_id);
+    if replay_guard_info.key != &expected_replay_guard_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     let body = DecisionRelayBody::try_from_slice(&handle_ix.message)
         .map_err(|_| ProgramError::BorshIoError)?;
     if body.escrow_program != storage.escrow_program {
         return Err(ProgramError::InvalidArgument);
     }
+
+    let mut replay_guard = ReplayGuardAccount::fetch(&mut &replay_guard_info.data.borrow()[..])?.into_inner();
+    if replay_guard.contains(&body.decision_hash) {
+        msg!(
+            "decision-relay: replay rejected for case {} — decision already notified",
+            body.case_id
+        );
+        return Err(ProgramError::InvalidArgument);
+    }
+    replay_guard.record(body.decision_hash);
+    ReplayGuardAccount::from(replay_guard).store(replay_guard_info, false)?;
 
     msg!(
         "decision-relay: notified of decision for case {} (no settlement dispatched from this path — see attested_settle)",
@@ -702,21 +909,25 @@ fn handle_account_metas(program_id: &Pubkey, handle_ix: HandleInstruction) -> Pr
 /// list itself is testable without a Solana runtime/syscall context.
 fn required_handle_account_metas(program_id: &Pubkey, body: &DecisionRelayBody) -> Vec<SerializableAccountMeta> {
     let (storage_key, _) = Pubkey::find_program_address(decision_relay_storage_pda_seeds!(), program_id);
+    let (replay_guard_key, _) = Pubkey::find_program_address(decision_relay_replay_guard_pda_seeds!(), program_id);
 
     // Must match handle()'s account order exactly (minus process_authority,
     // which the Mailbox always prepends itself before calling Handle) -
-    // storage, escrow_program. handle() is notification-only now (see its
-    // doc comment) and no longer touches case/claimant/respondent/
-    // escrow_authority at all — those moved to attested_settle, which
-    // Anchor's backend calls directly, not through Hyperlane/this
+    // storage, escrow_program, replay_guard. handle() is notification-only
+    // now (see its doc comment) and no longer touches case/claimant/
+    // respondent/escrow_authority at all — those moved to attested_settle,
+    // which Anchor's backend calls directly, not through Hyperlane/this
     // account-metas query. No payer/system_program/processed_decision
     // account either — see handle()'s doc comment for why (a
     // relayer-payer-owned dynamic account is categorically rejected by
     // Hyperlane's own Sealevel relayer, "Dynamic account metas contain
-    // payer account").
+    // payer account"). replay_guard is a FIXED pre-allocated PDA (see
+    // ReplayGuard's doc comment), so it's safe to include here — it's
+    // never created per-message and needs no payer/signer.
     vec![
         AccountMeta::new_readonly(storage_key, false).into(),
         AccountMeta::new_readonly(body.escrow_program, false).into(),
+        AccountMeta::new(replay_guard_key, false).into(),
     ]
 }
 
@@ -754,7 +965,7 @@ mod handle_account_metas_tests {
 
         let metas = required_handle_account_metas(&program_id, &body);
 
-        assert_eq!(metas.len(), 2, "unexpected account count — check handle()'s doc comment stays in sync");
+        assert_eq!(metas.len(), 3, "unexpected account count — check handle()'s doc comment stays in sync");
         for meta in metas {
             let meta: AccountMeta = meta.into();
             assert!(

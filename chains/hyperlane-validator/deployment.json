@@ -1,0 +1,37 @@
+{
+  "sepolia": {
+    "rpcUrl": "https://ethereum-sepolia.publicnode.com",
+    "mailbox": "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
+    "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9",
+    "decisionRelay": "0x94f3FF552CC879a36B19b829af3325Ea72cbC71C",
+    "ism": "0xf9Ceb195C295c496952649574A78B2Da6dD7b05f",
+    "dispatcherAddress": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb"
+  },
+  "validators": [
+    {
+      "address": "0x2ffFd80d446835214EF87Eb3753B48935550f73f",
+      "label": "validator1",
+      "operator": "anchor-operator",
+      "account": "fly:priscilla-george-personal",
+      "provider": "fly.io",
+      "iamPrincipal": "aws:anchor-hyperlane-validators",
+      "s3Bucket": "anchor-hyperlane-validator-checkpoints",
+      "s3Prefix": "validator1"
+    },
+    {
+      "address": "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3",
+      "label": "validator2",
+      "operator": "anchor-operator",
+      "account": "fly:priscilla-george-personal",
+      "provider": "fly.io",
+      "iamPrincipal": "aws:anchor-hyperlane-validators",
+      "s3Bucket": "anchor-hyperlane-validator-checkpoints",
+      "s3Prefix": "validator2"
+    }
+  ],
+  "expectedThreshold": 2,
+  "relayerWhitelistFile": "chains/hyperlane-relayer/entrypoint.sh",
+  "checkpointFreshnessThresholdSeconds": 900,
+  "undeliveredMessageSlaSeconds": 3600,
+  "dispatchLookbackBlocks": 50000
+}
