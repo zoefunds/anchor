@@ -754,3 +754,49 @@ plus one still-real, still-open issue:
 None of the three represent a regression in real capability — the
 system just-proven to deliver real messages end-to-end simply isn't
 fully reflected by every check's current framing yet.
+
+## Sixth addendum: explicit unpause gate — `SETTLEMENT_PAUSED` stays `true` until all five are met
+
+The delivery proof above is real and strong, but it is **not** treated
+as sufficient grounds to resume real-money settlement dispatch on its
+own. `SETTLEMENT_PAUSED=true` remains set on both `anc-hor-worker` (Fly)
+and the `anc-hor` Vercel production environment until **all** of the
+following are independently true — not "explained," not "understood,"
+actually true:
+
+1. **ValidatorAnnounce paths resolve directly as announced** — the
+   literal on-chain-announced URI itself returns `200`, with no
+   verifier-only region-stripped fallback needed. `verify-deployment.ts`'s
+   `reachability:validatorN` check must `pass` on the literal path, not
+   just the fallback.
+2. **`verify-deployment.ts` distinguishes real failures from known
+   non-fail conditions and returns clean for the live route.** The
+   `agent-liveness` write-once-at-boot artifact and the
+   `checkpoint-currency` sequential-pointer-vs-specific-message nuance
+   documented above are real gaps in the check's own design, not
+   acceptable standing failures — they need to be fixed in the tooling
+   itself (or replaced with a check that actually reflects live-route
+   health) before a "0 fails" run means what it should.
+3. **Validators run for at least 24 hours with checkpoint currency
+   confirmed** — not just heartbeat/agent-liveness freshness, which
+   this pass has already shown can look "fine" while telling you
+   nothing real. Needs a sustained observation window with the
+   corrected `checkpoint-currency` check (per #2) showing real,
+   current coverage throughout, not a snapshot.
+4. **A controlled end-to-end settlement rehearsal succeeds** with all
+   production authorization controls exercised (real attestor
+   signatures, real Safe governance path, real ISM/validator
+   verification) — but against no customer funds. `DeliveryProofReceiver`
+   proved message delivery; it deliberately does not exercise
+   settlement authorization at all, so it does not satisfy this gate on
+   its own.
+5. **Delivery/validator alerts are actually scheduled to a monitored
+   notification channel** — `ALERTING.md`'s cron/CI templates are not
+   enough; this needs a real, live-wired destination (Slack webhook,
+   PagerDuty, etc.) that someone is actually watching.
+
+The old flagged test message having no settlement target configured is
+noted as a genuinely good property of how that test happened to be
+built — it proved delivery without creating any financial side effect —
+but this is not treated as informing whether the gate above should
+loosen; it doesn't change what real settlement dispatch requires.
