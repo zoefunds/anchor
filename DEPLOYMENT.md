@@ -1,7 +1,8 @@
 # Deployment
 
-Live at **https://anc-hor.vercel.app** (Vercel) + three Fly.io apps for
-everything that can't run as a Vercel serverless function.
+Live at **https://anc-hor.vercel.app** (Vercel) + six Fly.io apps for
+everything that can't run as a Vercel serverless function, plus real AWS
+S3 for Hyperlane validator checkpoint storage.
 
 ## Layout
 
@@ -10,8 +11,11 @@ everything that can't run as a Vercel serverless function.
 | Next.js app (pages + `/api/*` routes) | Vercel project `anc-hor` | Serverless-friendly, zero-config Next.js hosting |
 | Postgres | Fly app `anc-hor-db` (unmanaged `flyio/postgres-flex`) | Needs to be reachable from Vercel over the public internet — see "Why not Fly Managed Postgres" below |
 | Redis (BullMQ job queue + rate limiting) | Upstash (`loving-cougar-198267.upstash.io`) | Already public/TLS by default, no extra networking work needed |
-| Adjudication job worker | Fly app `anc-hor-worker` | Long-lived BullMQ Worker process — can't run inside a Vercel serverless function, which has no persistent process between invocations |
-| Hyperlane relayer | Fly app `anc-hor-relayer` | Same reason — a long-lived Rust binary watching both chains continuously |
+| Adjudication job worker | Fly app `anc-hor-worker` | Long-lived BullMQ Worker process — can't run inside a Vercel serverless function, which has no persistent process between invocations. Also holds `HYPERLANE_RELAY_PRIVATE_KEY`/`ATTESTOR_PRIVATE_KEYS`/`SOLANA_*` and is the only process that ever dispatches a real cross-chain settlement — see the root README's "Security model" |
+| Hyperlane relayer | Fly app `anc-hor-relayer` | Long-lived Rust binary watching both chains continuously, delivering Hyperlane messages the public relayer network won't touch |
+| Hyperlane validator #1 | Fly app `anc-hor-validator1` | Signs Sepolia checkpoints, publishes to S3, backs the real multisig ISM — see `chains/hyperlane-validator/README.md` |
+| Hyperlane validator #2 | Fly app `anc-hor-validator2` | Same, second independent checkpoint signer |
+| Validator checkpoint storage | Real AWS S3, bucket `anchor-hyperlane-validator-checkpoints` (`eu-north-1`) | Must be network-fetchable by the relayer, which runs on a different machine than the validators — local disk storage doesn't work for this. Cloudflare R2 was tried first and abandoned after a real, reproduced upstream compatibility bug in Hyperlane's validator binary; see `docs/self-hosted-validator-setup.md` |
 
 ## Why not Fly Managed Postgres (MPG)
 
@@ -67,6 +71,28 @@ no workspace deps):
 cd chains/hyperlane-relayer
 flyctl deploy -a anc-hor-relayer --config fly.toml -y
 ```
+Remember to update `entrypoint.sh`'s `WHITELIST` to the current live
+`DecisionRelay`/`decision-relay` addresses after any contract redeploy —
+a stale whitelist means the relayer silently never attempts delivery to
+the new address (a real bug hit and fixed during the M-of-N/ISM
+hardening work).
+
+**Validators (Fly)** — from `chains/hyperlane-validator/`, one deploy
+per validator app:
+```bash
+cd chains/hyperlane-validator
+flyctl deploy -a anc-hor-validator1 --config fly.validator1.toml
+flyctl deploy -a anc-hor-validator2 --config fly.validator2.toml
+```
+**Real Fly quirk**: these apps have no `[http_service]` block, so a
+config-only deploy (secrets update without an image change) leaves the
+machine `stopped` instead of restarting it — always follow with:
+```bash
+flyctl machine start <machine-id> -a <app-name>
+```
+Check `flyctl status -a <app-name>` after any deploy to confirm the
+machine is actually `started`, not just that the deploy command
+succeeded.
 
 ## Secrets
 
