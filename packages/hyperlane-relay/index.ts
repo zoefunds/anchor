@@ -66,19 +66,25 @@ export interface DecisionRelayPayload {
   escrowId: Hex; // bytes32
   proofHash: Hex; // bytes32
   /**
-   * 65-byte ECDSA signature (r || s || v) from Anchor's ATTESTOR_PRIVATE_KEY
-   * over exactly the fields DecisionRelay.sol's handle() recomputes and
-   * checks via ecrecover — see computeDecisionAttestationHash below and
-   * that contract's own doc comment for why this exists (destination-side
-   * proof the decision content itself is genuine, independent of who
-   * dispatched the Hyperlane message).
+   * M-of-N: an array of 65-byte ECDSA signatures (r || s || v), one per
+   * attestor key that signed, over exactly the fields DecisionRelay.sol's
+   * handle() recomputes and checks via ecrecover — see
+   * computeDecisionAttestationHash below and that contract's own doc
+   * comment for why this exists (destination-side proof the decision
+   * content itself is genuine, independent of who dispatched the
+   * Hyperlane message) and why it's M-of-N rather than a single key.
+   * DecisionRelay.sol requires at least `attestorThreshold` of these to
+   * recover to DISTINCT registered attestor addresses; extra/invalid
+   * entries are simply ignored, not a hard error, so this array can
+   * safely include every signature Anchor's backend was ABLE to collect
+   * even if not every configured attestor responded in time.
    */
-  attestationSignature: Hex;
+  attestationSignatures: Hex[];
 }
 
 /**
  * The exact hash DecisionRelay.sol's handle() recomputes via
- * `keccak256(abi.encode("ANCHOR_DECISION_ATTESTATION_V1", _origin,
+ * `keccak256(abi.encode("ANCHOR_DECISION_ATTESTATION_V2", _origin,
  * address(this), caseId, outcome, claimantAmount, respondentAmount,
  * escrowId, proofHash))` — must stay byte-for-byte identical to that
  * Solidity code (type order, the literal version-tag string, and
@@ -109,7 +115,7 @@ export function computeDecisionAttestationHash(params: {
       { type: "bytes32" },
     ],
     [
-      "ANCHOR_DECISION_ATTESTATION_V1",
+      "ANCHOR_DECISION_ATTESTATION_V2",
       params.originDomain,
       params.recipientAddress,
       params.caseIdBytes32,
@@ -138,7 +144,7 @@ export function encodeDecisionRelayBody(payload: DecisionRelayPayload): Hex {
       { type: "uint256" },
       { type: "bytes32" },
       { type: "bytes32" },
-      { type: "bytes" },
+      { type: "bytes[]" },
     ],
     [
       caseIdBytes32,
@@ -147,7 +153,7 @@ export function encodeDecisionRelayBody(payload: DecisionRelayPayload): Hex {
       payload.respondentAmount,
       payload.escrowId,
       payload.proofHash,
-      payload.attestationSignature,
+      payload.attestationSignatures,
     ]
   );
 }

@@ -64,14 +64,18 @@ contract DecisionRelay is IMessageRecipient {
     // CONTENT being delivered is genuine, since a compromised relay
     // pipeline (the dispatch wallet, the self-hosted relayer, or the
     // backend that computed proofHash) could otherwise dispatch any
-    // settlement it wants and this contract would settle it. `attestor`
-    // is a separate, ideally more isolated/offline key whose only job is
-    // signing real decisions; handle() below requires a valid ECDSA
-    // signature from this address over the exact decision content
-    // (recovered via ecrecover), independent of who actually submitted
-    // the Hyperlane message. Forging a settlement now requires this
-    // specific private key, not just control of the relay/dispatch path.
-    address public attestor;
+    // settlement it wants and this contract would settle it. handle()
+    // below requires `attestorThreshold` DISTINCT valid ECDSA signatures
+    // (recovered via ecrecover) from this set, over the exact decision
+    // content, independent of who actually submitted the Hyperlane
+    // message. M-of-N rather than a single key so no one holder of an
+    // attestor key can unilaterally forge a settlement, and losing one
+    // key doesn't halt settlement (as long as threshold-many of the
+    // remaining keys are still available) — real operational separation
+    // instead of one key that's merely stored in a "different" secret.
+    mapping(address => bool) public isAttestor;
+    uint256 public attestorCount;
+    uint256 public attestorThreshold;
 
     // Trusted sender per origin domain — only Anchor's known GenLayer-side
     // relay/originator contract's address (as bytes32) should be accepted.
@@ -103,19 +107,43 @@ contract DecisionRelay is IMessageRecipient {
         _;
     }
 
-    constructor(address _mailbox, address _customIsm, address _attestor) {
+    constructor(address _mailbox, address _customIsm, address[] memory _attestors, uint256 _attestorThreshold) {
         mailbox = IMailbox(_mailbox);
         owner = msg.sender;
         customIsm = _customIsm;
-        attestor = _attestor;
+        require(_attestorThreshold > 0 && _attestorThreshold <= _attestors.length, "invalid threshold");
+        for (uint256 i = 0; i < _attestors.length; i++) {
+            require(_attestors[i] != address(0), "zero address attestor");
+            require(!isAttestor[_attestors[i]], "duplicate attestor");
+            isAttestor[_attestors[i]] = true;
+        }
+        attestorCount = _attestors.length;
+        attestorThreshold = _attestorThreshold;
     }
 
-    /// Rotating the attestor key doesn't affect any already-processed
-    /// decision (proofHash-keyed idempotency is untouched), only future
-    /// ones — lets Anchor move to a new/offline-generated key without
-    /// redeploying.
-    function setAttestor(address _attestor) external onlyOwner {
-        attestor = _attestor;
+    /// Adding/removing a single attestor, or changing the threshold,
+    /// doesn't affect any already-processed decision (proofHash-keyed
+    /// idempotency is untouched), only future ones — lets Anchor rotate
+    /// one compromised/lost key without a full redeploy or without ever
+    /// dropping below a safe threshold, since removeAttestor refuses to
+    /// go below it.
+    function addAttestor(address _attestor) external onlyOwner {
+        require(_attestor != address(0), "zero address attestor");
+        require(!isAttestor[_attestor], "already an attestor");
+        isAttestor[_attestor] = true;
+        attestorCount += 1;
+    }
+
+    function removeAttestor(address _attestor) external onlyOwner {
+        require(isAttestor[_attestor], "not an attestor");
+        require(attestorCount - 1 >= attestorThreshold, "would drop below threshold");
+        isAttestor[_attestor] = false;
+        attestorCount -= 1;
+    }
+
+    function setAttestorThreshold(uint256 _threshold) external onlyOwner {
+        require(_threshold > 0 && _threshold <= attestorCount, "invalid threshold");
+        attestorThreshold = _threshold;
     }
 
     /// Hyperlane's Mailbox calls this on the recipient (if implemented)
@@ -150,23 +178,29 @@ contract DecisionRelay is IMessageRecipient {
             uint256 respondentAmount,
             bytes32 escrowId,
             bytes32 proofHash,
-            bytes memory attestationSignature
-        ) = abi.decode(_messageBody, (bytes32, string, uint256, uint256, bytes32, bytes32, bytes));
+            bytes[] memory attestationSignatures
+        ) = abi.decode(_messageBody, (bytes32, string, uint256, uint256, bytes32, bytes32, bytes[]));
 
-        // Binds the signature to exactly this decision's content, this
+        // Binds the signatures to exactly this decision's content, this
         // origin domain, and this specific deployed contract (address(this)
         // stands in for "destination domain + recipient" — a signature
         // valid here can't be replayed against a different DecisionRelay
         // deployment or a different origin domain's decision, since both
         // are part of what's actually signed). Uses the raw hash directly
-        // (no EIP-191 prefix) — this signature is never meant to be shown
-        // in a wallet's "sign this message" UI, it's machine-generated by
-        // Anchor's own attestor key, so there's no phishing-signature
-        // surface EIP-191 prefixing would otherwise be defending against.
-        bytes32 attestationHash = keccak256(
-            abi.encode("ANCHOR_DECISION_ATTESTATION_V1", _origin, address(this), caseId, outcome, claimantAmount, respondentAmount, escrowId, proofHash)
+        // (no EIP-191 prefix) — these signatures are never meant to be
+        // shown in a wallet's "sign this message" UI, they're machine-
+        // generated by Anchor's own attestor keys, so there's no
+        // phishing-signature surface EIP-191 prefixing would otherwise be
+        // defending against.
+        require(
+            _countValidDistinctAttestations(
+                keccak256(
+                    abi.encode("ANCHOR_DECISION_ATTESTATION_V2", _origin, address(this), caseId, outcome, claimantAmount, respondentAmount, escrowId, proofHash)
+                ),
+                attestationSignatures
+            ) >= attestorThreshold,
+            "insufficient valid attestations"
         );
-        require(_recoverSigner(attestationHash, attestationSignature) == attestor, "invalid attestation");
 
         require(!processedDecisions[proofHash], "decision already settled");
         processedDecisions[proofHash] = true;
@@ -177,6 +211,36 @@ contract DecisionRelay is IMessageRecipient {
         if (target != address(0)) {
             ISettlementTarget(target).settle(caseId, escrowId, claimantAmount, respondentAmount, proofHash);
         }
+    }
+
+    /// M-of-N: counts DISTINCT valid attestor signatures over the same
+    /// hash — not just "at least N signatures" (which a single attestor
+    /// could satisfy by signing the same hash into the array multiple
+    /// times). Tracking seen signers in-loop (rather than a mapping,
+    /// which would need clearing between calls) keeps this a pure,
+    /// stateless check per call — cheap for the small N this is
+    /// realistically sized for. Split out of handle() itself purely to
+    /// keep that function's local-variable count under the EVM's
+    /// stack-depth limit (a real "stack too deep" compiler error hit
+    /// while building this, not a style preference).
+    function _countValidDistinctAttestations(bytes32 hash, bytes[] memory signatures) private view returns (uint256) {
+        address[] memory seenSigners = new address[](signatures.length);
+        uint256 validCount = 0;
+        for (uint256 i = 0; i < signatures.length; i++) {
+            address signer = _recoverSigner(hash, signatures[i]);
+            if (!isAttestor[signer]) continue;
+            bool alreadySeen = false;
+            for (uint256 j = 0; j < validCount; j++) {
+                if (seenSigners[j] == signer) {
+                    alreadySeen = true;
+                    break;
+                }
+            }
+            if (alreadySeen) continue;
+            seenSigners[validCount] = signer;
+            validCount++;
+        }
+        return validCount;
     }
 
     /// Standard 65-byte (r, s, v) ECDSA signature recovery — no external

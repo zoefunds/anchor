@@ -15,24 +15,28 @@ import {TrustedRelayerIsm} from "../contracts/TrustedRelayerIsm.sol";
 //
 // Usage:
 //   forge script deploy/DeployDecisionRelay.s.sol --rpc-url sepolia --broadcast --private-key $PRIVATE_KEY
-// Requires ATTESTOR_ADDRESS env var — the public address matching
-// apps/web's ATTESTOR_PRIVATE_KEY (see DecisionRelay.sol's `attestor`
-// doc comment). Deliberately not derived from any key this script itself
-// holds — the deployer and the attestor are different trust roles.
+// Requires ATTESTOR_ADDRESSES (comma-separated public addresses matching
+// apps/web's ATTESTOR_PRIVATE_KEYS — see DecisionRelay.sol's
+// `isAttestor`/`attestorThreshold` doc comment) and ATTESTOR_THRESHOLD
+// (how many of those must sign for handle() to accept a decision).
+// Deliberately not derived from any key this script itself holds — the
+// deployer and the attestors are different trust roles.
 contract DeployDecisionRelay is Script {
     function run() external returns (address) {
         address mailbox = vm.envAddress("HYPERLANE_MAILBOX");
-        address attestorAddress = vm.envAddress("ATTESTOR_ADDRESS");
+        address[] memory attestorAddresses = vm.envAddress("ATTESTOR_ADDRESSES", ",");
+        uint256 attestorThreshold = vm.envUint("ATTESTOR_THRESHOLD");
 
         vm.startBroadcast();
         TrustedRelayerIsm ism = new TrustedRelayerIsm();
-        DecisionRelay relay = new DecisionRelay(mailbox, address(ism), attestorAddress);
+        DecisionRelay relay = new DecisionRelay(mailbox, address(ism), attestorAddresses, attestorThreshold);
         vm.stopBroadcast();
 
         console.log("TrustedRelayerIsm deployed at:", address(ism));
         console.log("DecisionRelay deployed at:", address(relay));
         console.log("Mailbox used:", mailbox);
-        console.log("Attestor:", attestorAddress);
+        console.log("Attestor count:", attestorAddresses.length);
+        console.log("Attestor threshold:", attestorThreshold);
         return address(relay);
     }
 }

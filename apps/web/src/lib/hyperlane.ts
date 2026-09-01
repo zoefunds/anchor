@@ -39,20 +39,32 @@ function getRelayConfig() {
   };
 }
 
-// Deliberately a DIFFERENT key from HYPERLANE_RELAY_PRIVATE_KEY above —
-// see DecisionRelay.sol's own doc comment on `attestor` for why. The
-// dispatch key only needs to pay gas and call Mailbox.dispatch; the
-// attestor key is the actual thing standing behind "this decision is
-// real," so it should be held more carefully (e.g. real deployments
-// should consider generating this offline and never storing it in the
-// same secrets store as the day-to-day relay key) even though this MVP
-// currently keeps both as ordinary env vars.
-function getAttestorAccount() {
-  const privateKey = process.env.ATTESTOR_PRIVATE_KEY;
-  if (!privateKey) {
-    throw new Error("ATTESTOR_PRIVATE_KEY is not set — see apps/web/.env.example");
+// Deliberately DIFFERENT keys from HYPERLANE_RELAY_PRIVATE_KEY above —
+// see DecisionRelay.sol's own doc comment on `isAttestor`/`attestorThreshold`
+// for why. The dispatch key only needs to pay gas and call
+// Mailbox.dispatch; the attestor keys are the actual thing standing
+// behind "this decision is real," so this backend process holds
+// whichever subset of the M-of-N set it's configured with (real
+// production deployments should split custody of the full set across
+// separate holders/processes — see docs/multisig-attestor-setup.md — a
+// single process holding every key defeats the point of M-of-N).
+// ATTESTOR_PRIVATE_KEYS is a comma-separated list (each entry the same
+// 0x-prefixed hex format ATTESTOR_PRIVATE_KEY used to be); the old
+// singular ATTESTOR_PRIVATE_KEY is still read as a one-key fallback so a
+// deployment that hasn't rotated to the multisig contract yet keeps
+// working unchanged.
+function getAttestorAccounts() {
+  const list = process.env.ATTESTOR_PRIVATE_KEYS;
+  const single = process.env.ATTESTOR_PRIVATE_KEY;
+  const raw = list
+    ? list.split(",").map((k) => k.trim()).filter(Boolean)
+    : single
+      ? [single]
+      : [];
+  if (raw.length === 0) {
+    throw new Error("ATTESTOR_PRIVATE_KEYS (or ATTESTOR_PRIVATE_KEY) is not set — see apps/web/.env.example");
   }
-  return privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
+  return raw.map((privateKey) => privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex));
 }
 
 export interface DispatchDecisionParams {
@@ -150,7 +162,9 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       escrowId,
       proofHash: decisionHashBytes32,
     });
-    const attestationSignature = await getAttestorAccount().sign({ hash: attestationHash });
+    const attestationSignatures = await Promise.all(
+      getAttestorAccounts().map((account) => account.sign({ hash: attestationHash }))
+    );
 
     const payload: DecisionRelayPayload = {
       caseId: params.caseId,
@@ -159,7 +173,7 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       respondentAmount: params.respondentAmountAtto,
       escrowId,
       proofHash: decisionHashBytes32,
-      attestationSignature,
+      attestationSignatures,
     };
     return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
   }

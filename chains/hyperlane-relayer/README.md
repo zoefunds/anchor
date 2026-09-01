@@ -465,3 +465,33 @@ of the explorer's own indexing lag:
 ```bash
 cast call <mailbox> "delivered(bytes32)(bool)" <messageId> --rpc-url <rpc>
 ```
+
+## DecisionRelay attestor: single key -> M-of-N multisig
+
+DecisionRelay.sol's `handle()` no longer trusts a single `attestor`
+address — it now requires `attestorThreshold`-many DISTINCT valid
+ECDSA signatures from a configured `isAttestor` set (see that
+contract's own doc comment, and `chains/evm/test/DecisionRelay.t.sol`
+for the full behavior, including the "duplicate signature doesn't
+count twice" and "removing an attestor invalidates its future
+signatures" guarantees). Redeployed with a 2-of-3 threshold: ISM
+`0x39f6f0C7DE6F53Bd44AC73f573e621dd6953Fbe2`, DecisionRelay
+`0x41aE73812c35F8b45a0c883E0675dBAC5c2d2974`, attestors
+`0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70`,
+`0xe958c21846907768572C2087830f06754BC5D549`,
+`0xB8De63e6D9fE94a38599251e2bE913bc02756F64`. A real 2-of-3 dispatch
+was verified live end-to-end (dispatch tx
+`0xfcf819e0bae594a2b886212c75cd528fd190968c2168417a2813261aeb33cf19`,
+message `0x2c74611413126387148e6a997ad31b4b1bf0eacf53234e13ef7ff402e5e93cf1`,
+`processedDecisions` flipped to `true` on the new contract).
+
+`trustedSender[sepolia]` was reconfigured on the new contract to the
+dispatch wallet's address (`setTrustedSender`) — this is a fresh
+contract, so it starts with no trusted sender or settlement target
+configured, same as every prior redeploy in this file's history.
+
+Anchor's backend currently holds 2 of the 3 keys itself
+(`ATTESTOR_PRIVATE_KEYS` on `anc-hor-worker`) purely so dispatch keeps
+working automatically before real external custody is set up — see
+`docs/multisig-attestor-setup.md` for why that's a stand-in, not the
+intended security posture, and the steps to actually split custody.
