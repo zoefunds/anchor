@@ -1,0 +1,10 @@
+{
+  "chains": {
+    "sepolia": {
+      "domainId": 11155111,
+      "name": "sepolia",
+      "protocol": "ethereum",
+      "rpcUrls": [{ "http": "https://ethereum-sepolia.publicnode.com" }]
+    }
+  }
+}

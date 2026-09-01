@@ -539,3 +539,20 @@ keys, not more backend-held secrets:
   `docs/multisig-attestor-setup.md`. The offline holder signs the given
   hash with `cast wallet sign --private-key <key> --no-hash <hash>` and
   submits only the resulting signature, never the key.
+
+## Permissive ISM replaced with a real 2-of-2 validator multisig
+
+`TrustedRelayerIsm.sol`'s always-true `verify()` (see that contract's
+own SECURITY TRADEOFF comment) is no longer what gates inbound Sepolia
+delivery. Two real Hyperlane validators (`chains/hyperlane-validator/`)
+now run continuously, sign checkpoints, publish them to a real AWS S3
+bucket, and are announced on-chain — details and the day-2 runbook for
+adding more are in `docs/self-hosted-validator-setup.md`. A real
+`StaticMerkleRootMultisigIsm` (deployed via Hyperlane's own canonical
+factory, `0x0a71AcC99967829eE305a285750017C4916Ca269`, confirmed from
+`hyperlane-registry`) requiring both validators' checkpoints,
+`0xf9Ceb195C295c496952649574A78B2Da6dD7b05f`, is now `DecisionRelay`'s
+`customIsm`. Redeployed again: `DecisionRelay`
+`0x94f3FF552CC879a36B19b829af3325Ea72cbC71C`, `trustedSender`
+reconfigured via the same 2-of-2 Safe governance flow as the attestor
+work above. This file's `WHITELIST` updated to match.

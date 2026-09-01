@@ -35,18 +35,16 @@ hexify() {
 # recipients this deployment cares about makes those old entries get
 # skipped outright instead of retried forever.
 #
-# Sepolia recipient updated again to a fresh DecisionRelay deployment
-# (0x928abCf7...) — DecisionRelay.sol now requires a real ECDSA
-# attestation signature (verified via ecrecover against a configured
-# `attestor` address) over the decision's own content, not just trusting
-# whichever address dispatched the Hyperlane message. See that
-# contract's own doc comment on `attestor`/handle() for the full
-# reasoning. The prior deployment (0x4D1275...) has no attestor concept
-# at all and is left as-is, permanently on the old trust model — not
-# reused, since decisions dispatched at that address never carry an
-# attestation signature.
+# Sepolia recipient updated to the current DecisionRelay deployment
+# (0x94f3FF552CC879a36B19b829af3325Ea72cbC71C) — the real 2-of-2
+# StaticMerkleRootMultisigIsm redeploy (see
+# docs/self-hosted-validator-setup.md), replacing the permissive
+# TrustedRelayerIsm. Every prior address in this whitelist's history is
+# a superseded deployment on an older trust model; only the current
+# live contract needs to be whitelisted here, since old ones no longer
+# receive real dispatches.
 WHITELIST='[
-  {"destinationDomain":"11155111","recipientAddress":"0x928abCf7383D605bc528123098374DaeF08F885a"},
+  {"destinationDomain":"11155111","recipientAddress":"0x94f3FF552CC879a36B19b829af3325Ea72cbC71C"},
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 

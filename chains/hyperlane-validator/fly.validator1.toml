@@ -1,0 +1,13 @@
+app = 'anc-hor-validator1'
+primary_region = 'ord'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[[mounts]]
+  source = 'anchor_validator1_data'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
