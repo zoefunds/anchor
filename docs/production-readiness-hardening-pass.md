@@ -627,26 +627,49 @@ with an incomplete bucket policy, fully explainable from public S3
 documentation and the validator's own open-source code — nothing here
 needs AWS's side of the story.
 
-**Proposed fix, not yet applied**: add `s3:ListBucket` to the public
-bucket policy, scoped via an `s3:prefix` condition to just the
-checkpoint prefixes (`validator1/*`, `validator2/*`) rather than
-granting bucket-wide anonymous listing — this lets anonymous
-`GetObject` on a genuinely-missing key return `404` (which
-`fetch_checkpoint` already handles correctly) instead of `403` (which
-it doesn't). This is a live, security-relevant bucket policy change and
-was **not applied without explicit go-ahead**, consistent with this
-pass's standing instruction not to change bucket policy/IAM blindly —
-it is now grounded in source-level evidence, not a blind guess, but
-still needs a deliberate yes before touching production.
+**Fix applied, with explicit go-ahead, and verified before/after**:
+added `s3:ListBucket` to the public bucket policy, scoped via an
+`s3:prefix` `StringLike` condition to just `validator1/*` and
+`validator2/*` — no bucket-wide listing, no write/delete access, no
+access outside the checkpoint prefixes. Applied only after
+`SETTLEMENT_PAUSED=true` was confirmed live on both the Fly worker
+(`flyctl secrets set` + restart) and the Vercel web app (env var added
+to production, then a fresh production deploy from the repo root to
+ensure the running functions actually pick it up — a first deploy
+attempt from the wrong directory, `apps/web` instead of the repo root
+where the monorepo-aware `vercel.json` lives, failed to resolve the
+internal `@anchor/genlayer-sdk`/`@anchor/hyperlane-relay` workspace
+packages; corrected and redeployed cleanly from root).
 
-**Temporary safety measure applied**: `SETTLEMENT_PAUSED=true` set on
-`anc-hor-worker` (Fly) to halt the periodic settlement retry sweep
-while validator backfill cannot complete. **The web app's inline
-dispatch path (`runAdjudicationJob`) is not covered** — it appears to
-run on Vercel, which this pass has no confirmed access to; the same
-flag needs to be set there too to fully close the settlement-dispatch
-surface. The delivery SLA check in `verify-deployment.ts` remains
-active and unaffected by the pause. No case data, message IDs, or
-transaction hashes were deleted or modified — all undelivered-message
-evidence gathered this pass remains exactly as captured above for a
+Before/after, all anonymous (`curl`, no credentials):
+
+| Check | Before | After |
+|---|---|---|
+| Missing checkpoint key in-scope (`validator1/checkpoint_0_with_id.json`) | `403` | **`404`** |
+| Missing key outside allowed prefixes (`validator3/foo.json`, bucket-root file) | `403` | `403` (unchanged) |
+| Bucket-wide `ListObjectsV2` (no prefix) | `403` | `403` (unchanged — no bucket-wide listing granted) |
+| `ListObjectsV2` scoped to `validator1/` prefix | `403` | `200` (the actual grant) |
+| Anonymous `PUT` | `403` | `403` (unchanged — no write access granted) |
+| Anonymous `DELETE` of an existing object | `403` | `403` (unchanged — no delete access granted) |
+| Existing published objects (`metadata_latest.json`, `announcement.json`) | `200` | `200` (unchanged — no regression) |
+
+Every check landed exactly where intended: the one thing that changed
+is that a genuinely-missing checkpoint object now reads as "doesn't
+exist" instead of "denied," which is exactly what `fetch_checkpoint`'s
+existing `NoSuchKey`-as-`Ok(None)` handling needs to let backfill
+actually progress past index 0.
+
+**Temporary safety measure applied and confirmed live on both dispatch
+paths**: `SETTLEMENT_PAUSED=true` set on `anc-hor-worker` (Fly, via
+`flyctl secrets set` — restarted) to halt the periodic settlement retry
+sweep, and on the `anc-hor` Vercel project's production environment
+(`vercel env add` + a fresh production deploy from the repo root, so
+the running serverless functions actually have it baked in — env vars
+added after a deployment don't retroactively apply to already-running
+functions). Both confirmed running on their respective new
+versions/deployments before the bucket policy change below was made.
+The delivery SLA check in `verify-deployment.ts` remains active and
+unaffected by the pause. No case data, message IDs, or transaction
+hashes were deleted or modified — all undelivered-message evidence
+gathered this pass remains exactly as captured above for a
 Support case if one is still wanted for a different reason.
