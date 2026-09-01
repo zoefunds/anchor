@@ -461,3 +461,43 @@ more completely than it did before.
   before the AccessDenied root cause is understood risks building
   monitoring around symptoms rather than the actual failure. Tracked as
   next steps once the AccessDenied investigation has an answer.
+
+## Second addendum (same day): credential rotation tested and ruled out
+
+A follow-up round tested whether the authenticated-S3-AccessDenied
+problem above was simply a bad/stale credential, since that's the most
+common mundane explanation and is worth ruling out empirically before
+escalating further. The operator rotated the AWS access key for
+`anchor-hyperlane-validators` (through several attempts — one where a
+value didn't actually change per `flyctl secrets list`'s digest, one
+that turned out to be a duplicate of a prior key, and finally one
+confirmed genuinely new via a changed secret digest on both Fly apps).
+
+**Result: definitively not the credential.** With the confirmed-fresh
+key installed and both validator machines cleanly restarted, the exact
+same `Failed to read reorg status ... AccessDenied` error reappeared
+within about a minute of boot (`retries: 22`, a fresh counter for this
+boot). Three distinct credential states — the original key, one
+mistaken duplicate, and one confirmed-fresh key — all produced the
+identical failure. This closes the "bad/stale credential" hypothesis
+completely.
+
+Combined with everything else already ruled out (under-scoped IAM
+policy — the identity has `AmazonS3FullAccess`; no AWS Organization
+exists for this account, so no SCP is possible; encryption is SSE-S3
+not KMS; no visible bucket-policy `Deny` statement in what was
+reviewed), this is now genuinely past what this pass's AWS console
+access can diagnose. **Recommendation: open an AWS Support case** —
+they can see the server-side reason for the denial that neither the
+console views checked here nor CloudTrail (no trail configured, so S3
+data events were never logged) can surface after the fact.
+
+Side effects of this rotation round, for the record: both validator
+machines briefly ran out of their Fly restart budget during the
+credential-transition window (expected — they had no working S3
+credential for a few minutes between unset and the final working
+import) and had to be manually restarted with `flyctl machine start`;
+both are back to `started` state as of this addendum. No credential
+values are recorded anywhere in this repository, its history, or this
+document — only the fact that rotation happened and which digests
+changed.
