@@ -35,6 +35,50 @@ function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
+/**
+ * Emergency pause for new settlement dispatches. Deliberately a single
+ * env var, not a DB flag — flipping it must not depend on the same
+ * database a broader incident might also be affecting, and it must take
+ * effect on next deploy/restart without a migration. Only gates dispatch
+ * itself: evidence access, appeals, and decision read paths are entirely
+ * unaffected by this flag, by construction (nothing else checks it).
+ */
+export function isSettlementPaused(): boolean {
+  return process.env.SETTLEMENT_PAUSED === "true";
+}
+
+/**
+ * Per-chain settlement amount ceiling, in atto units (same unit as
+ * Case.amount after toAttoAmount). MVP shape: env-var configuration, not
+ * the tenant/policy-scoped DB table the fintech controls roadmap
+ * describes as the eventual design (docs/fintech-controls-roadmap.md,
+ * "Operational controls") — this is the first real step, not the
+ * finished version. `chain` is matched case-insensitively against the
+ * suffix of `SETTLEMENT_LIMIT_ATTO_<CHAIN>` (e.g. "sepolia" ->
+ * SETTLEMENT_LIMIT_ATTO_SEPOLIA); falls back to
+ * SETTLEMENT_LIMIT_ATTO_DEFAULT when no chain-specific var is set.
+ * Returns null (no limit enforced) only when neither is set — an
+ * explicit opt-out, not a silent default, so a misconfigured env doesn't
+ * quietly disable the control.
+ */
+export function getSettlementLimitAtto(chain: string): bigint | null {
+  const chainKey = chain.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const raw = process.env[`SETTLEMENT_LIMIT_ATTO_${chainKey}`] ?? process.env.SETTLEMENT_LIMIT_ATTO_DEFAULT;
+  if (!raw) return null;
+  try {
+    const limit = BigInt(raw);
+    // A configured-but-negative limit is a misconfiguration, not "no
+    // limit" — fail closed (0n blocks everything) rather than silently
+    // falling back to unlimited, since an operator who set this var at
+    // all clearly intended some ceiling to apply.
+    return limit >= 0n ? limit : 0n;
+  } catch {
+    // eslint-disable-next-line no-console
+    console.error(`invalid settlement limit env value for chain ${chain}: "${raw}" — failing closed (blocking settlement on this chain) rather than silently treating it as unlimited`);
+    return 0n;
+  }
+}
+
 /** sha256 of the exact contract source deployed for this decision — see Decision.contractCodeHash's schema comment. */
 function computeContractCodeHash(): string {
   return sha256Hex(getAdjudicatorContractCode());
@@ -104,6 +148,17 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
   if (decision.consensus !== "ACCEPTED") return;
   if (decision.relayTxHash) return; // already settled — retryFailedSettlements can call this again, must not double-dispatch
   if (decision.relayAttempts >= MAX_RELAY_ATTEMPTS) return; // see retryFailedSettlements' schema comment
+  if (isSettlementPaused()) {
+    // eslint-disable-next-line no-console
+    console.error(`settlement dispatch paused (SETTLEMENT_PAUSED) — refusing to dispatch decision ${decision.id} for case ${kase.id}`);
+    return;
+  }
+  const settlementLimitAtto = getSettlementLimitAtto(kase.settlementChain);
+  if (settlementLimitAtto !== null && toAttoAmount(kase.amount.toString()) > settlementLimitAtto) {
+    // eslint-disable-next-line no-console
+    console.error(`case ${kase.id} amount exceeds configured settlement limit for chain ${kase.settlementChain} — refusing to dispatch decision ${decision.id}`);
+    return;
+  }
   if (!decision.proofHash || !decision.decisionHash) {
     // Every real ACCEPTED decision has both (set when the Decision row
     // was created - see runAdjudicationJob). Missing either means

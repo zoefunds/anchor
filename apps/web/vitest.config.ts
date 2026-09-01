@@ -11,7 +11,7 @@ import path from "path";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["tests/integration/**/*.test.ts"],
+    include: ["tests/integration/**/*.test.ts", "tests/unit/**/*.test.ts"],
     testTimeout: 15000,
     // These tests hit one real, shared local Postgres with no per-file
     // isolation (no schema-per-worker, no transactional rollback) — and
