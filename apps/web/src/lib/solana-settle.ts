@@ -7,6 +7,7 @@
 // can't add the Ed25519 signature-verification instruction attested
 // settlement depends on. This module builds that transaction directly.
 
+import { createPublicKey, verify as cryptoVerify } from "crypto";
 import {
   Connection,
   Keypair,
@@ -138,6 +139,139 @@ export interface ExternalSolanaAttestation {
 }
 
 /**
+ * JSON-serializable form of ExternalSolanaAttestation, for persisting
+ * in Decision.pendingSolanaAttestations (a Prisma Json column — raw
+ * Uint8Array/Buffer values don't round-trip through JSON). base64
+ * chosen over base58/hex purely for compactness; either would work.
+ */
+export interface SolanaAttestationRecord {
+  publicKey: string; // base64
+  signature: string; // base64
+}
+
+/**
+ * Must match decision-relay's Rust ATTESTOR_PUBKEYS constant exactly —
+ * see chains/solana/programs/decision-relay/src/lib.rs. The client-side
+ * copy exists so this function can reject a malformed/unknown/duplicate
+ * external attestation BEFORE spending a real transaction fee on a
+ * guaranteed on-chain revert, mirroring the EVM side's isRegisteredAttestor
+ * check in lib/hyperlane.ts. Update this array (and ATTESTOR_THRESHOLD
+ * below) if the Rust consts are ever rotated — there is deliberately no
+ * on-chain read path for this the way EVM's attestorThreshold()/isAttestor()
+ * views work, since decision-relay has no equivalent governance account
+ * (see docs/multisig-attestor-setup.md's Solana section).
+ */
+const ATTESTOR_PUBKEYS = [
+  "4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq",
+  "7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY",
+];
+const ATTESTOR_THRESHOLD = 2; // must match decision-relay's Rust ATTESTOR_THRESHOLD const exactly
+
+/** Exposed so callers (e.g. lib/hyperlane.ts, the pending-solana-attestations API routes) can validate a submitted external attestation's public key without duplicating this list. */
+export function isRegisteredSolanaAttestor(publicKeyBase58: string): boolean {
+  return ATTESTOR_PUBKEYS.includes(publicKeyBase58);
+}
+
+// Fixed 12-byte SPKI DER prefix for a raw 32-byte Ed25519 public key —
+// same well-known constant used elsewhere in this project's offline
+// signing tooling this session (Node has no raw-key Ed25519 verify API,
+// only DER-wrapped, so this is required, not decorative).
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+/**
+ * Verifies a real Ed25519 signature (Node's built-in crypto — no
+ * external dependency) over `messageHex` from `publicKeyBase58` —
+ * used by the pending-solana-attestations sign route to reject an
+ * invalid/forged signature BEFORE it's ever stored, mirroring the EVM
+ * side's recoverAddress-then-isRegisteredAttestor check in
+ * lib/hyperlane.ts (Solana's Ed25519 isn't recoverable, so this takes
+ * the claimed public key directly and verifies against it, rather than
+ * recovering one).
+ */
+export function verifySolanaAttestationSignature(publicKeyBase58: string, messageHex: string, signatureHex: string): boolean {
+  try {
+    const publicKeyBytes = new PublicKey(publicKeyBase58).toBytes();
+    const publicKey = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, publicKeyBytes]), format: "der", type: "spki" });
+    const message = Buffer.from(messageHex.startsWith("0x") ? messageHex.slice(2) : messageHex, "hex");
+    const signature = Buffer.from(signatureHex.startsWith("0x") ? signatureHex.slice(2) : signatureHex, "hex");
+    if (signature.length !== 64) return false;
+    return cryptoVerify(null, message, publicKey, signature);
+  } catch {
+    return false;
+  }
+}
+
+export function getSolanaAttestorThreshold(): number {
+  return ATTESTOR_THRESHOLD;
+}
+
+/**
+ * Thrown when the backend's own SOLANA_ATTESTOR_PRIVATE_KEY, combined
+ * with whatever validated externalAttestations were supplied, still
+ * don't reach ATTESTOR_THRESHOLD — the Solana-side equivalent of
+ * hyperlane.ts's InsufficientAttestorSignaturesError. Expected and NOT
+ * a bug once real key custody is split (see
+ * docs/multisig-attestor-setup.md): it means dispatch is genuinely
+ * waiting on the offline attestor's signature. Carries the exact
+ * message bytes (hex-encoded) the caller should persist
+ * (Decision.pendingSolanaAttestationMessage) so a signature submitted
+ * later via POST /api/internal/pending-solana-attestations/[decisionId]/sign
+ * can complete the same dispatch without recomputing anything.
+ */
+export class InsufficientSolanaAttestationsError extends Error {
+  constructor(
+    public readonly messageHex: string,
+    public readonly collectedCount: number,
+    public readonly threshold: number
+  ) {
+    super(`only ${collectedCount} of ${threshold} required Solana attestor signatures available`);
+    this.name = "InsufficientSolanaAttestationsError";
+  }
+}
+
+/**
+ * Validates and de-duplicates externally-supplied attestations before
+ * they're ever turned into instructions — a re-audit correctly flagged
+ * that the Rust program only scans the ATTESTOR_PUBKEYS.len() instructions
+ * immediately preceding AttestedSettle, so a caller-supplied array with
+ * extra, unknown, malformed, or duplicate-signer entries could push a
+ * genuinely valid pair of signatures out of that scanned window, or
+ * waste a real transaction on entries that could never have counted.
+ * Returns only the entries worth turning into Ed25519 instructions,
+ * each from a distinct, known, well-formed attestor pubkey that isn't
+ * the backend's own key (a caller submitting the backend's own key as
+ * an "external" attestation would otherwise silently NOT add a second
+ * real signer).
+ */
+function validateExternalAttestations(
+  externalAttestations: ExternalSolanaAttestation[],
+  backendPublicKey: Uint8Array
+): ExternalSolanaAttestation[] {
+  const backendB58 = new PublicKey(backendPublicKey).toBase58();
+  const seen = new Set<string>([backendB58]);
+  const valid: ExternalSolanaAttestation[] = [];
+
+  for (const ext of externalAttestations) {
+    if (ext.publicKey.length !== 32 || ext.signature.length !== 64) {
+      continue; // malformed — never counts, never reaches the transaction
+    }
+    let b58: string;
+    try {
+      b58 = new PublicKey(ext.publicKey).toBase58();
+    } catch {
+      continue;
+    }
+    if (!ATTESTOR_PUBKEYS.includes(b58)) continue; // not a registered attestor
+    if (seen.has(b58)) continue; // duplicate signer (or the backend's own key resubmitted) — one signer counts once
+    seen.add(b58);
+    valid.push(ext);
+    if (valid.length >= ATTESTOR_PUBKEYS.length - 1) break; // cap: at most (N-1) external entries, since the backend itself fills one slot
+  }
+
+  return valid;
+}
+
+/**
  * A one-time-created Address Lookup Table (created via
  * AddressLookupTableProgram, funded by the relay payer — see
  * docs/multisig-attestor-setup.md's Solana section) holding the
@@ -232,15 +366,25 @@ export async function submitAttestedSettle(
   rpcUrl: string,
   externalAttestations: ExternalSolanaAttestation[] = []
 ): Promise<{ signature: string }> {
-  const ATTESTOR_THRESHOLD = 2; // must match decision-relay's Rust ATTESTOR_THRESHOLD const exactly
   const connection = new Connection(rpcUrl, "confirmed");
   const attestor = getAttestorKeypair();
   const payer = getRelayPayerKeypair();
 
   const message = decisionAttestationMessage(params);
+
+  // Filter/dedupe/cap BEFORE building any instructions — see
+  // validateExternalAttestations's own doc comment. This is also what
+  // guarantees correct ordering: the Ed25519 instructions built below
+  // are exactly [backend, ...validated externals] with nothing else
+  // interleaved, so they land as exactly the ATTESTOR_PUBKEYS.len()
+  // instructions immediately preceding AttestedSettle that the Rust
+  // program scans — no excess/unknown/malformed entries can ever push a
+  // genuinely valid signature out of that window.
+  const validExternalAttestations = validateExternalAttestations(externalAttestations, attestor.publicKey.toBytes());
+
   const ed25519Instructions = [
     Ed25519Program.createInstructionWithPrivateKey({ privateKey: attestor.secretKey, message }),
-    ...externalAttestations.map((ext) =>
+    ...validExternalAttestations.map((ext) =>
       Ed25519Program.createInstructionWithPublicKey({
         publicKey: ext.publicKey,
         message,
@@ -249,12 +393,9 @@ export async function submitAttestedSettle(
     ),
   ];
 
-  const totalSignatureCount = 1 + externalAttestations.length;
+  const totalSignatureCount = 1 + validExternalAttestations.length;
   if (totalSignatureCount < ATTESTOR_THRESHOLD) {
-    throw new Error(
-      `only ${totalSignatureCount} of ${ATTESTOR_THRESHOLD} required attestor signatures available for Solana decision ${params.caseId} — ` +
-        `see docs/multisig-attestor-setup.md's Solana section for how to collect the external attestor's signature`
-    );
+    throw new InsufficientSolanaAttestationsError(`0x${message.toString("hex")}`, totalSignatureCount, ATTESTOR_THRESHOLD);
   }
 
   const programId = new PublicKey(params.decisionRelayProgramId);

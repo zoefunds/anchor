@@ -517,6 +517,29 @@ model Decision {
   pendingAttestationHash       String?
   pendingAttestationSignatures String[] @default([])
 
+  // Solana equivalent of the two fields above — kept separate because
+  // Solana's Ed25519 signatures aren't recoverable the way EVM's ECDSA
+  // ones are: a stored entry must carry the SIGNER'S PUBLIC KEY
+  // alongside its signature, not just the signature bytes. A re-audit
+  // correctly flagged that the EVM co-signing workflow
+  // (pendingAttestationHash/Signatures + POST
+  // /api/internal/pending-attestations/[id]/sign) had no Solana
+  // counterpart, meaning solana-settle.ts's submitAttestedSettle was
+  // called with no externalAttestations and would always throw before
+  // broadcasting for any real 2-of-2 Solana decision. See
+  // lib/solana-settle.ts's InsufficientSolanaAttestationsError and
+  // docs/multisig-attestor-setup.md's Solana section.
+  //
+  // pendingSolanaAttestationMessage is the exact hex-encoded message
+  // bytes decisionAttestationMessage() produces for this decision —
+  // deterministic from the decision's own content, recomputing it never
+  // changes once set. pendingSolanaAttestations accumulates
+  // externally-submitted {publicKey, signature} pairs (base58/hex, via
+  // POST /api/internal/pending-solana-attestations/[id]/sign) as a JSON
+  // array until enough are collected to actually dispatch.
+  pendingSolanaAttestationMessage String?
+  pendingSolanaAttestations       Json?   @default("[]")
+
   @@index([caseId])
 }
 

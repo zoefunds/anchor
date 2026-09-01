@@ -13,6 +13,19 @@ export default defineConfig({
     environment: "node",
     include: ["tests/integration/**/*.test.ts"],
     testTimeout: 15000,
+    // These tests hit one real, shared local Postgres with no per-file
+    // isolation (no schema-per-worker, no transactional rollback) — and
+    // some (retryFailedSettlements-based tests in particular) query
+    // GLOBALLY across all organizations, not scoped to their own test
+    // fixtures. Running test FILES in parallel (Vitest's default) is a
+    // real, reproduced source of flakiness: one file's in-flight fixture
+    // rows get swept up by another file's sweep-based assertions. Found
+    // live while adding solana-cosign.test.ts — a genuinely correct test
+    // failed intermittently only when run alongside the rest of the
+    // suite, never in isolation. Forcing sequential file execution
+    // trades a few seconds of wall-clock time for deterministic results,
+    // which matters far more for a suite this size.
+    fileParallelism: false,
   },
   resolve: {
     alias: {

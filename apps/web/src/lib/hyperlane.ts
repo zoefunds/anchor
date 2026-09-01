@@ -6,7 +6,7 @@ import {
   type DecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
-import { pad, createPublicClient, http } from "viem";
+import { pad, createPublicClient, http, recoverAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
@@ -59,6 +59,45 @@ export async function isRegisteredAttestor(relayAddress: Address, signer: Addres
     functionName: "isAttestor",
     args: [signer],
   });
+}
+
+/**
+ * Recovers the signer of every signature over `hash`, revalidates EACH
+ * one against the contract's LIVE isAttestor mapping (not a cached
+ * assumption), and returns the count of DISTINCT valid registered
+ * signers — never raw signature count or array length. A re-audit
+ * correctly flagged that comparing array length to threshold is wrong
+ * on two counts: (1) the same signer's signature could appear more than
+ * once (duplicate bytes, or a different valid (r,s,v) encoding of the
+ * same signature — normalizing by RECOVERED ADDRESS rather than raw
+ * signature bytes closes both), and (2) a signature from an attestor
+ * governance has since removed via removeAttestor must stop counting
+ * immediately, which only a live isAttestor check (not a locally cached
+ * assumption) can guarantee — mirrors DecisionRelay.sol's own
+ * `_countValidDistinctAttestations` exactly, so the backend's local
+ * "is this enough" check can never disagree with what the contract
+ * will actually accept.
+ */
+export async function countValidDistinctSigners(
+  relayAddress: Address,
+  hash: Hex,
+  signatures: Hex[]
+): Promise<{ validCount: number; distinctSigners: Address[] }> {
+  const recovered = await Promise.all(
+    signatures.map(async (signature) => {
+      try {
+        return await recoverAddress({ hash, signature });
+      } catch {
+        return null; // malformed signature — never counts, never crashes the whole check
+      }
+    })
+  );
+
+  const uniqueCandidates = [...new Set(recovered.filter((a): a is Address => a !== null).map((a) => a.toLowerCase()))];
+  const membership = await Promise.all(uniqueCandidates.map((addr) => isRegisteredAttestor(relayAddress, addr as Address)));
+
+  const distinctSigners = uniqueCandidates.filter((_, i) => membership[i]) as Address[];
+  return { validCount: distinctSigners.length, distinctSigners };
 }
 
 // GenLayer isn't a Hyperlane domain (checked - not supported by Hyperlane
@@ -128,6 +167,8 @@ export interface DispatchDecisionParams {
   settlementSolanaCaseId?: string | null;
   /** Signatures already collected from EXTERNAL attestors (not held by this backend) for this exact decision's attestation hash — see Decision.pendingAttestationSignatures. Combined with whatever the backend signs itself; if the combined total still doesn't reach attestorThreshold, dispatchDecisionForCase throws InsufficientAttestorSignaturesError instead of a hard failure. */
   externalAttestationSignatures?: Hex[];
+  /** Sealevel-only equivalent of externalAttestationSignatures above — {publicKey, signature} pairs already collected from external Solana attestors (see Decision.pendingSolanaAttestations). Solana's Ed25519 signatures aren't recoverable, so each entry must carry its signer's public key explicitly. */
+  externalSolanaAttestations?: { publicKey: Uint8Array; signature: Uint8Array }[];
 }
 
 /** Formats a sha256 hex digest (evidenceHash or decisionHash, no 0x prefix) as a bytes32 for DecisionRelay.sol. */
@@ -235,8 +276,15 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
     const attestationSignatures = [...backendSignatures, ...(params.externalAttestationSignatures ?? [])];
 
     const threshold = await getAttestorThreshold(params.settlementContract as Address);
-    if (attestationSignatures.length < threshold) {
-      throw new InsufficientAttestorSignaturesError(attestationHash, attestationSignatures.length, threshold);
+    // Threshold sufficiency is determined by DISTINCT valid registered
+    // signers recovered from the actual signatures — never by raw
+    // array length (see countValidDistinctSigners's own doc comment for
+    // the two ways length alone lies: duplicate/re-encoded signatures
+    // from one signer, and stale signatures from an attestor governance
+    // has since removed).
+    const { validCount } = await countValidDistinctSigners(params.settlementContract as Address, attestationHash, attestationSignatures);
+    if (validCount < threshold) {
+      throw new InsufficientAttestorSignaturesError(attestationHash, validCount, threshold);
     }
 
     const payload: DecisionRelayPayload = {
@@ -287,7 +335,8 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
         respondentShareBps: params.respondentShareBps,
         decisionHash: Buffer.from(hashToBytes32(params.decisionHash, "decisionHash").slice(2), "hex"),
       },
-      rpcUrl
+      rpcUrl,
+      params.externalSolanaAttestations ?? []
     );
     return { txHash: signature, messageId: signature };
   }

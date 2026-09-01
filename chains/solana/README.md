@@ -212,6 +212,32 @@ account, extend it first (a real step hit during this work):
 solana program extend <PROGRAM_ID> <ADDITIONAL_BYTES> --url https://api.testnet.solana.com --keypair ~/.config/solana/id.json
 ```
 
+### Automated co-signing — DONE
+
+A re-audit correctly found that `dispatchDecisionForCase`'s Solana
+branch called `submitAttestedSettle` with no `externalAttestations` at
+all — meaning it always saw 1-of-2 and threw
+`InsufficientSolanaAttestationsError` before ever broadcasting, for
+every real 2-of-2 Solana decision, with no way to complete it. Fixed
+with a full Solana equivalent of the EVM co-signing workflow:
+`Decision.pendingSolanaAttestationMessage`/`pendingSolanaAttestations`
+persist the wait, `GET/POST /api/internal/pending-solana-attestations(/[id]/sign)`
+(bearer-secret gated, same as the EVM routes) let an external Ed25519
+attestor holder submit `{publicKey, signature}` — verified against the
+real message with Node's built-in `crypto.verify` before ever being
+stored, and rejected outright if the public key isn't one of
+`decision-relay`'s registered `ATTESTOR_PUBKEYS`. Also fixed
+alongside: `solana-settle.ts`'s `validateExternalAttestations`
+rejects/dedupes malformed, unknown, or duplicate-signer external
+attestations *before* building any instruction, so a caller-supplied
+array can't push a genuinely valid signature pair outside the window
+`decision-relay`'s Rust program actually scans. Covered by
+`apps/web/tests/integration/solana-cosign.test.ts` (real Ed25519
+crypto, real Postgres): proves 2-of-2 blocks with one signature,
+rejects a well-formed signature from an unregistered/mismatched key,
+resumes and settles exactly once after a real offline signature
+arrives, and never double-dispatches on a second sweep.
+
 ### Not yet done
 
 - **Solana-side M-of-N transport verification (the ISM).** `TRUSTED_ISM`
@@ -220,8 +246,3 @@ solana program extend <PROGRAM_ID> <ADDITIONAL_BYTES> --url https://api.testnet.
   permissive" section. Narrower exposure than the EVM side had before
   its own fix, since `AttestedSettle` already independently gates real
   fund movement, but not closed.
-- **Automated co-signing queue.** `submitAttestedSettle`'s
-  `externalAttestations` parameter is proven working, but nothing in
-  the automatic dispatch path calls it yet — unlike the EVM side's
-  `/api/internal/pending-attestations` API, a real Solana settlement
-  today needs the second signature collected manually.

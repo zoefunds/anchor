@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Hex } from "viem";
 import { prisma } from "@/lib/prisma";
 import { checkInternalSecret } from "@/lib/internal-auth";
-import { getAttestorThreshold } from "@/lib/hyperlane";
+import { getAttestorThreshold, countValidDistinctSigners } from "@/lib/hyperlane";
 
 // GET /api/internal/pending-attestations — lists decisions currently
 // blocked on external attestor co-signatures (see
@@ -30,15 +31,24 @@ export async function GET(req: NextRequest) {
 
   const items = await Promise.all(
     pending.map(async (d) => {
-      const threshold = d.case.settlementContract
-        ? await getAttestorThreshold(d.case.settlementContract as `0x${string}`).catch(() => null)
-        : null;
+      const relayAddress = d.case.settlementContract as `0x${string}` | undefined;
+      const threshold = relayAddress ? await getAttestorThreshold(relayAddress).catch(() => null) : null;
+      // Distinct VALID registered signers among the externally-collected
+      // signatures, revalidated against the live isAttestor mapping —
+      // never raw array length, which a re-audit correctly flagged as
+      // countable-but-wrong (duplicate/re-encoded signatures from one
+      // signer, or a stale signature from a since-removed attestor).
+      const collectedExternalSignatures =
+        relayAddress && d.pendingAttestationHash
+          ? (await countValidDistinctSigners(relayAddress, d.pendingAttestationHash as Hex, d.pendingAttestationSignatures as Hex[]).catch(() => null))
+              ?.validCount ?? d.pendingAttestationSignatures.length
+          : d.pendingAttestationSignatures.length;
       return {
         decisionId: d.id,
         caseId: d.caseId,
         outcome: d.outcome,
         attestationHash: d.pendingAttestationHash,
-        collectedExternalSignatures: d.pendingAttestationSignatures.length,
+        collectedExternalSignatures,
         attestorThreshold: threshold,
         createdAt: d.createdAt,
       };

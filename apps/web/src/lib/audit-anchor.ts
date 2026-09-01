@@ -3,6 +3,7 @@ import { createPublicClient, createWalletClient, http, keccak256, toHex, type He
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
+import { getAppEnv } from "@/lib/app-env";
 
 // Periodically posts each organization's current audit-log hash-chain
 // head to a small Sepolia contract (chains/evm/contracts/AuditAnchor.sol)
@@ -25,9 +26,14 @@ import { prisma } from "@/lib/prisma";
 // current single-operator trust model — see
 // docs/multisig-attestor-setup.md for the same caveat applied to the
 // attestor keys, which applies here too until this key is also moved to
-// separate custody. Falls back to HYPERLANE_RELAY_PRIVATE_KEY only if
-// AUDIT_ANCHOR_PRIVATE_KEY isn't set, so existing deployments don't
-// silently stop anchoring on upgrade.
+// separate custody. Falls back to HYPERLANE_RELAY_PRIVATE_KEY only in
+// development/staging (so local dev doesn't need a whole extra key just
+// to exercise this code path) — in production, a re-audit correctly
+// flagged that silently reusing the relay signer defeats the entire
+// point of "signer separation" this scope note claims, so
+// getAuditAnchorConfig() FAILS CLOSED there instead: no
+// AUDIT_ANCHOR_PRIVATE_KEY means no anchoring at all, loudly logged,
+// rather than a silent downgrade to a shared key nobody asked for.
 
 const ANCHOR_ABI = [
   {
@@ -44,16 +50,33 @@ const ANCHOR_ABI = [
 
 function getAuditAnchorConfig() {
   const contractAddress = process.env.AUDIT_ANCHOR_CONTRACT_ADDRESS;
-  const privateKey = process.env.AUDIT_ANCHOR_PRIVATE_KEY || process.env.HYPERLANE_RELAY_PRIVATE_KEY;
+  const dedicatedKey = process.env.AUDIT_ANCHOR_PRIVATE_KEY;
   const rpcUrl = process.env.HYPERLANE_RELAY_RPC_URL;
-  if (!contractAddress || !privateKey) {
+
+  if (!contractAddress) {
     return null; // anchoring is optional infra — a missing config skips the sweep rather than crashing it
   }
-  return {
-    contractAddress: contractAddress as Address,
-    privateKey: (privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex,
-    rpcUrl,
-  };
+
+  if (dedicatedKey) {
+    return { contractAddress: contractAddress as Address, privateKey: (dedicatedKey.startsWith("0x") ? dedicatedKey : `0x${dedicatedKey}`) as Hex, rpcUrl };
+  }
+
+  // No dedicated key. In production, fail closed rather than silently
+  // reuse HYPERLANE_RELAY_PRIVATE_KEY — see this file's top-of-file
+  // SCOPE NOTE for why a re-audit specifically asked for this.
+  if (getAppEnv() === "production") {
+    // eslint-disable-next-line no-console
+    console.error(
+      "audit-anchor: AUDIT_ANCHOR_PRIVATE_KEY is not set in production — refusing to fall back to " +
+        "HYPERLANE_RELAY_PRIVATE_KEY (that would silently defeat signer separation). Anchoring is disabled " +
+        "until a dedicated key is configured."
+    );
+    return null;
+  }
+
+  const fallbackKey = process.env.HYPERLANE_RELAY_PRIVATE_KEY;
+  if (!fallbackKey) return null;
+  return { contractAddress: contractAddress as Address, privateKey: (fallbackKey.startsWith("0x") ? fallbackKey : `0x${fallbackKey}`) as Hex, rpcUrl };
 }
 
 // How stale the most recent anchor across ALL organizations is allowed
@@ -80,10 +103,35 @@ async function checkForMissedAnchors(): Promise<void> {
     orderBy: { lastAnchoredAt: "desc" },
     select: { lastAnchoredAt: true },
   });
-  // No organization has ever anchored yet — nothing to compare a
-  // staleness threshold against; anchorAuditChains()'s own "config not
-  // set" log already covers the "never configured" case.
-  if (!mostRecent?.lastAnchoredAt) return;
+
+  if (!mostRecent?.lastAnchoredAt) {
+    // No organization has EVER successfully anchored. A re-audit
+    // correctly flagged the old version of this check: it silently
+    // returned here forever, so a deployment misconfigured from day one
+    // (AUDIT_ANCHOR_CONTRACT_ADDRESS unset, a bad RPC URL, an unfunded
+    // key) would have real audit-log activity piling up with zero
+    // external checkpoints and NO alert ever fired — only a quiet log
+    // line each sweep. Only alert once there's actually something that
+    // SHOULD have been anchored by now (real audit activity older than
+    // the threshold) — a brand-new deployment with no audit logs yet
+    // isn't a misconfiguration, it just has nothing to anchor.
+    const oldestUnanchoredActivity = await prisma.auditLog.findFirst({
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    });
+    if (!oldestUnanchoredActivity) return; // genuinely nothing has happened yet
+    const activityAgeMs = Date.now() - oldestUnanchoredActivity.createdAt.getTime();
+    if (activityAgeMs < MISSED_ANCHOR_ALERT_THRESHOLD_MS) return;
+
+    // eslint-disable-next-line no-console
+    console.error(
+      `AUDIT-ANCHOR ALERT: real audit-log activity exists (oldest entry ${(activityAgeMs / (60 * 60 * 1000)).toFixed(1)}h old) ` +
+        `but NO organization has EVER been successfully anchored — anchoring looks misconfigured from day one, ` +
+        `not just temporarily stale. Check AUDIT_ANCHOR_CONTRACT_ADDRESS, AUDIT_ANCHOR_PRIVATE_KEY, and ` +
+        `HYPERLANE_RELAY_RPC_URL on anc-hor-worker.`
+    );
+    return;
+  }
 
   const ageMs = Date.now() - mostRecent.lastAnchoredAt.getTime();
   if (ageMs < MISSED_ANCHOR_ALERT_THRESHOLD_MS) return;
@@ -122,7 +170,7 @@ export async function anchorAuditChains(): Promise<number> {
   const config = getAuditAnchorConfig();
   if (!config) {
     // eslint-disable-next-line no-console
-    console.log("audit-anchor: AUDIT_ANCHOR_CONTRACT_ADDRESS/HYPERLANE_RELAY_PRIVATE_KEY not set, skipping sweep");
+    console.log("audit-anchor: AUDIT_ANCHOR_CONTRACT_ADDRESS not set, or no usable signing key, skipping sweep");
     return 0;
   }
 

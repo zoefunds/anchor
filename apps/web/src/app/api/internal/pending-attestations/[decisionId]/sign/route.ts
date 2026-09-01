@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { recoverAddress, isHex, type Address, type Hex } from "viem";
 import { prisma } from "@/lib/prisma";
 import { checkInternalSecret } from "@/lib/internal-auth";
-import { isRegisteredAttestor } from "@/lib/hyperlane";
+import { isRegisteredAttestor, countValidDistinctSigners } from "@/lib/hyperlane";
 
 // POST /api/internal/pending-attestations/[decisionId]/sign
 // Body: { signature: "0x..." } — a 65-byte ECDSA signature over the
@@ -57,8 +57,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dec
     );
   }
 
-  if (decision.pendingAttestationSignatures.includes(signature)) {
-    return NextResponse.json({ error: "this exact signature was already submitted" }, { status: 409 });
+  // Dedup by RECOVERED SIGNER, not raw signature bytes — a re-audit
+  // correctly flagged that the same key can produce more than one
+  // valid-but-different signature encoding over the same hash (ECDSA
+  // isn't deterministic by default; even with RFC 6979 deterministic
+  // nonces, a different signing implementation could still produce a
+  // different valid (r,s,v)), so byte-equality alone lets one signer's
+  // signature be stored twice under different bytes and inflate the
+  // apparent distinct-signer count. Recover every ALREADY-stored
+  // signature's signer and reject a new one from the same address
+  // outright — one signer contributes at most one stored signature,
+  // ever, for this decision.
+  const existingRecovered = await Promise.all(
+    decision.pendingAttestationSignatures.map(async (sig) => {
+      try {
+        return await recoverAddress({ hash: attestationHash, signature: sig as Hex });
+      } catch {
+        return null;
+      }
+    })
+  );
+  if (existingRecovered.some((addr) => addr?.toLowerCase() === recovered.toLowerCase())) {
+    return NextResponse.json({ error: `signer ${recovered} has already submitted a signature for this decision` }, { status: 409 });
   }
 
   // Deliberately does NOT attempt dispatch itself: this route runs on
@@ -74,9 +94,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dec
     select: { pendingAttestationSignatures: true },
   });
 
+  // Reported count is DISTINCT VALID REGISTERED signers (revalidated
+  // against the live isAttestor mapping right now), never raw array
+  // length — see countValidDistinctSigners's own doc comment. This also
+  // means a signature from an attestor governance has since removed
+  // stops counting immediately, without needing any cleanup step here.
+  const { validCount } = await countValidDistinctSigners(relayAddress, attestationHash, updated.pendingAttestationSignatures as Hex[]);
+
   return NextResponse.json({
     signerAddress: recovered,
-    collectedExternalSignatures: updated.pendingAttestationSignatures.length,
+    collectedExternalSignatures: validCount,
     note: "settlement completes within ~10 minutes via the worker's periodic sweep once enough signatures are collected",
   });
 }

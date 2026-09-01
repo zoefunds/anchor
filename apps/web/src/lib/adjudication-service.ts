@@ -5,6 +5,7 @@ import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/l
 import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { dispatchDecisionForCase, DecisionAlreadySettledError, InsufficientAttestorSignaturesError } from "@/lib/hyperlane";
+import { InsufficientSolanaAttestationsError, type SolanaAttestationRecord } from "@/lib/solana-settle";
 import type { Hex } from "viem";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 import { resolveEvidenceUri } from "@/lib/storage";
@@ -152,6 +153,10 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       evidenceHash: decision.proofHash,
       decisionHash: decision.decisionHash,
       externalAttestationSignatures: decision.pendingAttestationSignatures as Hex[],
+      externalSolanaAttestations: (decision.pendingSolanaAttestations as SolanaAttestationRecord[] | null ?? []).map((a) => ({
+        publicKey: new Uint8Array(Buffer.from(a.publicKey, "base64")),
+        signature: new Uint8Array(Buffer.from(a.signature, "base64")),
+      })),
     });
     await prisma.decision.update({
       where: { id: decision.id },
@@ -162,6 +167,8 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         relayAttempts: { increment: 1 },
         pendingAttestationHash: null,
         pendingAttestationSignatures: [],
+        pendingSolanaAttestationMessage: null,
+        pendingSolanaAttestations: [],
       },
     });
     dispatchWebhookEvent({
@@ -211,6 +218,28 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         data: {
           pendingAttestationHash: relayErr.attestationHash,
           relayError: `awaiting external attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
+        },
+      });
+      return;
+    }
+    if (relayErr instanceof InsufficientSolanaAttestationsError) {
+      // Solana-side equivalent of the EVM InsufficientAttestorSignaturesError
+      // branch above — same reasoning, same "don't increment relayAttempts"
+      // choice. Fixes a real gap a re-audit found: submitAttestedSettle was
+      // being called with no externalAttestations at all, so a real 2-of-2
+      // Solana decision would throw here every single time with no way to
+      // ever collect the second signature — see POST
+      // /api/internal/pending-solana-attestations/[decisionId]/sign.
+      // eslint-disable-next-line no-console
+      console.log(
+        `decision ${decision.id} for case ${kase.id} awaiting external Solana attestor signature(s): ` +
+          `${relayErr.collectedCount}/${relayErr.threshold} collected`
+      );
+      await prisma.decision.update({
+        where: { id: decision.id },
+        data: {
+          pendingSolanaAttestationMessage: relayErr.messageHex,
+          relayError: `awaiting external Solana attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
         },
       });
       return;

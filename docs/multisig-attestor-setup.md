@@ -1,9 +1,9 @@
 # EVM attestor custody + governance — DONE, and how to keep operating it
 
 This used to be a plan for setting up real M-of-N attestor key custody.
-As of this pass, the EVM side is actually done and verified live, not
-just designed. This doc now records what's real, and how to operate it
-day-to-day. The Solana side is still a placeholder — see the bottom.
+As of this pass, both the EVM and Solana sides are done, wired into the
+real dispatch path, and verified live — not just designed. This doc
+records what's real, and how to operate it day-to-day.
 
 ## Current live state
 
@@ -173,29 +173,48 @@ failure point (inside the *escrow* program, not decision-relay) is
 itself the proof: the M-of-N gate let it through only once both
 signatures were present.
 
-### Co-signing a real decision (Solana side)
+### Co-signing a real decision (Solana side) — DONE, real API now
 
-Unlike the EVM side, there's no `/api/internal/pending-attestations`
-equivalent for Solana yet — `submitAttestedSettle`'s
-`externalAttestations` parameter exists and works (proven above), but
-nothing currently calls it with a real externally-collected signature
-in the automated dispatch path (`hyperlane.ts`'s Sealevel branch still
-only supplies the backend's own signature, so a real Solana settlement
-today will fail the same way the verification's 1-signature attempt
-did). Wiring that up — computing the message, exposing it the same way
-`Decision.pendingAttestationHash` does for EVM, collecting the
-external signature, and retrying — is the direct next step if/when a
-real Solana settlement needs to go out. Until then, do this manually
-the same way this section's own verification did:
+A re-audit correctly found that the automated dispatch path
+(`hyperlane.ts`'s Sealevel branch) never actually supplied
+`externalAttestations` to `submitAttestedSettle`, so a real 2-of-2
+Solana decision would throw `InsufficientSolanaAttestationsError`
+every time with no path to recovery — the workflow described below
+now exists for real, mirroring the EVM one:
 
-1. Compute `decisionAttestationMessage(params)` from `lib/solana-settle.ts`
-   for the real decision.
-2. Offline, on the machine holding
-   `7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY`'s private key, sign
-   the message bytes with Ed25519 (Node's built-in `crypto.sign(null,
-   message, privateKeyObject)` works with no extra packages — wrap the
-   raw 32-byte seed in the fixed 16-byte Ed25519 PKCS8 DER prefix
-   `302e020100300506032b657004220420` first).
-3. Pass the resulting 64-byte signature (and the signer's public key)
-   as one entry in `submitAttestedSettle`'s `externalAttestations`
-   array.
+1. **Find pending decisions:**
+   ```bash
+   curl -H "Authorization: Bearer $ATTESTOR_COSIGN_SECRET" \
+     https://anc-hor.vercel.app/api/internal/pending-solana-attestations
+   ```
+2. **Sign the message offline**, using the attestor private key (never
+   paste this key anywhere online). Node's built-in `crypto.sign` works
+   with no extra packages — wrap the raw 32-byte seed in the fixed
+   16-byte Ed25519 PKCS8 DER prefix `302e020100300506032b657004220420`
+   first:
+   ```bash
+   node -e 'const c=require("crypto");const seed=Buffer.from(JSON.parse(require("fs").readFileSync("keypair.json","utf8"))).subarray(0,32);const priv=c.createPrivateKey({key:Buffer.concat([Buffer.from("302e020100300506032b657004220420","hex"),seed]),format:"der",type:"pkcs8"});console.log("0x"+c.sign(null,Buffer.from(process.argv[1].slice(2),"hex"),priv).toString("hex"))' <messageHex>
+   ```
+3. **Submit the public key + signature** (never the private key):
+   ```bash
+   curl -X POST -H "Authorization: Bearer $ATTESTOR_COSIGN_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{"publicKey":"<base58 pubkey>","signature":"0x..."}' \
+     https://anc-hor.vercel.app/api/internal/pending-solana-attestations/<decisionId>/sign
+   ```
+   The route verifies the signature actually matches the claimed public
+   key (Node's built-in `crypto.verify`, no dependency) and that the
+   key is one of `decision-relay`'s registered `ATTESTOR_PUBKEYS`
+   before ever storing it — an invalid or unregistered submission is
+   rejected outright, not silently recorded.
+4. Settlement completes within ~10 minutes via `anc-hor-worker`'s
+   `retryFailedSettlements` sweep, same as the EVM side.
+
+Client-side, `solana-settle.ts`'s `validateExternalAttestations`
+additionally rejects/dedupes malformed, unknown-key, or duplicate-signer
+external attestations *before* any Ed25519 instruction is built — a
+re-audit flagged that a caller-supplied array with extra/invalid
+entries could otherwise push a genuinely valid signature pair outside
+the exact instruction window `decision-relay`'s Rust program scans.
+Covered end-to-end (real Ed25519 crypto, real Postgres, no mocked
+cryptography) by `apps/web/tests/integration/solana-cosign.test.ts`.

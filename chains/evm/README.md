@@ -42,9 +42,17 @@ way they are.
 
 - **`DeployDecisionRelay.s.sol`** — deploys `DecisionRelay`. Required env:
   `HYPERLANE_MAILBOX`, `GOVERNANCE_OWNER`, `ATTESTOR_ADDRESSES`
-  (comma-separated), `ATTESTOR_THRESHOLD`. Optional: `CUSTOM_ISM` — pass
-  an already-deployed ISM address (e.g. a real multisig ISM) to use it
-  instead of deploying a fresh `TrustedRelayerIsm`.
+  (comma-separated), `ATTESTOR_THRESHOLD`, and `CUSTOM_ISM` — pass an
+  already-deployed ISM address (e.g. a real multisig ISM). `CUSTOM_ISM`
+  is a hard requirement now, not optional: a re-audit correctly flagged
+  that silently falling back to a fresh (always-verify-true)
+  `TrustedRelayerIsm` when the env var was merely unset/misspelled was a
+  real production footgun — a redeploy could silently regress a live
+  deployment's ISM trust model with no error. To deploy the insecure
+  placeholder ISM anyway (local iteration only), you must also set
+  `ALLOW_INSECURE_DEV_ISM=true`, which the script itself hard-rejects
+  unless `block.chainid == 31337` (local anvil) — it cannot be used
+  against Sepolia or any real network even by mistake.
   ```bash
   forge script deploy/DeployDecisionRelay.s.sol --rpc-url sepolia --broadcast --private-key $PRIVATE_KEY
   ```
