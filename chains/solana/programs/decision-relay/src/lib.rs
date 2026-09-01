@@ -527,6 +527,40 @@ fn verify_decision_attestation(ed25519_ix: &Instruction, expected_body: &Decisio
     }
 
     let read_u16 = |offset: usize| -> u16 { u16::from_le_bytes([data[offset], data[offset + 1]]) };
+
+    // Real vulnerability, caught by re-audit before this ever went to
+    // production: the Ed25519SignatureOffsets struct lets EACH of
+    // signature/public_key/message independently point at a DIFFERENT
+    // instruction in the same transaction via its own
+    // `*_instruction_index` field (u16::MAX means "this same
+    // instruction's own inline data", any other value is an index into
+    // the transaction's instruction list). The runtime's OWN Ed25519
+    // verification honors those indices when deciding what bytes to
+    // actually check the signature against. This function, below, reads
+    // pubkey/message bytes from OFFSETS WITHIN THIS INSTRUCTION's data
+    // unconditionally — if the indices pointed elsewhere, the bytes this
+    // function reads and compares are NOT the bytes the runtime actually
+    // verified a signature over. An attacker could construct an Ed25519
+    // instruction whose real cryptographic check passes (by referencing
+    // some unrelated, genuinely-signed data via non-MAX indices), while
+    // placing arbitrary forged ATTESTOR_PUBKEY/message bytes at these
+    // offsets in the current instruction's own data for this function to
+    // read — a full attestation forgery with no valid attestor signature
+    // ever having existed over the forged content. Requiring all three
+    // indices equal u16::MAX (exactly what `new_ed25519_instruction_with_signature`
+    // always sets, per solana-ed25519-program's own source) guarantees
+    // the bytes this function reads are the SAME bytes the runtime's own
+    // verification used — no room for redirection.
+    let signature_instruction_index = read_u16(2 + 2);
+    let public_key_instruction_index = read_u16(2 + 6);
+    let message_instruction_index = read_u16(2 + 12);
+    if signature_instruction_index != u16::MAX
+        || public_key_instruction_index != u16::MAX
+        || message_instruction_index != u16::MAX
+    {
+        return Err(ProgramError::InvalidArgument);
+    }
+
     let public_key_offset = read_u16(2 + 4) as usize; // 3rd field in the struct
     let message_data_offset = read_u16(2 + 8) as usize; // 5th field
     let message_data_size = read_u16(2 + 10) as usize; // 6th field
@@ -749,5 +783,78 @@ mod attestation_tests {
         };
         let result = verify_decision_attestation(&fake_ix, &body);
         assert!(result.is_err(), "must reject an instruction that isn't really the Ed25519 native program");
+    }
+
+    /// Adversarial regression test for the real vulnerability a re-audit
+    /// caught before this ever reached production — see
+    /// `verify_decision_attestation`'s own doc comment on the
+    /// `*_instruction_index` fields for the full attack.
+    ///
+    /// 1. Build a real Ed25519 instruction with genuine runtime-verifiable
+    ///    crypto — a real signature, over a real (but UNRELATED/dummy)
+    ///    message, from a real (but non-attestor) key. This is the part
+    ///    Solana's own runtime actually cryptographically checks.
+    /// 2. Redirect `public_key_instruction_index` and
+    ///    `message_instruction_index` away from `u16::MAX` (pointing at
+    ///    instruction index 0 instead — "look elsewhere", simulating an
+    ///    attacker pointing at some other instruction the runtime would
+    ///    resolve differently).
+    /// 3. Append FORGED bytes to this same instruction's own data:
+    ///    ATTESTOR_PUBKEY's real bytes and the real, expected attestation
+    ///    message for `sample_body()` — content that was never actually
+    ///    signed by anyone, placed in unused trailing bytes of the
+    ///    instruction.
+    /// 4. Point `public_key_offset`/`message_data_offset` at those forged
+    ///    trailing bytes instead of the original genuinely-verified ones.
+    ///
+    /// Before this session's fix, `verify_decision_attestation` would
+    /// read the forged bytes (matching ATTESTOR_PUBKEY and the expected
+    /// message) and accept this as a valid attestation — a full forgery
+    /// with no real attestor signature ever existing over the claimed
+    /// decision. The fix must reject this purely because the instruction
+    /// indices aren't all `u16::MAX`, independent of what bytes happen to
+    /// be at the (attacker-chosen) offsets.
+    #[test]
+    fn verify_decision_attestation_rejects_cross_instruction_redirection() {
+        let mut csprng = OsRng;
+        let unrelated_signing_key = SigningKey::generate(&mut csprng);
+        let unrelated_verifying_key_bytes = unrelated_signing_key.verifying_key().to_bytes();
+        let unrelated_message = b"totally unrelated dummy message, not a decision attestation".to_vec();
+        let unrelated_signature = unrelated_signing_key.sign(&unrelated_message).to_bytes();
+
+        let mut ix = new_ed25519_instruction_with_signature(&unrelated_message, &unrelated_signature, &unrelated_verifying_key_bytes);
+
+        let target_body = sample_body();
+        let forged_message = decision_attestation_message(&target_body);
+        let forged_pubkey = ATTESTOR_PUBKEY.to_bytes();
+
+        // Append the forged bytes after the genuinely-verified data —
+        // pubkey first, then message, recording where each landed.
+        let forged_pubkey_offset = ix.data.len() as u16;
+        ix.data.extend_from_slice(&forged_pubkey);
+        let forged_message_offset = ix.data.len() as u16;
+        ix.data.extend_from_slice(&forged_message);
+
+        // Redirect the offsets to the forged bytes AND the instruction
+        // indices away from u16::MAX (self) — exactly the two things a
+        // real attacker needs to control to pull this off. Field byte
+        // positions confirmed directly from solana-ed25519-program's own
+        // Ed25519SignatureOffsets struct (see verify_decision_attestation's
+        // doc comment): public_key_offset at 2+4, public_key_instruction_index
+        // at 2+6, message_data_offset at 2+8, message_data_size at 2+10,
+        // message_instruction_index at 2+12.
+        ix.data[2 + 4..2 + 6].copy_from_slice(&forged_pubkey_offset.to_le_bytes());
+        ix.data[2 + 6..2 + 8].copy_from_slice(&0u16.to_le_bytes()); // public_key_instruction_index: redirected away from MAX
+        ix.data[2 + 8..2 + 10].copy_from_slice(&forged_message_offset.to_le_bytes());
+        ix.data[2 + 10..2 + 12].copy_from_slice(&(forged_message.len() as u16).to_le_bytes());
+        ix.data[2 + 12..2 + 14].copy_from_slice(&0u16.to_le_bytes()); // message_instruction_index: redirected away from MAX
+
+        let result = verify_decision_attestation(&ix, &target_body);
+        assert!(
+            result.is_err(),
+            "must reject when public_key/message_instruction_index don't point at this instruction's own \
+             data (u16::MAX) — accepting this would mean forged bytes placed anywhere in the instruction \
+             data can masquerade as an attestation the runtime never actually verified"
+        );
     }
 }

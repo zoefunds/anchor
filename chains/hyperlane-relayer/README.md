@@ -15,6 +15,38 @@ removed entirely: `config.json`'s `solanadevnet` chain entry, the
 `apps/web`, and `chains/solana`'s deploy/dispatch scripts. If you need it
 back, `git log` has the removal commit and the working config it reverts.)
 
+**Update (this session, further continued): a real forgery vulnerability
+in the Solana attestation parser, found by a re-audit before the
+AttestedSettle path was ever used for anything but this session's own
+tests, fixed and redeployed.** `verify_decision_attestation`
+(`chains/solana/programs/decision-relay/src/lib.rs`) read the attestor
+pubkey and message from byte offsets inside the Ed25519 verify
+instruction's own data, but never checked that instruction's
+`signature_instruction_index`/`public_key_instruction_index`/
+`message_instruction_index` fields. Those fields let each piece of data
+Solana's own Ed25519 program verifies be sourced from a DIFFERENT
+instruction in the same transaction — so an attacker could construct an
+Ed25519 instruction whose real, runtime-verified signature check used
+some unrelated, genuinely-signed data (referenced via non-`u16::MAX`
+indices), while placing FORGED bytes matching `ATTESTOR_PUBKEY` and a
+fabricated decision message at arbitrary offsets in that same
+instruction's own data — bytes the old code would read and accept as if
+they were what the runtime actually verified, when they were never
+signed by anyone. Fixed by requiring all three `*_instruction_index`
+fields equal `u16::MAX` (this instruction's own inline data — the only
+value `solana-ed25519-program`'s own instruction-building helper ever
+produces), which guarantees the bytes this program reads are exactly
+the bytes the runtime's own signature check used. A new adversarial
+test (`verify_decision_attestation_rejects_cross_instruction_redirection`)
+constructs exactly this attack — real signature over unrelated data,
+forged attestor key/message appended and pointed to via redirected
+offsets — and confirms rejection; verified the test genuinely fails
+without the fix (temporarily reverted it, confirmed the test catches
+the reintroduced bug, restored the fix) before trusting it. Redeployed
+(program upgrade tx `3McJBcM1...`) and re-verified the legitimate
+settlement path still works post-fix against a fresh real case
+(`CASE-RELAY-1788242258526`, tx `343skTZX...`).
+
 **Update (this session, continued): Solana settlement no longer trusts
 Hyperlane delivery alone either.** A re-audit correctly flagged that the
 EVM attestor fix above didn't touch the Solana path at all — Hyperlane's
