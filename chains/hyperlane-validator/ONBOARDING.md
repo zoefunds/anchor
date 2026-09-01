@@ -152,6 +152,30 @@ relayer's whitelist. None of this requires your key or your
 infrastructure to change — only your validator's checkpoints need to
 keep being published, which they already are.
 
+## Checklist cross-reference
+
+A later audit asked specifically for an onboarding packet covering: the
+operator's own account/provider, own validator key, own IAM principal
+and bucket/prefix, no shared Fly/AWS/RPC/secret-store credentials with
+Anchor's existing validators, and validation steps proving the new
+validator's checkpoint is announced/reachable/fresh/included in a newly
+deployed ISM. Mapping that list to what's already above:
+
+| Required | Covered by |
+|---|---|
+| Own account/provider | Step 3 ("Deploy on your own infrastructure — Fly.io, a VPS, your own Kubernetes, whatever you already operate") |
+| Own validator key | Step 1 |
+| Own IAM principal + bucket/prefix | Step 2 |
+| No shared Fly/AWS/RPC/secret-store credentials | Implicit throughout ("What you will and won't be asked for" — Anchor's operator never receives your key/credentials/cloud access) — **not previously spelled out as an explicit no-sharing requirement in RPC terms specifically**; added below |
+| Validation: announced, reachable, fresh, included in a new ISM | Steps 4-6, cross-checked independently by `scripts/verify-deployment.ts` against a `deployment.json` including the new validator |
+
+**RPC provider**: use your own RPC endpoint, not Anchor's — sharing one
+means a rate-limit or outage on Anchor's side degrades your validator
+too (a real failure mode confirmed on Anchor's own validators this pass:
+a shared public Sepolia RPC rate-limiting requests slowed checkpoint
+indexing significantly). Any reliable Sepolia RPC works; it does not
+need to be a paid tier, only your own.
+
 ## Machine-readable template
 
 Send back a filled-in copy of this instead of prose, if you prefer —
