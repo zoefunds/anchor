@@ -11,11 +11,13 @@ import {
   Connection,
   Keypair,
   PublicKey,
-  Transaction,
   TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
   Ed25519Program,
   SYSVAR_INSTRUCTIONS_PUBKEY,
-  sendAndConfirmTransaction,
+  AddressLookupTableAccount,
+  AddressLookupTableProgram,
 } from "@solana/web3.js";
 
 const DECISION_RELAY_ATTESTED_SETTLE_VARIANT = 2; // see DecisionRelayInstruction enum's Borsh discriminant order
@@ -100,6 +102,15 @@ function encodeDecisionRelayBody(params: SolanaAttestedSettleParams): Buffer {
   ]);
 }
 
+/**
+ * M-of-N (2-of-2, matching the deployed ATTESTOR_PUBKEYS/ATTESTOR_THRESHOLD
+ * consts in decision-relay's Rust source): the backend holds exactly ONE
+ * of the two attestor keys — the second is generated and held entirely
+ * offline (see docs/multisig-attestor-setup.md's Solana section), so
+ * this deliberately has no plural "keys" equivalent to EVM's
+ * ATTESTOR_PRIVATE_KEYS. A real settlement needs BOTH this key's
+ * signature AND one supplied externally via `externalAttestation` below.
+ */
 function getAttestorKeypair(): Keypair {
   const raw = process.env.SOLANA_ATTESTOR_PRIVATE_KEY;
   if (!raw) {
@@ -118,28 +129,133 @@ function getRelayPayerKeypair(): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(raw)));
 }
 
+/** A signature collected from the externally/offline-held attestor key (see docs/multisig-attestor-setup.md) — never the private key itself, only the resulting 64-byte Ed25519 signature over the exact bytes decisionAttestationMessage() produces for this decision. */
+export interface ExternalSolanaAttestation {
+  /** The offline attestor's public key (must be one of decision-relay's ATTESTOR_PUBKEYS on-chain). */
+  publicKey: Uint8Array;
+  /** 64-byte Ed25519 signature over decisionAttestationMessage(params). */
+  signature: Uint8Array;
+}
+
 /**
- * Submits a real Solana transaction: [Ed25519 signature-verification
- * instruction, decision-relay's AttestedSettle instruction]. The Ed25519
- * instruction is what decision-relay's attested_settle reads via
- * instruction introspection (get_instruction_relative(-1, ...)) — it
- * MUST be the instruction immediately before AttestedSettle in this same
- * transaction, which is why both are added to one Transaction here
- * rather than sent separately.
+ * A one-time-created Address Lookup Table (created via
+ * AddressLookupTableProgram, funded by the relay payer — see
+ * docs/multisig-attestor-setup.md's Solana section) holding the
+ * accounts every AttestedSettle transaction references regardless of
+ * case: the instructions sysvar, the Ed25519 native program, this
+ * decision-relay program's own id, the escrow program, and its two PDAs.
+ * Required because M-of-N (2+ Ed25519 verify instructions, each
+ * embedding the full attestation message inline — Solana's Ed25519
+ * native program has no way to avoid that duplication) pushes a legacy
+ * transaction over Solana's 1232-byte limit for any realistic case_id;
+ * confirmed by hitting exactly this limit while verifying the 2-of-2
+ * upgrade live. Referencing these via a lookup table instead of raw
+ * 32-byte keys in the message body is what makes the transaction fit
+ * again. Optional — if unset, falls back to a legacy transaction (fine
+ * for a single-signature/1-of-1 deployment, or a short enough case_id).
+ */
+const DECISION_RELAY_LOOKUP_TABLE = process.env.SOLANA_DECISION_RELAY_LOOKUP_TABLE;
+
+/**
+ * A settlement's claimant/respondent are dynamic per case — they can't
+ * be pre-populated into DECISION_RELAY_LOOKUP_TABLE at setup time the
+ * way the static accounts (program ids, PDAs) were. Left unaddressed,
+ * transactions for real (never-before-seen) parties would still exceed
+ * the 1232-byte limit once 2+ Ed25519 instructions are present (a real
+ * gap found while live-verifying the 2-of-2 upgrade — the static-only
+ * ALT alone was NOT sufficient for a realistic transaction). This
+ * extends the same lookup table with any of `addresses` it doesn't
+ * already contain, so a party who has settled before (or whose address
+ * was proactively added) never needs another extension. A freshly
+ * extended entry needs roughly one confirmed slot before it's usable in
+ * another transaction — this function waits for that before returning,
+ * which adds real latency (roughly one Solana slot, ~400ms-1s) the
+ * first time any given claimant/respondent address is seen, but never
+ * again for that same address.
+ */
+async function ensureLookupTableHasAddresses(
+  connection: Connection,
+  payer: Keypair,
+  lookupTableAddress: PublicKey,
+  addresses: PublicKey[]
+): Promise<void> {
+  const existing = await connection.getAddressLookupTable(lookupTableAddress);
+  const existingKeys = new Set(existing.value?.state.addresses.map((a) => a.toBase58()) ?? []);
+  const missing = addresses.filter((a) => !existingKeys.has(a.toBase58()));
+  if (missing.length === 0) return;
+
+  const extendIx = AddressLookupTableProgram.extendLookupTable({
+    payer: payer.publicKey,
+    authority: payer.publicKey,
+    lookupTable: lookupTableAddress,
+    addresses: missing,
+  });
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const msg = new TransactionMessage({
+    payerKey: payer.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [extendIx],
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(msg);
+  tx.sign([payer]);
+  const sig = await connection.sendTransaction(tx);
+  // "finalized" (not "confirmed") — a newly-extended ALT entry is only
+  // usable by another transaction once the extending transaction's slot
+  // is far enough in the past; confirmed alone isn't reliably sufficient
+  // in practice and this only costs extra latency on an address's FIRST
+  // use, never on repeat settlements for the same party.
+  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "finalized");
+}
+
+/**
+ * Submits a real Solana transaction: [Ed25519 verify instruction(s),
+ * decision-relay's AttestedSettle instruction] — one Ed25519 instruction
+ * per attestor signature (M-of-N; decision-relay's ATTESTOR_THRESHOLD is
+ * currently 2-of-2, so this needs the backend's own signature AND
+ * exactly one externalAttestation). Each Ed25519 instruction is what
+ * decision-relay's attested_settle reads via instruction introspection
+ * (get_instruction_relative(-1, -2, ...)) — they MUST be the
+ * instructions immediately before AttestedSettle in this same
+ * transaction, which is why all of them are added to one transaction
+ * here rather than sent separately. Throws if fewer than
+ * ATTESTOR_THRESHOLD signatures (backend + external) are supplied,
+ * mirroring hyperlane.ts's InsufficientAttestorSignaturesError on the
+ * EVM side — better a clear local error than a guaranteed on-chain
+ * revert burning real transaction fees.
+ *
+ * Builds a v0 (versioned) transaction using DECISION_RELAY_LOOKUP_TABLE
+ * when configured, since the legacy format doesn't reliably fit once 2+
+ * Ed25519 instructions are present (see that const's own comment).
  */
 export async function submitAttestedSettle(
   params: SolanaAttestedSettleParams,
-  rpcUrl: string
+  rpcUrl: string,
+  externalAttestations: ExternalSolanaAttestation[] = []
 ): Promise<{ signature: string }> {
+  const ATTESTOR_THRESHOLD = 2; // must match decision-relay's Rust ATTESTOR_THRESHOLD const exactly
   const connection = new Connection(rpcUrl, "confirmed");
   const attestor = getAttestorKeypair();
   const payer = getRelayPayerKeypair();
 
   const message = decisionAttestationMessage(params);
-  const ed25519Ix = Ed25519Program.createInstructionWithPrivateKey({
-    privateKey: attestor.secretKey,
-    message,
-  });
+  const ed25519Instructions = [
+    Ed25519Program.createInstructionWithPrivateKey({ privateKey: attestor.secretKey, message }),
+    ...externalAttestations.map((ext) =>
+      Ed25519Program.createInstructionWithPublicKey({
+        publicKey: ext.publicKey,
+        message,
+        signature: ext.signature,
+      })
+    ),
+  ];
+
+  const totalSignatureCount = 1 + externalAttestations.length;
+  if (totalSignatureCount < ATTESTOR_THRESHOLD) {
+    throw new Error(
+      `only ${totalSignatureCount} of ${ATTESTOR_THRESHOLD} required attestor signatures available for Solana decision ${params.caseId} — ` +
+        `see docs/multisig-attestor-setup.md's Solana section for how to collect the external attestor's signature`
+    );
+  }
 
   const programId = new PublicKey(params.decisionRelayProgramId);
   const [storagePda] = PublicKey.findProgramAddressSync(
@@ -172,7 +288,35 @@ export async function submitAttestedSettle(
     data: instructionData,
   });
 
-  const tx = new Transaction().add(ed25519Ix).add(attestedSettleIx);
-  const signature = await sendAndConfirmTransaction(connection, tx, [payer]);
+  const lookupTableAccounts: AddressLookupTableAccount[] = [];
+  if (DECISION_RELAY_LOOKUP_TABLE) {
+    const lookupTableAddress = new PublicKey(DECISION_RELAY_LOOKUP_TABLE);
+    // Dynamic per-case accounts (claimant/respondent) aren't part of the
+    // lookup table set up at deploy time — extend it with whichever of
+    // these this specific decision needs, so the transaction below is
+    // guaranteed to fit under the 1232-byte limit regardless of how many
+    // Ed25519 instructions M-of-N requires. See this function's own
+    // comment for why this only costs latency on a party's FIRST
+    // settlement, never repeat ones.
+    await ensureLookupTableHasAddresses(connection, payer, lookupTableAddress, [
+      new PublicKey(params.claimant),
+      new PublicKey(params.respondent),
+    ]);
+    const lookupTable = await connection.getAddressLookupTable(lookupTableAddress);
+    if (lookupTable.value) lookupTableAccounts.push(lookupTable.value);
+  }
+
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const messageV0 = new TransactionMessage({
+    payerKey: payer.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [...ed25519Instructions, attestedSettleIx],
+  }).compileToV0Message(lookupTableAccounts);
+
+  const tx = new VersionedTransaction(messageV0);
+  tx.sign([payer]);
+
+  const signature = await connection.sendTransaction(tx);
+  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight });
   return { signature };
 }

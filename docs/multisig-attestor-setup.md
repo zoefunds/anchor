@@ -118,18 +118,84 @@ rewriting the policy should be loud, not silent.
   fresh one, the way the interim "spare" attestor key was removed once
   its key had appeared in this conversation's transcript.
 
-## Solana side (decision-relay) — still not M-of-N
+## Solana side (decision-relay) — DONE, real 2-of-2
 
-Unlike the EVM side, Solana's `decision-relay` program still uses a
-single hardcoded `ATTESTOR_PUBKEY`, backed by a single
-`SOLANA_ATTESTOR_PRIVATE_KEY` held entirely by the backend. Real M-of-N
-there needs the on-chain program to require multiple separate
-Ed25519-verify instructions (one per signer) preceding
-`AttestedSettle`, checked against an `attestor_pubkeys: Vec<Pubkey>` +
-`attestor_threshold: u8` pair mirroring the EVM contract — genuinely
-more Rust/on-chain work than the EVM side, not just a config change.
-Flagged as a real, scoped follow-up rather than attempted in this pass.
-Until then, `SOLANA_ATTESTOR_PRIVATE_KEY` should get the same
-never-shared, offline-generated handling described above even though
-it's a single key today — losing or leaking it is a full Solana-side
-forgery risk.
+`decision-relay`'s `ATTESTOR_PUBKEY` (single key) is now
+`ATTESTOR_PUBKEYS: [Pubkey; 2]` + `ATTESTOR_THRESHOLD: usize = 2` —
+`attested_settle` now requires that many separate, distinct-signer
+Ed25519-verify instructions immediately preceding it (see
+`verify_decision_attestations`/`count_distinct_registered_signers` in
+`chains/solana/programs/decision-relay/src/lib.rs`), with the exact
+same cross-instruction-redirection defense as the original single-key
+version (`*_instruction_index` fields required `== u16::MAX`). No
+on-chain governance account for this set (unlike the EVM Safe) — it's
+consts, rotated by redeploying via this program's own upgrade
+authority.
+
+**Live state:**
+- Program: `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN` (Solana Testnet)
+- Attestors: 2-of-2 — `4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq`
+  (backend-held, `SOLANA_ATTESTOR_PRIVATE_KEY`) and
+  `7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY` (generated via
+  `solana-keygen new` and held offline — the backend never had this key)
+- 9 Rust unit tests cover the parsing/dedup/threshold logic
+  (`cargo test -p decision-relay`)
+
+**Real transaction-size constraint found and fixed during
+verification**: each Ed25519 native-program instruction embeds the
+full attestation message inline (Solana's architecture gives no way
+around this), so 2+ of them plus `AttestedSettle` reliably exceeds the
+1232-byte legacy-transaction limit for any realistic `case_id`. Fixed
+with a real Address Lookup Table,
+`DRSsBj3qsZ3YG2EmAivLPp4vjtJu54FmeZRaWqobeFEs`, pre-loaded with the
+static accounts (`Sysvar1nstructions`, the Ed25519 native program, the
+escrow program, decision-relay's own program id, and its two PDAs) —
+`solana-settle.ts` builds a v0 (versioned) transaction against it, and
+auto-extends the same table with a decision's specific
+claimant/respondent the first time each address is seen (one small
+extra transaction + ~1 slot of latency, never repeated for that
+address again). `SOLANA_DECISION_RELAY_LOOKUP_TABLE` in
+`apps/web/.env.example` documents this.
+
+**Live-verified end-to-end**, using a realistic-length case ID (25
+chars, matching real production case IDs like `CASE-RELAY-...`): a
+transaction with only the backend's 1 signature failed inside
+`decision-relay` itself at the attestation gate (`invalid program
+argument`, before ever reaching the escrow CPI). A transaction with
+both the backend's and the offline attestor's real signatures — the
+offline signature produced via Node's built-in `crypto.sign` (Ed25519,
+PKCS8-wrapped raw seed, no npm install needed) from the offline
+machine, verified independently against the message before submission
+— passed the attestation gate entirely and reached the real escrow
+program's `Settle` instruction, failing only with `AccountNotInitialized`
+because the test case_id was never actually disputed in escrow. That
+failure point (inside the *escrow* program, not decision-relay) is
+itself the proof: the M-of-N gate let it through only once both
+signatures were present.
+
+### Co-signing a real decision (Solana side)
+
+Unlike the EVM side, there's no `/api/internal/pending-attestations`
+equivalent for Solana yet — `submitAttestedSettle`'s
+`externalAttestations` parameter exists and works (proven above), but
+nothing currently calls it with a real externally-collected signature
+in the automated dispatch path (`hyperlane.ts`'s Sealevel branch still
+only supplies the backend's own signature, so a real Solana settlement
+today will fail the same way the verification's 1-signature attempt
+did). Wiring that up — computing the message, exposing it the same way
+`Decision.pendingAttestationHash` does for EVM, collecting the
+external signature, and retrying — is the direct next step if/when a
+real Solana settlement needs to go out. Until then, do this manually
+the same way this section's own verification did:
+
+1. Compute `decisionAttestationMessage(params)` from `lib/solana-settle.ts`
+   for the real decision.
+2. Offline, on the machine holding
+   `7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY`'s private key, sign
+   the message bytes with Ed25519 (Node's built-in `crypto.sign(null,
+   message, privateKeyObject)` works with no extra packages — wrap the
+   raw 32-byte seed in the fixed 16-byte Ed25519 PKCS8 DER prefix
+   `302e020100300506032b657004220420` first).
+3. Pass the resulting 64-byte signature (and the signer's public key)
+   as one entry in `submitAttestedSettle`'s `externalAttestations`
+   array.

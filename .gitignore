@@ -24,3 +24,9 @@ test-ledger/
 # Hyperlane relayer runtime state (RocksDB) — not source, regenerates on restart
 chains/hyperlane-relayer/db/
 .vercel
+
+# Never commit real private keys, whatever they're named — solana-keygen
+# keypair files (JSON arrays of a 64-byte secret key) in particular.
+*-keypair.json
+solana-attestor*.json
+*.private-key.json

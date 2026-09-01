@@ -65,14 +65,32 @@ const SETTLE_DISCRIMINATOR: [u8; 8] = [175, 42, 185, 87, 144, 131, 102, 212];
 /// see chains/hyperlane-relayer/README.md's "Known issue NOT fixed").
 const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus");
 
-/// Anchor's dedicated Solana attestation key (Ed25519, distinct from
-/// this program's upgrade authority and from the Hyperlane relayer's own
-/// signer) — see `attested_settle`'s doc comment for the full trust
-/// model this closes. Its EVM counterpart is DecisionRelay.sol's
-/// `attestor` (a different key — secp256k1, EVM-native — since Solana
-/// verifies Ed25519 natively via a precompile while EVM verifies
-/// secp256k1 via ecrecover; there is no single key usable on both).
-const ATTESTOR_PUBKEY: Pubkey = solana_program::pubkey!("4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq");
+/// M-of-N: Anchor's dedicated Solana attestation keys (Ed25519, distinct
+/// from this program's upgrade authority and from the Hyperlane
+/// relayer's own signer) — see `attested_settle`'s doc comment for the
+/// full trust model this closes. Their EVM counterpart is
+/// DecisionRelay.sol's `isAttestor`/`attestorThreshold` (different keys —
+/// secp256k1, EVM-native — since Solana verifies Ed25519 natively via a
+/// native program while EVM verifies secp256k1 via ecrecover; there is
+/// no single key usable on both).
+///
+/// No on-chain governance/owner account for this set — unlike
+/// DecisionRelay.sol's Safe-owned `isAttestor` mapping, this program has
+/// no upgradeable state for it, only these consts. Rotating a key means
+/// changing this array and redeploying (which this program's own
+/// upgrade authority can do) — see docs/multisig-attestor-setup.md's
+/// Solana section for the operational tradeoff that implies.
+const ATTESTOR_PUBKEYS: [Pubkey; 2] = [
+    // Backend-held (SOLANA_ATTESTOR_PRIVATE_KEY on anc-hor-worker) — the
+    // pre-existing single key, kept as one of two rather than dropped.
+    solana_program::pubkey!("4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq"),
+    // Held entirely offline — generated via `solana-keygen new` on a
+    // machine never connected to Fly/Vercel, mirroring the EVM side's
+    // real 2-of-2 split (see docs/multisig-attestor-setup.md). The
+    // backend never had this private key.
+    solana_program::pubkey!("7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY"),
+];
+const ATTESTOR_THRESHOLD: usize = 2;
 
 #[macro_export]
 macro_rules! decision_relay_storage_pda_seeds {
@@ -379,24 +397,28 @@ pub fn handle(program_id: &Pubkey, accounts: &[AccountInfo], handle_ix: HandleIn
 /// Hyperlane delivery alone no longer triggers settlement. Submitted by
 /// Anchor's own backend (holding a funded Solana signer already used
 /// elsewhere in this program, e.g. dispatch's payer) as a normal
-/// transaction it constructs itself, with a real Ed25519 signature
-/// verification instruction (the `Ed25519SigVerify111...` native
-/// program) placed immediately before this one.
+/// transaction it constructs itself, with `ATTESTOR_PUBKEYS.len()` real
+/// Ed25519 signature verification instructions (the
+/// `Ed25519SigVerify111...` native program), one per co-signing
+/// attestor, placed immediately before this one — M-of-N, see
+/// `verify_decision_attestations`.
 ///
-/// Verification here means: read the instruction immediately preceding
-/// this one via the instructions sysvar, confirm it's really the Ed25519
-/// native program (introspection reads the ACTUAL instruction the
-/// runtime is executing, this can't be spoofed), parse its data using
-/// the real, source-confirmed `solana-ed25519-program` wire format
-/// (num_signatures byte, then a fixed-size `Ed25519SignatureOffsets`
-/// struct, then pubkey/signature/message bytes at the offsets that
-/// struct specifies), and require the embedded pubkey equals
-/// ATTESTOR_PUBKEY and the embedded message equals EXACTLY the bytes
-/// this function independently recomputes from `body` — never the
-/// message bytes as merely claimed by the instruction, always
-/// recomputed and compared. The signature itself isn't re-verified
-/// here: the Solana runtime already did that as part of processing the
-/// Ed25519 instruction earlier in this same transaction, and if it were
+/// Verification here means: read the `ATTESTOR_PUBKEYS.len()`
+/// instructions immediately preceding this one via the instructions
+/// sysvar, confirm each is really the Ed25519 native program
+/// (introspection reads the ACTUAL instruction the runtime is
+/// executing, this can't be spoofed), parse its data using the real,
+/// source-confirmed `solana-ed25519-program` wire format (num_signatures
+/// byte, then a fixed-size `Ed25519SignatureOffsets` struct, then
+/// pubkey/signature/message bytes at the offsets that struct
+/// specifies), and require at least `ATTESTOR_THRESHOLD` of them embed a
+/// pubkey from ATTESTOR_PUBKEYS (each counted at most once — see the
+/// dedup note there) and a message equal to EXACTLY the bytes this
+/// function independently recomputes from `body` — never the message
+/// bytes as merely claimed by the instruction, always recomputed and
+/// compared. The signatures themselves aren't re-verified here: the
+/// Solana runtime already did that as part of processing each Ed25519
+/// instruction earlier in this same transaction, and if any were
 /// invalid the whole transaction would have failed atomically before
 /// this instruction ever ran.
 ///
@@ -448,8 +470,7 @@ fn attested_settle(program_id: &Pubkey, accounts: &[AccountInfo], body: Decision
         return Err(ProgramError::InvalidArgument);
     }
 
-    let ed25519_ix = get_instruction_relative(-1, instructions_sysvar_info)?;
-    verify_decision_attestation(program_id, &ed25519_ix, &body)?;
+    verify_decision_attestations(program_id, instructions_sysvar_info, &body)?;
 
     let mut settle_data = SETTLE_DISCRIMINATOR.to_vec();
     settle_data.extend_from_slice(&body.claimant_share_bps.to_le_bytes());
@@ -524,11 +545,18 @@ fn decision_attestation_message(program_id: &Pubkey, body: &DecisionRelayBody) -
 
 /// Parses a real Ed25519 native-program instruction's data (format
 /// confirmed directly from the `solana-ed25519-program` crate source,
-/// not assumed) and requires it attests to exactly `expected_body`
-/// signed by ATTESTOR_PUBKEY.
-fn verify_decision_attestation(program_id: &Pubkey, ed25519_ix: &Instruction, expected_body: &DecisionRelayBody) -> ProgramResult {
+/// not assumed) and, if it's a well-formed, non-redirected, genuinely
+/// runtime-verified Ed25519 instruction over exactly `expected_message`,
+/// returns the embedded public key — regardless of whether that key is
+/// actually one of ATTESTOR_PUBKEYS (that membership check is the
+/// caller's job, in `verify_decision_attestations` below, same
+/// separation as EVM's `_recoverSigner` vs. `_countValidDistinctAttestations`).
+/// Returns None for anything malformed/redirected/mismatched rather than
+/// erroring, so the M-of-N caller can simply skip a bad entry instead of
+/// the whole check failing on one bad instruction among several.
+fn parse_valid_ed25519_attestation(ed25519_ix: &Instruction, expected_message: &[u8]) -> Option<Pubkey> {
     if ed25519_ix.program_id != solana_program::pubkey!("Ed25519SigVerify111111111111111111111111111") {
-        return Err(ProgramError::InvalidArgument);
+        return None;
     }
 
     let data = &ed25519_ix.data;
@@ -537,11 +565,11 @@ fn verify_decision_attestation(program_id: &Pubkey, ed25519_ix: &Instruction, ex
     // byte 2 — SIGNATURE_OFFSETS_START/SIGNATURE_OFFSETS_SERIALIZED_SIZE
     // in solana-ed25519-program's own source.
     if data.len() < 2 + 14 {
-        return Err(ProgramError::InvalidInstructionData);
+        return None;
     }
     let num_signatures = data[0];
     if num_signatures != 1 {
-        return Err(ProgramError::InvalidInstructionData);
+        return None;
     }
 
     let read_u16 = |offset: usize| -> u16 { u16::from_le_bytes([data[offset], data[offset + 1]]) };
@@ -561,10 +589,10 @@ fn verify_decision_attestation(program_id: &Pubkey, ed25519_ix: &Instruction, ex
     // verified a signature over. An attacker could construct an Ed25519
     // instruction whose real cryptographic check passes (by referencing
     // some unrelated, genuinely-signed data via non-MAX indices), while
-    // placing arbitrary forged ATTESTOR_PUBKEY/message bytes at these
-    // offsets in the current instruction's own data for this function to
-    // read — a full attestation forgery with no valid attestor signature
-    // ever having existed over the forged content. Requiring all three
+    // placing arbitrary forged pubkey/message bytes at these offsets in
+    // the current instruction's own data for this function to read — a
+    // full attestation forgery with no valid attestor signature ever
+    // having existed over the forged content. Requiring all three
     // indices equal u16::MAX (exactly what `new_ed25519_instruction_with_signature`
     // always sets, per solana-ed25519-program's own source) guarantees
     // the bytes this function reads are the SAME bytes the runtime's own
@@ -576,28 +604,76 @@ fn verify_decision_attestation(program_id: &Pubkey, ed25519_ix: &Instruction, ex
         || public_key_instruction_index != u16::MAX
         || message_instruction_index != u16::MAX
     {
-        return Err(ProgramError::InvalidArgument);
+        return None;
     }
 
     let public_key_offset = read_u16(2 + 4) as usize; // 3rd field in the struct
     let message_data_offset = read_u16(2 + 8) as usize; // 5th field
     let message_data_size = read_u16(2 + 10) as usize; // 6th field
 
-    let public_key = data
-        .get(public_key_offset..public_key_offset + 32)
-        .ok_or(ProgramError::InvalidInstructionData)?;
-    if public_key != ATTESTOR_PUBKEY.as_ref() {
-        return Err(ProgramError::InvalidArgument);
+    let public_key_bytes = data.get(public_key_offset..public_key_offset + 32)?;
+
+    let message = data.get(message_data_offset..message_data_offset + message_data_size)?;
+    if message != expected_message {
+        return None;
     }
 
-    let message = data
-        .get(message_data_offset..message_data_offset + message_data_size)
-        .ok_or(ProgramError::InvalidInstructionData)?;
-    if message != decision_attestation_message(program_id, expected_body).as_slice() {
-        return Err(ProgramError::InvalidArgument);
+    Some(Pubkey::try_from(public_key_bytes).ok()?)
+}
+
+/// M-of-N: scans the `ATTESTOR_PUBKEYS.len()` instructions immediately
+/// preceding this one (relative indices -1, -2, ... — the exact set of
+/// slots `attested_settle`'s caller must fill with real Ed25519-verify
+/// instructions, one per co-signing attestor, right before submitting
+/// AttestedSettle) and requires at least `ATTESTOR_THRESHOLD` of them to
+/// be genuine, non-redirected Ed25519 instructions over exactly the
+/// expected message, from DISTINCT keys in ATTESTOR_PUBKEYS. Same
+/// "distinct signer" dedup reasoning as EVM's
+/// `_countValidDistinctAttestations` — a single attestor repeating its
+/// own valid signature across multiple of the scanned slots must not
+/// count more than once toward the threshold.
+fn verify_decision_attestations(
+    program_id: &Pubkey,
+    instructions_sysvar_info: &AccountInfo,
+    expected_body: &DecisionRelayBody,
+) -> ProgramResult {
+    let expected_message = decision_attestation_message(program_id, expected_body);
+
+    let mut candidates: Vec<Pubkey> = Vec::with_capacity(ATTESTOR_PUBKEYS.len());
+    for slot in 1..=ATTESTOR_PUBKEYS.len() {
+        let ed25519_ix = match get_instruction_relative(-(slot as i64), instructions_sysvar_info) {
+            Ok(ix) => ix,
+            Err(_) => break, // fewer preceding instructions than attestor slots — nothing further to scan
+        };
+        if let Some(signer) = parse_valid_ed25519_attestation(&ed25519_ix, &expected_message) {
+            candidates.push(signer);
+        }
     }
 
-    Ok(())
+    if count_distinct_registered_signers(candidates.into_iter()) >= ATTESTOR_THRESHOLD {
+        Ok(())
+    } else {
+        Err(ProgramError::InvalidArgument)
+    }
+}
+
+/// M-of-N: counts DISTINCT signers from `candidates` that are actually
+/// in ATTESTOR_PUBKEYS — a candidate not in that set is simply ignored
+/// (not an error), and the same signer appearing more than once in
+/// `candidates` (e.g. a single attestor's signature occupying more than
+/// one of the scanned instruction slots) counts only once. Split out as
+/// a pure function, independent of any sysvar/Instruction parsing, so
+/// this specific counting logic is directly unit-testable — mirrors
+/// DecisionRelay.sol's `_countValidDistinctAttestations` on the EVM
+/// side, same reasoning.
+fn count_distinct_registered_signers(candidates: impl Iterator<Item = Pubkey>) -> usize {
+    let mut seen: Vec<Pubkey> = Vec::with_capacity(ATTESTOR_PUBKEYS.len());
+    for candidate in candidates {
+        if ATTESTOR_PUBKEYS.contains(&candidate) && !seen.contains(&candidate) {
+            seen.push(candidate);
+        }
+    }
+    seen.len()
 }
 
 /// Returns the account metas `handle()` will need for this specific
@@ -711,14 +787,13 @@ mod attestation_tests {
 
     /// Builds a real Ed25519 native-program instruction the exact way
     /// `solana-ed25519-program` (the crate the Solana runtime's own
-    /// tooling uses) does, then confirms `verify_decision_attestation`
-    /// correctly parses it and accepts a genuine signature over the
-    /// expected message from the expected key. This is the strongest
-    /// check available short of a live on-chain transaction: it proves
-    /// the hand-rolled offset parsing in `verify_decision_attestation`
-    /// agrees with the real wire format, not just with itself.
+    /// tooling uses) does, then confirms `parse_valid_ed25519_attestation`
+    /// correctly parses it and returns the embedded signer key when the
+    /// message matches. This is the strongest check available short of a
+    /// live on-chain transaction: it proves the hand-rolled offset
+    /// parsing agrees with the real wire format, not just with itself.
     #[test]
-    fn verify_decision_attestation_accepts_real_signature_matching_pubkey() {
+    fn parse_valid_ed25519_attestation_accepts_real_signature_matching_message() {
         let mut csprng = OsRng;
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key_bytes = signing_key.verifying_key().to_bytes();
@@ -730,52 +805,31 @@ mod attestation_tests {
 
         let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
 
-        // Swap in this test's own generated key as ATTESTOR_PUBKEY would
-        // be in the real program — can't override a `const`, so instead
-        // confirm parsing extracts the RIGHT pubkey/message bytes by
-        // checking equivalence with what the real constant-based function
-        // would need to see, via a local copy of the comparison logic.
-        assert_eq!(ix.program_id, solana_program::pubkey!("Ed25519SigVerify111111111111111111111111111"));
-
-        let data = &ix.data;
-        let read_u16 = |offset: usize| -> u16 { u16::from_le_bytes([data[offset], data[offset + 1]]) };
-        let public_key_offset = read_u16(2 + 4) as usize;
-        let message_data_offset = read_u16(2 + 8) as usize;
-        let message_data_size = read_u16(2 + 10) as usize;
-
-        assert_eq!(&data[public_key_offset..public_key_offset + 32], &verifying_key_bytes[..]);
-        assert_eq!(&data[message_data_offset..message_data_offset + message_data_size], message.as_slice());
+        let result = parse_valid_ed25519_attestation(&ix, &message);
+        assert_eq!(result, Some(Pubkey::from(verifying_key_bytes)));
     }
 
-    /// The actual function under test, wired to a real instruction — this
-    /// only passes if ATTESTOR_PUBKEY happens to match the test's
-    /// generated key, which it won't, so it MUST reject. This is the
-    /// negative-path proof: a real, validly-signed Ed25519 instruction
-    /// from a key that ISN'T the configured attestor is rejected, not
-    /// just malformed/garbage input.
+    /// The M-of-N membership check lives in `count_distinct_registered_signers`,
+    /// not in parsing itself — this confirms a real, validly-parsed
+    /// signer that ISN'T in ATTESTOR_PUBKEYS contributes zero toward the
+    /// threshold, i.e. a real signature from a non-attestor key can
+    /// never help authorize a settlement.
     #[test]
-    fn verify_decision_attestation_rejects_wrong_signer() {
-        let mut csprng = OsRng;
-        let signing_key = SigningKey::generate(&mut csprng);
-        let verifying_key_bytes = signing_key.verifying_key().to_bytes();
-        assert_ne!(verifying_key_bytes, ATTESTOR_PUBKEY.to_bytes(), "test key collided with the real constant — regenerate");
-
-        let program_id = Pubkey::new_unique();
-        let body = sample_body();
-        let message = decision_attestation_message(&program_id, &body);
-        let signature = signing_key.sign(&message).to_bytes();
-        let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
-
-        let result = verify_decision_attestation(&program_id, &ix, &body);
-        assert!(result.is_err(), "must reject a real signature from a non-attestor key");
+    fn count_distinct_registered_signers_ignores_non_attestor_keys() {
+        let stranger = Pubkey::new_unique();
+        for known in ATTESTOR_PUBKEYS.iter() {
+            assert_ne!(&stranger, known, "test key collided with a real attestor constant — regenerate");
+        }
+        assert_eq!(count_distinct_registered_signers(std::iter::once(stranger)), 0);
     }
 
     /// Same real attestor-shaped setup, but the on-chain `body` passed to
     /// verification differs from what was actually signed (tampered
-    /// content) — must be rejected even though the instruction itself is
-    /// perfectly well-formed and really Ed25519-verified by the runtime.
+    /// content) — must be rejected (parsing returns None) even though the
+    /// instruction itself is perfectly well-formed and really
+    /// Ed25519-verified by the runtime.
     #[test]
-    fn verify_decision_attestation_rejects_tampered_content() {
+    fn parse_valid_ed25519_attestation_rejects_tampered_content() {
         let mut csprng = OsRng;
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key_bytes = signing_key.verifying_key().to_bytes();
@@ -789,18 +843,23 @@ mod attestation_tests {
         let mut tampered_body = signed_body;
         tampered_body.claimant_share_bps = 10_000;
         tampered_body.respondent_share_bps = 0;
+        let tampered_message = decision_attestation_message(&program_id, &tampered_body);
 
-        let result = verify_decision_attestation(&program_id, &ix, &tampered_body);
-        assert!(result.is_err(), "must reject when the verified body doesn't match what was actually signed");
+        let result = parse_valid_ed25519_attestation(&ix, &tampered_message);
+        assert_eq!(result, None, "must reject when the expected message doesn't match what was actually signed");
     }
 
     /// A signature genuinely signed for a DIFFERENT decision-relay
     /// program deployment must not verify against this one — proves the
     /// program-id binding (added alongside cluster binding after a
     /// re-audit asked for "defense in depth") actually does something,
-    /// not just that it's present in the message.
+    /// not just that it's present in the message. Simulated here by
+    /// signing for one program_id and checking against the message
+    /// computed for a different one — exactly what `verify_decision_attestations`
+    /// does internally by always recomputing the expected message from
+    /// its own `program_id` argument.
     #[test]
-    fn verify_decision_attestation_rejects_signature_for_different_program_id() {
+    fn parse_valid_ed25519_attestation_rejects_message_for_different_program_id() {
         let mut csprng = OsRng;
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key_bytes = signing_key.verifying_key().to_bytes();
@@ -812,21 +871,50 @@ mod attestation_tests {
         let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
 
         let different_program_id = Pubkey::new_unique();
-        let result = verify_decision_attestation(&different_program_id, &ix, &body);
-        assert!(result.is_err(), "must reject a signature minted for a different program_id");
+        let expected_message_for_different_program = decision_attestation_message(&different_program_id, &body);
+
+        let result = parse_valid_ed25519_attestation(&ix, &expected_message_for_different_program);
+        assert_eq!(result, None, "must reject a signature minted for a different program_id");
     }
 
     #[test]
-    fn verify_decision_attestation_rejects_non_ed25519_program() {
-        let program_id = Pubkey::new_unique();
+    fn parse_valid_ed25519_attestation_rejects_non_ed25519_program() {
         let body = sample_body();
+        let program_id = Pubkey::new_unique();
+        let message = decision_attestation_message(&program_id, &body);
         let fake_ix = Instruction {
             program_id: Pubkey::new_unique(),
             accounts: vec![],
             data: vec![0u8; 200],
         };
-        let result = verify_decision_attestation(&program_id, &fake_ix, &body);
-        assert!(result.is_err(), "must reject an instruction that isn't really the Ed25519 native program");
+        let result = parse_valid_ed25519_attestation(&fake_ix, &message);
+        assert_eq!(result, None, "must reject an instruction that isn't really the Ed25519 native program");
+    }
+
+    /// The core M-of-N guarantee: two DISTINCT real attestor signatures
+    /// (both actually in ATTESTOR_PUBKEYS) count as 2 toward the
+    /// threshold — the ordinary happy path this whole mechanism exists
+    /// to support. Uses ATTESTOR_PUBKEYS directly since
+    /// count_distinct_registered_signers checks against that real
+    /// constant, not an injectable set — this test only makes sense
+    /// paired with the real deployed values.
+    #[test]
+    fn count_distinct_registered_signers_counts_distinct_known_signers() {
+        assert_eq!(ATTESTOR_PUBKEYS.len(), 2, "test assumes exactly 2 configured attestors — update if that changes");
+        let count = count_distinct_registered_signers(ATTESTOR_PUBKEYS.into_iter());
+        assert_eq!(count, 2);
+    }
+
+    /// The same registered signer appearing twice in the candidate list
+    /// (e.g. because a single attestor's Ed25519 instruction happened to
+    /// occupy more than one scanned slot) must count only once — a
+    /// single attestor repeating itself must never be able to satisfy a
+    /// 2-of-2 (or higher) threshold alone.
+    #[test]
+    fn count_distinct_registered_signers_does_not_double_count_duplicates() {
+        let one_signer = ATTESTOR_PUBKEYS[0];
+        let count = count_distinct_registered_signers([one_signer, one_signer, one_signer].into_iter());
+        assert_eq!(count, 1);
     }
 
     /// Adversarial regression test for the real vulnerability a re-audit
@@ -851,15 +939,16 @@ mod attestation_tests {
     /// 4. Point `public_key_offset`/`message_data_offset` at those forged
     ///    trailing bytes instead of the original genuinely-verified ones.
     ///
-    /// Before this session's fix, `verify_decision_attestation` would
-    /// read the forged bytes (matching ATTESTOR_PUBKEY and the expected
-    /// message) and accept this as a valid attestation — a full forgery
-    /// with no real attestor signature ever existing over the claimed
-    /// decision. The fix must reject this purely because the instruction
-    /// indices aren't all `u16::MAX`, independent of what bytes happen to
-    /// be at the (attacker-chosen) offsets.
+    /// Before this fix, `parse_valid_ed25519_attestation` (then still
+    /// named `verify_decision_attestation`) would read the forged bytes
+    /// (matching a real ATTESTOR_PUBKEYS entry and the expected message)
+    /// and accept this as a valid attestation — a full forgery with no
+    /// real attestor signature ever existing over the claimed decision.
+    /// The fix must reject this purely because the instruction indices
+    /// aren't all `u16::MAX`, independent of what bytes happen to be at
+    /// the (attacker-chosen) offsets.
     #[test]
-    fn verify_decision_attestation_rejects_cross_instruction_redirection() {
+    fn parse_valid_ed25519_attestation_rejects_cross_instruction_redirection() {
         let mut csprng = OsRng;
         let unrelated_signing_key = SigningKey::generate(&mut csprng);
         let unrelated_verifying_key_bytes = unrelated_signing_key.verifying_key().to_bytes();
@@ -871,7 +960,7 @@ mod attestation_tests {
         let program_id = Pubkey::new_unique();
         let target_body = sample_body();
         let forged_message = decision_attestation_message(&program_id, &target_body);
-        let forged_pubkey = ATTESTOR_PUBKEY.to_bytes();
+        let forged_pubkey = ATTESTOR_PUBKEYS[0].to_bytes();
 
         // Append the forged bytes after the genuinely-verified data —
         // pubkey first, then message, recording where each landed.
@@ -884,7 +973,7 @@ mod attestation_tests {
         // indices away from u16::MAX (self) — exactly the two things a
         // real attacker needs to control to pull this off. Field byte
         // positions confirmed directly from solana-ed25519-program's own
-        // Ed25519SignatureOffsets struct (see verify_decision_attestation's
+        // Ed25519SignatureOffsets struct (see parse_valid_ed25519_attestation's
         // doc comment): public_key_offset at 2+4, public_key_instruction_index
         // at 2+6, message_data_offset at 2+8, message_data_size at 2+10,
         // message_instruction_index at 2+12.
@@ -894,9 +983,9 @@ mod attestation_tests {
         ix.data[2 + 10..2 + 12].copy_from_slice(&(forged_message.len() as u16).to_le_bytes());
         ix.data[2 + 12..2 + 14].copy_from_slice(&0u16.to_le_bytes()); // message_instruction_index: redirected away from MAX
 
-        let result = verify_decision_attestation(&program_id, &ix, &target_body);
-        assert!(
-            result.is_err(),
+        let result = parse_valid_ed25519_attestation(&ix, &forged_message);
+        assert_eq!(
+            result, None,
             "must reject when public_key/message_instruction_index don't point at this instruction's own \
              data (u16::MAX) — accepting this would mean forged bytes placed anywhere in the instruction \
              data can masquerade as an attestation the runtime never actually verified"
