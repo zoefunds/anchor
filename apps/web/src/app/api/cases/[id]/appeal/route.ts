@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
-import { logAction } from "@/lib/audit";
 import { canAccessCase } from "@/lib/case-access";
 import { triggerAppeal } from "@/lib/appeal-service";
 
@@ -32,18 +31,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const { reason } = await req.json().catch(() => ({ reason: undefined }));
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
-  const errorResponse = await triggerAppeal(kase, kase.decisions[0], reasonStr);
-  if (errorResponse) return errorResponse;
-
-  await logAction({
+  const errorResponse = await triggerAppeal(kase, kase.decisions[0], reasonStr, {
     organizationId: auth.organizationId,
     memberId: auth.memberId,
     apiKeyId: auth.apiKeyId,
-    action: "case.appealed",
-    targetType: "case",
-    targetId: kase.id,
     metadata: { reason: reasonStr },
   });
+  if (errorResponse) return errorResponse;
 
   return NextResponse.json(
     { note: "Appeal accepted. Re-adjudication started. Poll GET /api/cases/:id for status/decision." },

@@ -14,13 +14,18 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     return NextResponse.json({ error: "webhook not found" }, { status: 404 });
   }
 
-  await prisma.webhook.delete({ where: { id: webhook.id } });
-  await logAction({
-    organizationId: member.organizationId,
-    memberId: member.memberId,
-    action: "webhook.deleted",
-    targetType: "webhook",
-    targetId: webhook.id,
+  await prisma.$transaction(async (tx) => {
+    await tx.webhook.delete({ where: { id: webhook.id } });
+    await logAction(
+      {
+        organizationId: member.organizationId,
+        memberId: member.memberId,
+        action: "webhook.deleted",
+        targetType: "webhook",
+        targetId: webhook.id,
+      },
+      tx
+    );
   });
 
   return NextResponse.json({ ok: true });

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { triggerAppeal } from "@/lib/appeal-service";
-import { logAction } from "@/lib/audit";
 
 // POST /api/public/cases/:id/appeal — either party (authenticated by
 // their own per-case token or an exchanged session cookie, not an org
@@ -29,16 +28,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const reasonStr = typeof reason === "string" ? reason : undefined;
-  const errorResponse = await triggerAppeal(kase, kase.decisions[0], reasonStr);
-  if (errorResponse) return errorResponse;
-
-  await logAction({
+  const errorResponse = await triggerAppeal(kase, kase.decisions[0], reasonStr, {
     organizationId: kase.organizationId,
-    action: "case.appealed",
-    targetType: "case",
-    targetId: kase.id,
     metadata: { reason: reasonStr, byParty: resolved.role },
   });
+  if (errorResponse) return errorResponse;
 
   return NextResponse.json(
     { note: "Appeal accepted. Re-adjudication started. Poll GET /api/public/cases/:id for status/decision." },

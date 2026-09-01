@@ -22,19 +22,23 @@ export async function PUT(_req: NextRequest, { params }: { params: { id: string;
     return NextResponse.json({ error: "member not found" }, { status: 404 });
   }
 
-  await prisma.caseAccess.upsert({
-    where: { caseId_memberId: { caseId: kase.id, memberId: target.id } },
-    create: { caseId: kase.id, memberId: target.id },
-    update: {},
-  });
-
-  await logAction({
-    organizationId: owner.organizationId,
-    memberId: owner.memberId,
-    action: "case.access_granted",
-    targetType: "case",
-    targetId: kase.id,
-    metadata: { grantedToMemberId: target.id, grantedToEmail: target.email },
+  await prisma.$transaction(async (tx) => {
+    await tx.caseAccess.upsert({
+      where: { caseId_memberId: { caseId: kase.id, memberId: target.id } },
+      create: { caseId: kase.id, memberId: target.id },
+      update: {},
+    });
+    await logAction(
+      {
+        organizationId: owner.organizationId,
+        memberId: owner.memberId,
+        action: "case.access_granted",
+        targetType: "case",
+        targetId: kase.id,
+        metadata: { grantedToMemberId: target.id, grantedToEmail: target.email },
+      },
+      tx
+    );
   });
 
   return NextResponse.json({ ok: true });
@@ -54,15 +58,19 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 
-  await prisma.caseAccess.deleteMany({ where: { caseId: kase.id, memberId: params.memberId } });
-
-  await logAction({
-    organizationId: owner.organizationId,
-    memberId: owner.memberId,
-    action: "case.access_revoked",
-    targetType: "case",
-    targetId: kase.id,
-    metadata: { revokedMemberId: params.memberId },
+  await prisma.$transaction(async (tx) => {
+    await tx.caseAccess.deleteMany({ where: { caseId: kase.id, memberId: params.memberId } });
+    await logAction(
+      {
+        organizationId: owner.organizationId,
+        memberId: owner.memberId,
+        action: "case.access_revoked",
+        targetType: "case",
+        targetId: kase.id,
+        metadata: { revokedMemberId: params.memberId },
+      },
+      tx
+    );
   });
 
   return NextResponse.json({ ok: true });

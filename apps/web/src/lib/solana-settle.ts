@@ -31,16 +31,26 @@ export interface SolanaAttestedSettleParams {
   decisionHash: Buffer; // 32 raw bytes
 }
 
+// Solana Testnet's real genesis hash — confirmed live via the
+// `getGenesisHash` RPC method, not guessed. Must match the
+// TESTNET_GENESIS_HASH constant in decision-relay's Rust
+// decision_attestation_message exactly.
+const TESTNET_GENESIS_HASH = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
+
 /**
  * The exact bytes decision-relay's `decision_attestation_message` Rust
  * function recomputes and compares against — must stay byte-for-byte
- * identical (domain tag, field order, u16/u32 little-endian encoding) or
- * every real signature this produces fails verification on-chain. See
- * that Rust function's own doc comment for why no program-id binding is
- * needed beyond the tag (this key is Solana-specific already).
+ * identical (domain tag, cluster/program binding, field order, u16/u32
+ * little-endian encoding) or every real signature this produces fails
+ * verification on-chain. Cluster (genesis hash) and program_id binding
+ * added after a re-audit asked for it as defense in depth — see that
+ * Rust function's own doc comment for what each does and doesn't
+ * guarantee.
  */
 export function decisionAttestationMessage(params: SolanaAttestedSettleParams): Buffer {
-  const tag = Buffer.from("ANCHOR_SOLANA_DECISION_ATTESTATION_V1", "utf-8");
+  const tag = Buffer.from("ANCHOR_SOLANA_DECISION_ATTESTATION_V2", "utf-8");
+  const genesisHash = new PublicKey(TESTNET_GENESIS_HASH).toBuffer();
+  const programId = new PublicKey(params.decisionRelayProgramId).toBuffer();
   const caseIdBytes = Buffer.from(params.caseId, "utf-8");
   const caseIdLen = Buffer.alloc(4);
   caseIdLen.writeUInt32LE(caseIdBytes.length);
@@ -55,6 +65,8 @@ export function decisionAttestationMessage(params: SolanaAttestedSettleParams): 
 
   return Buffer.concat([
     tag,
+    genesisHash,
+    programId,
     caseIdLen,
     caseIdBytes,
     new PublicKey(params.claimant).toBuffer(),

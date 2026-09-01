@@ -449,7 +449,7 @@ fn attested_settle(program_id: &Pubkey, accounts: &[AccountInfo], body: Decision
     }
 
     let ed25519_ix = get_instruction_relative(-1, instructions_sysvar_info)?;
-    verify_decision_attestation(&ed25519_ix, &body)?;
+    verify_decision_attestation(program_id, &ed25519_ix, &body)?;
 
     let mut settle_data = SETTLE_DISCRIMINATOR.to_vec();
     settle_data.extend_from_slice(&body.claimant_share_bps.to_le_bytes());
@@ -490,8 +490,26 @@ fn attested_settle(program_id: &Pubkey, accounts: &[AccountInfo], body: Decision
 /// decision-relay program this key is ever meant to attest for (unlike
 /// the EVM attestor's hash, which binds `address(this)` to distinguish
 /// between possible EVM deployments of the same contract code).
-fn decision_attestation_message(body: &DecisionRelayBody) -> Vec<u8> {
-    let mut message = b"ANCHOR_SOLANA_DECISION_ATTESTATION_V1".to_vec();
+fn decision_attestation_message(program_id: &Pubkey, body: &DecisionRelayBody) -> Vec<u8> {
+    let mut message = b"ANCHOR_SOLANA_DECISION_ATTESTATION_V2".to_vec();
+    // Cluster binding (defense in depth, per re-audit) — Solana Testnet's
+    // real genesis hash, confirmed live via `getGenesisHash` RPC, not
+    // guessed. A program can't query its own cluster's genesis hash at
+    // runtime (no sysvar exposes it to instruction execution), so this
+    // is a compile-time tag: if this exact program were ever deployed to
+    // a different cluster, attestations minted for THIS build (tagged
+    // testnet) would carry a mismatched tag there too, adding a second,
+    // independent check beyond program_id below rather than a live
+    // runtime verification that "we are actually on testnet" — real
+    // value as defense in depth, not the sole boundary on its own.
+    const TESTNET_GENESIS_HASH: Pubkey = solana_program::pubkey!("4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY");
+    message.extend_from_slice(TESTNET_GENESIS_HASH.as_ref());
+    // Program binding (real, on-chain-verifiable — program_id is the
+    // actual parameter this instruction executed with) — prevents a
+    // signature minted for one decision-relay deployment being replayed
+    // against a different one, same reasoning as EVM's `address(this)`
+    // binding in DecisionRelay.sol.
+    message.extend_from_slice(program_id.as_ref());
     let case_id_bytes = body.case_id.as_bytes();
     message.extend_from_slice(&(case_id_bytes.len() as u32).to_le_bytes());
     message.extend_from_slice(case_id_bytes);
@@ -508,7 +526,7 @@ fn decision_attestation_message(body: &DecisionRelayBody) -> Vec<u8> {
 /// confirmed directly from the `solana-ed25519-program` crate source,
 /// not assumed) and requires it attests to exactly `expected_body`
 /// signed by ATTESTOR_PUBKEY.
-fn verify_decision_attestation(ed25519_ix: &Instruction, expected_body: &DecisionRelayBody) -> ProgramResult {
+fn verify_decision_attestation(program_id: &Pubkey, ed25519_ix: &Instruction, expected_body: &DecisionRelayBody) -> ProgramResult {
     if ed25519_ix.program_id != solana_program::pubkey!("Ed25519SigVerify111111111111111111111111111") {
         return Err(ProgramError::InvalidArgument);
     }
@@ -575,7 +593,7 @@ fn verify_decision_attestation(ed25519_ix: &Instruction, expected_body: &Decisio
     let message = data
         .get(message_data_offset..message_data_offset + message_data_size)
         .ok_or(ProgramError::InvalidInstructionData)?;
-    if message != decision_attestation_message(expected_body).as_slice() {
+    if message != decision_attestation_message(program_id, expected_body).as_slice() {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -705,8 +723,9 @@ mod attestation_tests {
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key_bytes = signing_key.verifying_key().to_bytes();
 
+        let program_id = Pubkey::new_unique();
         let body = sample_body();
-        let message = decision_attestation_message(&body);
+        let message = decision_attestation_message(&program_id, &body);
         let signature = signing_key.sign(&message).to_bytes();
 
         let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
@@ -741,12 +760,13 @@ mod attestation_tests {
         let verifying_key_bytes = signing_key.verifying_key().to_bytes();
         assert_ne!(verifying_key_bytes, ATTESTOR_PUBKEY.to_bytes(), "test key collided with the real constant — regenerate");
 
+        let program_id = Pubkey::new_unique();
         let body = sample_body();
-        let message = decision_attestation_message(&body);
+        let message = decision_attestation_message(&program_id, &body);
         let signature = signing_key.sign(&message).to_bytes();
         let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
 
-        let result = verify_decision_attestation(&ix, &body);
+        let result = verify_decision_attestation(&program_id, &ix, &body);
         assert!(result.is_err(), "must reject a real signature from a non-attestor key");
     }
 
@@ -760,8 +780,9 @@ mod attestation_tests {
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key_bytes = signing_key.verifying_key().to_bytes();
 
+        let program_id = Pubkey::new_unique();
         let signed_body = sample_body();
-        let message = decision_attestation_message(&signed_body);
+        let message = decision_attestation_message(&program_id, &signed_body);
         let signature = signing_key.sign(&message).to_bytes();
         let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
 
@@ -769,19 +790,42 @@ mod attestation_tests {
         tampered_body.claimant_share_bps = 10_000;
         tampered_body.respondent_share_bps = 0;
 
-        let result = verify_decision_attestation(&ix, &tampered_body);
+        let result = verify_decision_attestation(&program_id, &ix, &tampered_body);
         assert!(result.is_err(), "must reject when the verified body doesn't match what was actually signed");
+    }
+
+    /// A signature genuinely signed for a DIFFERENT decision-relay
+    /// program deployment must not verify against this one — proves the
+    /// program-id binding (added alongside cluster binding after a
+    /// re-audit asked for "defense in depth") actually does something,
+    /// not just that it's present in the message.
+    #[test]
+    fn verify_decision_attestation_rejects_signature_for_different_program_id() {
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let verifying_key_bytes = signing_key.verifying_key().to_bytes();
+
+        let signed_for_program_id = Pubkey::new_unique();
+        let body = sample_body();
+        let message = decision_attestation_message(&signed_for_program_id, &body);
+        let signature = signing_key.sign(&message).to_bytes();
+        let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
+
+        let different_program_id = Pubkey::new_unique();
+        let result = verify_decision_attestation(&different_program_id, &ix, &body);
+        assert!(result.is_err(), "must reject a signature minted for a different program_id");
     }
 
     #[test]
     fn verify_decision_attestation_rejects_non_ed25519_program() {
+        let program_id = Pubkey::new_unique();
         let body = sample_body();
         let fake_ix = Instruction {
             program_id: Pubkey::new_unique(),
             accounts: vec![],
             data: vec![0u8; 200],
         };
-        let result = verify_decision_attestation(&fake_ix, &body);
+        let result = verify_decision_attestation(&program_id, &fake_ix, &body);
         assert!(result.is_err(), "must reject an instruction that isn't really the Ed25519 native program");
     }
 
@@ -824,8 +868,9 @@ mod attestation_tests {
 
         let mut ix = new_ed25519_instruction_with_signature(&unrelated_message, &unrelated_signature, &unrelated_verifying_key_bytes);
 
+        let program_id = Pubkey::new_unique();
         let target_body = sample_body();
-        let forged_message = decision_attestation_message(&target_body);
+        let forged_message = decision_attestation_message(&program_id, &target_body);
         let forged_pubkey = ATTESTOR_PUBKEY.to_bytes();
 
         // Append the forged bytes after the genuinely-verified data —
@@ -849,7 +894,7 @@ mod attestation_tests {
         ix.data[2 + 10..2 + 12].copy_from_slice(&(forged_message.len() as u16).to_le_bytes());
         ix.data[2 + 12..2 + 14].copy_from_slice(&0u16.to_le_bytes()); // message_instruction_index: redirected away from MAX
 
-        let result = verify_decision_attestation(&ix, &target_body);
+        let result = verify_decision_attestation(&program_id, &ix, &target_body);
         assert!(
             result.is_err(),
             "must reject when public_key/message_instruction_index don't point at this instruction's own \

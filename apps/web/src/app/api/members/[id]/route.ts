@@ -21,18 +21,20 @@ export async function DELETE(_req: NextRequest, { params }: { params: { id: stri
     return NextResponse.json({ error: "cannot remove yourself as the org's owner" }, { status: 400 });
   }
 
-  await prisma.$transaction([
-    prisma.session.deleteMany({ where: { memberId: target.id } }),
-    prisma.member.delete({ where: { id: target.id } }),
-  ]);
-
-  await logAction({
-    organizationId: member.organizationId,
-    memberId: member.memberId,
-    action: "member.removed",
-    targetType: "member",
-    targetId: target.id,
-    metadata: { email: target.email },
+  await prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({ where: { memberId: target.id } });
+    await tx.member.delete({ where: { id: target.id } });
+    await logAction(
+      {
+        organizationId: member.organizationId,
+        memberId: member.memberId,
+        action: "member.removed",
+        targetType: "member",
+        targetId: target.id,
+        metadata: { email: target.email },
+      },
+      tx
+    );
   });
 
   return NextResponse.json({ ok: true });

@@ -37,6 +37,15 @@ model Organization {
   name      String
   createdAt DateTime @default(now())
 
+  // External anchoring of this org's audit-log hash chain (see
+  // lib/audit-anchor.ts and chains/evm/contracts/AuditAnchor.sol) —
+  // tracks the last hash actually posted on-chain, so the periodic sweep
+  // only submits a real transaction when the chain has genuinely grown
+  // since the last anchor, not on every sweep tick regardless of change.
+  lastAnchoredHash String?
+  lastAnchoredAt   DateTime?
+  lastAnchorTxHash String?
+
   members   Member[]
   apiKeys   ApiKey[]
   cases     Case[]

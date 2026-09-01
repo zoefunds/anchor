@@ -65,25 +65,31 @@ export async function POST(req: NextRequest) {
   });
 
   const rawToken = randomBytes(32).toString("hex");
-  const invite = await prisma.invite.create({
-    data: {
-      organizationId: member.organizationId,
-      email,
-      role: inviteRole,
-      tokenHash: hashToken(rawToken),
-      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
-    },
+  const invite = await prisma.$transaction(async (tx) => {
+    const created = await tx.invite.create({
+      data: {
+        organizationId: member.organizationId,
+        email,
+        role: inviteRole,
+        tokenHash: hashToken(rawToken),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+      },
+    });
+    await logAction(
+      {
+        organizationId: member.organizationId,
+        memberId: member.memberId,
+        action: "invite.created",
+        targetType: "invite",
+        targetId: created.id,
+        metadata: { email, role: inviteRole },
+      },
+      tx
+    );
+    return created;
   });
 
   const inviteUrl = `${appOrigin(req)}/invite/${rawToken}`;
-  await logAction({
-    organizationId: member.organizationId,
-    memberId: member.memberId,
-    action: "invite.created",
-    targetType: "invite",
-    targetId: invite.id,
-    metadata: { email, role: inviteRole },
-  });
 
   try {
     await sendInviteEmail({ to: email, organizationName: organization.name, inviteUrl });

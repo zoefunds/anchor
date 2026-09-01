@@ -34,14 +34,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const claimantToken = reissueClaimant ? generatePartyToken() : null;
   const respondentToken = reissueRespondent ? generatePartyToken() : null;
 
-  await prisma.case.update({
-    where: { id: kase.id },
-    data: {
-      ...(claimantToken ? { claimantTokenHash: claimantToken.hash, claimantTokenExpiresAt: claimantToken.expiresAt } : {}),
-      ...(respondentToken ? { respondentTokenHash: respondentToken.hash, respondentTokenExpiresAt: respondentToken.expiresAt } : {}),
-    },
-  });
-
   // A reissue is usually triggered by a suspected leak — an old session
   // exchanged from the now-invalidated raw token would otherwise keep
   // working for up to its own 2-hour TTL (see party-auth.ts) even after
@@ -51,18 +43,30 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     ...(reissueClaimant ? (["claimant"] as const) : []),
     ...(reissueRespondent ? (["respondent"] as const) : []),
   ];
-  if (revokedRoles.length > 0) {
-    await prisma.partySession.deleteMany({ where: { caseId: kase.id, role: { in: revokedRoles } } });
-  }
 
-  await logAction({
-    organizationId: auth.organizationId,
-    memberId: auth.memberId,
-    apiKeyId: auth.apiKeyId,
-    action: "case.party_tokens_reissued",
-    targetType: "case",
-    targetId: kase.id,
-    metadata: { reissuedClaimant: reissueClaimant, reissuedRespondent: reissueRespondent },
+  await prisma.$transaction(async (tx) => {
+    await tx.case.update({
+      where: { id: kase.id },
+      data: {
+        ...(claimantToken ? { claimantTokenHash: claimantToken.hash, claimantTokenExpiresAt: claimantToken.expiresAt } : {}),
+        ...(respondentToken ? { respondentTokenHash: respondentToken.hash, respondentTokenExpiresAt: respondentToken.expiresAt } : {}),
+      },
+    });
+    if (revokedRoles.length > 0) {
+      await tx.partySession.deleteMany({ where: { caseId: kase.id, role: { in: revokedRoles } } });
+    }
+    await logAction(
+      {
+        organizationId: auth.organizationId,
+        memberId: auth.memberId,
+        apiKeyId: auth.apiKeyId,
+        action: "case.party_tokens_reissued",
+        targetType: "case",
+        targetId: kase.id,
+        metadata: { reissuedClaimant: reissueClaimant, reissuedRespondent: reissueRespondent },
+      },
+      tx
+    );
   });
 
   return NextResponse.json({

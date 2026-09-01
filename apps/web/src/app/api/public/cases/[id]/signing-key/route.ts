@@ -44,17 +44,21 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const field = resolved.role === "claimant" ? "claimantPublicKey" : "respondentPublicKey";
-  await prisma.case.update({
-    where: { id: params.id },
-    data: { [field]: publicKeyHex.toLowerCase() },
-  });
-
-  await logAction({
-    organizationId: kase.organizationId,
-    action: "case.signing_key_registered",
-    targetType: "case",
-    targetId: kase.id,
-    metadata: { role: resolved.role },
+  await prisma.$transaction(async (tx) => {
+    await tx.case.update({
+      where: { id: params.id },
+      data: { [field]: publicKeyHex.toLowerCase() },
+    });
+    await logAction(
+      {
+        organizationId: kase.organizationId,
+        action: "case.signing_key_registered",
+        targetType: "case",
+        targetId: kase.id,
+        metadata: { role: resolved.role },
+      },
+      tx
+    );
   });
 
   return NextResponse.json({ role: resolved.role, publicKeyHex: publicKeyHex.toLowerCase() });

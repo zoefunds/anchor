@@ -46,14 +46,19 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 
-  const updated = await prisma.case.update({ where: { id: kase.id }, data: { restricted } });
-
-  await logAction({
-    organizationId: member.organizationId,
-    memberId: member.memberId,
-    action: restricted ? "case.restricted" : "case.unrestricted",
-    targetType: "case",
-    targetId: kase.id,
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.case.update({ where: { id: kase.id }, data: { restricted } });
+    await logAction(
+      {
+        organizationId: member.organizationId,
+        memberId: member.memberId,
+        action: restricted ? "case.restricted" : "case.unrestricted",
+        targetType: "case",
+        targetId: kase.id,
+      },
+      tx
+    );
+    return result;
   });
 
   return NextResponse.json({ restricted: updated.restricted });

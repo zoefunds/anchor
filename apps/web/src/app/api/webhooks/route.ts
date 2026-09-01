@@ -56,22 +56,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `unknown event(s): ${invalid.join(", ")}`, validEvents: WEBHOOK_EVENTS }, { status: 400 });
   }
 
-  const webhook = await prisma.webhook.create({
-    data: {
-      organizationId: member.organizationId,
-      url,
-      secret: generateWebhookSecret(),
-      events: requestedEvents,
-    },
-  });
-
-  await logAction({
-    organizationId: member.organizationId,
-    memberId: member.memberId,
-    action: "webhook.created",
-    targetType: "webhook",
-    targetId: webhook.id,
-    metadata: { url, events: requestedEvents },
+  const webhook = await prisma.$transaction(async (tx) => {
+    const created = await tx.webhook.create({
+      data: {
+        organizationId: member.organizationId,
+        url,
+        secret: generateWebhookSecret(),
+        events: requestedEvents,
+      },
+    });
+    await logAction(
+      {
+        organizationId: member.organizationId,
+        memberId: member.memberId,
+        action: "webhook.created",
+        targetType: "webhook",
+        targetId: created.id,
+        metadata: { url, events: requestedEvents },
+      },
+      tx
+    );
+    return created;
   });
 
   return NextResponse.json(webhook, { status: 201 });

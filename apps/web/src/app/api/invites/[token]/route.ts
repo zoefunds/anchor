@@ -60,17 +60,20 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
       },
     });
     await tx.invite.update({ where: { id: invite.id }, data: { acceptedAt: new Date() } });
+    await logAction(
+      {
+        organizationId: invite.organizationId,
+        memberId: created.id,
+        action: "invite.accepted",
+        targetType: "member",
+        targetId: created.id,
+      },
+      tx
+    );
     return created;
   });
 
   await createSession(member.id);
-  await logAction({
-    organizationId: invite.organizationId,
-    memberId: member.id,
-    action: "invite.accepted",
-    targetType: "member",
-    targetId: member.id,
-  });
 
   return NextResponse.json({ member: { id: member.id, email: member.email } }, { status: 201 });
 }

@@ -3,6 +3,7 @@ import IORedis from "ioredis";
 import { ADJUDICATION_QUEUE_NAME, getAdjudicationQueue } from "@/lib/queue";
 import { runAdjudicationJob, finalizeExpiredAppealWindows, retryFailedSettlements } from "@/lib/adjudication-service";
 import { deliverWebhookAttempt } from "@/lib/webhooks";
+import { anchorAuditChains } from "@/lib/audit-anchor";
 import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
 
 // The actual BullMQ job processor — separate from src/worker.ts (the
@@ -14,6 +15,7 @@ import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
 
 const FINALIZE_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const SETTLEMENT_RETRY_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const AUDIT_ANCHOR_SWEEP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes — an external checkpoint doesn't need to be real-time, just regular
 
 let worker: Worker | null = null;
 
@@ -32,6 +34,14 @@ async function processJob(job: Job): Promise<void> {
     if (count > 0) {
       // eslint-disable-next-line no-console
       console.log(`worker: retried settlement for ${count} decision(s)`);
+    }
+    return;
+  }
+  if (job.name === "anchor_audit_chains") {
+    const count = await anchorAuditChains();
+    if (count > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`worker: anchored ${count} organization audit chain(s) on-chain`);
     }
     return;
   }
@@ -106,6 +116,21 @@ async function ensureSettlementRetryScheduled(): Promise<void> {
 }
 
 /**
+ * Registers the periodic external audit-chain anchoring sweep (see
+ * lib/audit-anchor.ts) — posts each organization's current audit-log
+ * chain head to a small Sepolia contract, so history can't be silently
+ * rewritten in the database alone. Same upsert-is-idempotent reasoning
+ * as the other sweeps.
+ */
+async function ensureAuditAnchorSweepScheduled(): Promise<void> {
+  await getAdjudicationQueue().upsertJobScheduler(
+    "anchor-audit-chains-sweep",
+    { every: AUDIT_ANCHOR_SWEEP_INTERVAL_MS },
+    { name: "anchor_audit_chains" }
+  );
+}
+
+/**
  * Idempotent — starts the BullMQ Worker once per process; safe to call
  * more than once. Created with autorun disabled so the environment guard
  * (assertDatabaseMatchesAppEnv — see lib/app-env.ts) can run and be
@@ -158,6 +183,10 @@ export async function startAdjudicationWorker(): Promise<Worker> {
   ensureSettlementRetryScheduled().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to schedule settlement retry sweep:", err instanceof Error ? err.message : err);
+  });
+  ensureAuditAnchorSweepScheduled().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to schedule audit anchor sweep:", err instanceof Error ? err.message : err);
   });
 
   return w;

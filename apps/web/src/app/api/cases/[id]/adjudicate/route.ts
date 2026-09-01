@@ -57,10 +57,30 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   // enqueue a job (which would deploy two GenLayer contracts for one
   // case, or race two adjudicate() calls against each other). The
   // now-unused SUBMITTED status this used to pass through was never read
-  // anywhere else, so going straight to ADJUDICATING loses nothing.
-  const claimed = await prisma.case.updateMany({
-    where: { id: kase.id, status: "EVIDENCE_COLLECTION" },
-    data: { status: "ADJUDICATING" },
+  // anywhere else, so going straight to ADJUDICATING loses nothing. The
+  // transition and its audit entry commit together — enqueueJob stays
+  // outside the transaction (not transactional with Postgres regardless)
+  // and only runs after a real commit, so a rolled-back transition can
+  // never still enqueue a job for it.
+  const claimed = await prisma.$transaction(async (tx) => {
+    const result = await tx.case.updateMany({
+      where: { id: kase.id, status: "EVIDENCE_COLLECTION" },
+      data: { status: "ADJUDICATING" },
+    });
+    if (result.count > 0) {
+      await logAction(
+        {
+          organizationId: auth.organizationId,
+          memberId: auth.memberId,
+          apiKeyId: auth.apiKeyId,
+          action: "case.adjudicate_requested",
+          targetType: "case",
+          targetId: kase.id,
+        },
+        tx
+      );
+    }
+    return result;
   });
   if (claimed.count === 0) {
     return NextResponse.json(
@@ -72,14 +92,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: false });
 
-  await logAction({
-    organizationId: auth.organizationId,
-    memberId: auth.memberId,
-    apiKeyId: auth.apiKeyId,
-    action: "case.adjudicate_requested",
-    targetType: "case",
-    targetId: kase.id,
-  });
   dispatchWebhookEvent({
     organizationId: auth.organizationId,
     event: "case.status_changed",
