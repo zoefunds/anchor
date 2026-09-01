@@ -50,7 +50,20 @@ multisig, or audit anchoring was weakened.
   Building this also caught and fixed a real event-ABI bug (`destination`
   needed `indexed: true` to match Hyperlane's actual `Mailbox.sol`
   event — see the script's own comment for the exact decode error this
-  produced before the fix).
+  produced before the fix). Also renamed `checkFreshness` to
+  `agent-liveness` and added `checkCheckpointCurrency` — a second,
+  real audit-caught gap: the old freshness check only proved a per-boot
+  heartbeat file was recent, not that the validator's real signed
+  checkpoint index was current, which is what actually determines
+  whether delivery is possible.
+- `chains/hyperlane-validator/fly.validator1.toml` /
+  `fly.validator2.toml` — bumped VM memory 256mb → 512mb. Root cause of
+  this pass's validator staleness/undelivered-message chain: both
+  validators were OOM-crash-looping until Fly's 10-restart budget
+  exhausted and both machines went fully offline (`flyctl logs`: "Out of
+  memory: Killed process ... (validator)" → "machine has reached its max
+  restart count of 10"). Redeployed and restarted both; confirmed no
+  further OOM kill for this pass's remaining observation window.
 
 ### Code now (not yet done — real follow-up work)
 - Actually implementing the Sealevel multisig ISM per `ISM_MIGRATION.md`
@@ -76,17 +89,29 @@ multisig, or audit anchoring was weakened.
 - Wire `verify-deployment.ts` into an actual cron/CI schedule with a real
   notification channel (`ALERTING.md` gives both options; neither is
   wired up yet).
-- Investigate the root cause of the ~2h14m `AccessDenied` streak found on
-  the validator write path this pass (fixed pragmatically via machine
-  restart; underlying cause — likely an IAM credential caching/rotation
-  issue on the Fly side — was not identified within this pass's budget).
-  A second, distinct staleness incident recurred later in this same pass
-  (both validators stale again — one from S3 connect timeouts in
-  `TipCheckpointSubmitter`, one from an outright-stopped Fly machine),
-  fixed the same way (restart) but with its own root cause also
-  undiagnosed. Two separate real incidents with the same symptom in one
-  pass is itself a signal this needs real operator attention, not just
-  another restart next time.
+- **Root cause of validator staleness found and fixed this pass (see
+  §1 "Root cause" below): both validators were OOM-crash-looping** on
+  their 256mb Fly machines, eventually exhausting Fly's 10-restart budget
+  and going fully offline. Fixed: bumped `fly.validator1.toml`/
+  `fly.validator2.toml` memory to 512mb, redeployed, restarted — both
+  ran without a further OOM kill for the remainder of this pass. This
+  supersedes the earlier (real, but secondary-symptom) `AccessDenied`/S3-
+  connect-timeout findings from earlier in this pass — those were
+  consequences of the same underlying resource starvation, not
+  independent root causes. **Still needs operator follow-through**:
+  confirm 512mb holds up over a real 24h+ window (this pass's own
+  observation window was much shorter), and consider whether 512mb has
+  enough headroom as the Merkle tree keeps growing over time.
+- **A second, independent contributing factor found this pass: the
+  shared public Sepolia RPC (`ethereum-sepolia.publicnode.com`) rate-
+  limits the validators.** Confirmed via a real log line:
+  `Received rate limit request JsonRpcError ... code: -32005, message:
+  Rate limit exceeded`. This throttles how fast a validator's indexing
+  can catch up after any downtime (observed catch-up rate after the OOM
+  fix: roughly 2 leaves per 15 minutes — far too slow to close a
+  ~1300-leaf gap quickly). **Not fixed this pass** — needs a dedicated/
+  paid Sepolia RPC endpoint (an operator/cost decision), not a code
+  change.
 - Correct the validator announcement path — both validators announce a
   URI with a spurious `eu-north-1/` region segment that 403s; only the
   real object path (without it) is reachable. Requires either a
@@ -94,10 +119,12 @@ multisig, or audit anchoring was weakened.
   flags) or a corrected re-announcement (its own on-chain transaction,
   signed by the validator key) — deliberately not done blind mid-pass
   given the risk of silently changing the real write path.
-- Diagnose relayer indexing lag against the specific confirmed-undelivered
-  message flagged above (`0x61b6e9e3...15df71`) — `verify-deployment.ts`
-  now proves this is a real fail, not a false alarm; the underlying cause
-  still needs a human to look at the relayer's own sync cursor.
+- Let validator checkpoint indexing finish catching up past leaf 872850
+  (or provision a dedicated RPC endpoint to accelerate it — see above),
+  then re-run `verify-deployment.ts` to confirm message
+  `0x61b6e9e3...15df71` actually delivers. Diagnosis is done (validator
+  indexing lag, not a relayer-side bug — see root cause above); what's
+  left is real wall-clock catch-up time, not further investigation.
 - Decide whether/when to call `InitReplayGuard` on the live Solana
   program — the code is tested and ready but not deployed; deploying a
   program upgrade is an operator action, not something to do unprompted
@@ -153,31 +180,58 @@ genuine live infrastructure gap that remains:
   — Hyperlane's real `Mailbox.sol` event has `destination` indexed (3
   indexed params total). Fixed and cross-checked against a direct `cast
   call ... delivered(bytes32)(bool)` — both agree.
-- **Fixed — validators had actually gone stale.** The verifier's first
-  real run this pass showed 2 genuine `fail`s: both validators' latest
-  checkpoints were 1100-1900+ seconds old (threshold 900s). Root cause
-  found in `flyctl logs`: `TipCheckpointSubmitter` stuck retrying S3
-  connections that were timing out (`hyperlane-base/src/types/s3_storage.rs:128`,
-  "HTTP connect timeout occurred after 3.1s") — separate from the earlier
-  `AccessDenied` incident documented below, a different failure mode with
-  the same symptom. validator2's Fly machine had also stopped outright.
-  Fixed pragmatically (machine restart both validators) — freshness
-  confirmed recovered (34s/64s old immediately after). **Root cause of
-  the S3 connect timeouts themselves is still not diagnosed** — flagged
-  in the residual risk register below, not swept under a "0 fails" claim.
-- **Not fixed — the flagged dispatch is genuinely undelivered.** Message
+- **Root cause found this pass (superseding the earlier S3-timeout/
+  AccessDenied framing below, which were real but secondary symptoms):
+  both validators were OOM-crash-looping.** `flyctl logs -a anc-hor-
+  validator1 --no-tail` showed, in order: repeated "Latest checkpoint"
+  entries frozen at index 871497 (chain tip nonce was 872868 — a ~1370
+  gap) → `Out of memory: Killed process ... (validator)` → `Main child
+  exited normally with code: 137` → `machine has reached its max
+  restart count of 10` → machine state `stopped`. validator2 showed the
+  identical pattern independently. Both machines were fully offline
+  (not just stale) by the time this was found — `flyctl status` showed
+  `STATE stopped` for both. **Fixed**: bumped both
+  `fly.validatorN.toml`'s VM memory from 256mb to 512mb, redeployed
+  (`flyctl deploy -a anc-hor-validatorN --config fly.validatorN.toml`),
+  restarted both machines. Confirmed via `flyctl status`: both `started`;
+  confirmed via `flyctl logs`: no further OOM kill for the remainder of
+  this pass's observation window (~20+ minutes), and checkpoint index
+  visibly advancing again (871497 → 871499 and climbing) instead of
+  frozen.
+- **A second, independent contributing factor: the shared public
+  Sepolia RPC rate-limits the validators.** Confirmed via a real log
+  line: `Received rate limit request JsonRpcError ... code: -32005,
+  message: Rate limit exceeded` from `ethereum-sepolia.publicnode.com`.
+  This is why catch-up after the OOM fix is slow (~2 leaves per 15
+  minutes observed) even with the crash loop resolved — **not fixed
+  this pass**, needs a dedicated/paid RPC endpoint (operator/cost
+  decision).
+- **Not fixed — the flagged dispatch is still undelivered as of this
+  pass's end.** Message
   `0x61b6e9e3923a8b097d8580dfd29d8de5a85222634bf772895b499a37f815df71`
-  (tx `0x2331a1fdaacf9d6c0d50cc5e34caf0554626a1b52d5b2f33cc1ca4d7999128c0`)
-  is confirmed **not delivered** — `delivered()` returns `false`, checked
-  both via the script and directly via `cast call`. This is a real `fail`
-  in the current run, not a false alarm from an under-built check. Likely
-  cause: the self-hosted relayer's forward-sync cursor was still well
-  behind this message's nonce as of this pass's earlier investigation
-  (871493 vs 872850) — a relayer indexing-lag issue, the same category
-  `ALERTING.md` already documents as having no direct on-chain check.
-  Left unresolved (not force-delivered or hand-waved) since diagnosing
-  relayer indexing lag is a distinct operator-action item, not something
-  to paper over in this verification pass.
+  (tx `0x2331a1fdaacf9d6c0d50cc5e34caf0554626a1b52d5b2f33cc1ca4d7999128c0`,
+  decoded nonce 872850) is confirmed **not delivered** — `delivered()`
+  returns `false`, checked both via the script and directly via `cast
+  call`. This is a real `fail`, not a false alarm from an under-built
+  check, and it will very likely remain a real fail until validator
+  checkpoint indexing (currently still well behind the tip even after
+  the OOM fix, due to the RPC rate-limiting above) catches up past leaf
+  872850. Deliberately left unresolved rather than force-delivered —
+  proving genuine end-to-end delivery requires the real catch-up to
+  finish, which takes real wall-clock time this pass's budget didn't
+  allow waiting out.
+- **New check added: `checkCheckpointCurrency`.** The freshness check
+  (renamed `agent-liveness` — see below) only proved
+  `metadata_latest.json` was recently touched, an unrelated per-boot
+  heartbeat file — it does NOT prove the checkpoint INDEX is current,
+  which is the actual property that matters for delivery. This exact gap
+  is why the OOM crash-loop looked "fresh" immediately after every
+  restart while the real index sat frozen. `checkCheckpointCurrency` is
+  currently a `warn`-only check (the real per-index checkpoint JSON
+  files were not reachable at any filename this project's tooling
+  tried — only the heartbeat files are public) that explicitly says so
+  and points at a manual cross-check, rather than silently continuing to
+  conflate the two the way the old check did.
 - **Announcement/reachability warns remain warns, correctly.** Both
   validators' on-chain-announced S3 path includes a spurious
   `eu-north-1/` segment that 403s; the real object path (without it)
@@ -239,23 +293,29 @@ plainly:
    currently safe only because `handle()` is notification-only and cannot
    move funds — that invariant is load-bearing and must never regress
    without equal rigor to `attested_settle` itself.
-3. **Relayer indexing lag has no direct on-chain check, and is confirmed
-   causing at least one real undelivered message right now.**
-   `verify-deployment.ts`'s delivery check now calls
-   `Mailbox.delivered()` directly (fixed this pass — see above) and
-   confirms message `0x61b6e9e3...15df71` is genuinely undelivered past
-   SLA. `ALERTING.md` documents a log-grep fallback for indexing lag
-   specifically; there is still no automated alert on the lag itself,
-   only this after-the-fact delivery-confirmed SLA check.
-4. **Validator staleness has recurred twice in this pass alone, from two
-   different causes, both worked around rather than diagnosed.** First
-   incident: ~2h14m of `AccessDenied` on the checkpoint write path.
-   Second, later incident: S3 connect timeouts in `TipCheckpointSubmitter`
-   plus one validator's Fly machine stopped outright. Both fixed the same
-   way (machine restart) with no root-cause diagnosis. A pattern of
-   "restart fixes it" without understanding why is itself a risk — the
-   next occurrence might not resolve as easily, and nothing currently
-   catches it faster than the SLA-based delivery check above.
+3. **A real message is confirmed undelivered right now, with a diagnosed
+   (partially fixed) root cause.** `verify-deployment.ts`'s delivery
+   check calls `Mailbox.delivered()` directly (fixed this pass) and
+   confirms message `0x61b6e9e3...15df71` (nonce 872850) is genuinely
+   undelivered. Root cause chain, confirmed via `flyctl logs` and
+   on-chain reads: both validators were OOM-crash-looping (fixed —
+   memory bumped 256mb→512mb, redeployed) on top of a shared public
+   Sepolia RPC that rate-limits them (`code: -32005, Rate limit
+   exceeded` — not fixed, needs a dedicated RPC endpoint), leaving
+   validator checkpoint indexing ~1370 leaves behind the chain tip.
+   Until indexing catches up past leaf 872850, no validator can sign a
+   checkpoint covering this message, so no valid multisig-ISM metadata
+   can exist for it — the relayer cannot deliver what the ISM has no
+   basis to accept, independent of any relayer-side issue.
+4. **The OOM crash-loop that caused the above has been fixed but not
+   yet proven durable.** Both validators ran without a further OOM kill
+   for this pass's observation window (~20+ minutes post-fix), but that
+   is far short of the sustained operation needed to be confident 512mb
+   is actually enough headroom, especially as the Merkle tree keeps
+   growing over time. Needs continued observation (ideally 24h+) before
+   being considered resolved, per this pass's own residual-risk
+   discipline of not declaring things fixed on a short observation
+   window.
 5. **The validator announcement path doesn't match the real checkpoint
    location.** Both validators announce a URI with an extra `eu-north-1/`
    segment that 403s; only the real path (without it) is reachable. A

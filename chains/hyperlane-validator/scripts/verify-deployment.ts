@@ -198,24 +198,75 @@ async function checkFreshness(byValidator: Record<string, string[]>): Promise<vo
       }
       try {
         if (!res || !res.ok) {
-          record(`freshness:${v.label}`, "warn", "skipped — metadata_latest.json not reachable (see reachability check above)");
+          record(`agent-liveness:${v.label}`, "warn", "skipped — metadata_latest.json not reachable (see reachability check above)");
           continue;
         }
         const lastModifiedHeader = res.headers.get("last-modified");
         if (!lastModifiedHeader) {
-          record(`freshness:${v.label}`, "warn", "S3 response had no Last-Modified header — cannot determine freshness");
+          record(`agent-liveness:${v.label}`, "warn", "S3 response had no Last-Modified header — cannot determine freshness");
           continue;
         }
         const ageSeconds = (Date.now() - new Date(lastModifiedHeader).getTime()) / 1000;
+        // Renamed from "freshness" to "agent-liveness": metadata_latest.json
+        // is a per-boot heartbeat file the agent writes on startup,
+        // independent of whether it's actually keeping its SIGNED
+        // CHECKPOINT INDEX current against the chain tip — a real gap
+        // found live this pass. A validator can restart-loop (writing a
+        // fresh metadata_latest.json each boot) while its checkpoint
+        // index stays frozen far behind the tip, which is exactly what
+        // happened here: metadata_latest.json read as "fresh" seconds
+        // after each OOM-triggered restart, while the real checkpoint
+        // index hadn't advanced in over 15 minutes. See
+        // checkCheckpointCurrency below for the check that actually
+        // matters for delivery — this one only proves the process is
+        // alive and touching S3 at all, which is necessary but not
+        // sufficient.
         if (ageSeconds > deployment.checkpointFreshnessThresholdSeconds) {
-          record(`freshness:${v.label}`, "fail", `metadata_latest.json is ${Math.round(ageSeconds)}s old (threshold ${deployment.checkpointFreshnessThresholdSeconds}s) — validator may be stalled or crash-looping`);
+          record(`agent-liveness:${v.label}`, "fail", `metadata_latest.json is ${Math.round(ageSeconds)}s old (threshold ${deployment.checkpointFreshnessThresholdSeconds}s) — validator process is not running or not reaching S3 at all`);
         } else {
-          record(`freshness:${v.label}`, "pass", `metadata_latest.json is ${Math.round(ageSeconds)}s old`);
+          record(`agent-liveness:${v.label}`, "pass", `metadata_latest.json is ${Math.round(ageSeconds)}s old (process is alive — does NOT by itself prove checkpoint index is current, see checkpoint-currency below)`);
         }
       } catch (err) {
-        record(`freshness:${v.label}`, "fail", err instanceof Error ? err.message : String(err));
+        record(`agent-liveness:${v.label}`, "fail", err instanceof Error ? err.message : String(err));
       }
     }
+  }
+}
+
+// --- Check 3b: the validator's signed checkpoint INDEX is actually current, not just its heartbeat file ---
+// This check exists because of a real gap found live this pass:
+// checkFreshness (now "agent-liveness" above) only proves
+// metadata_latest.json was recently touched — an unrelated per-boot
+// heartbeat file. A validator can restart-loop (rewriting that file
+// every boot) while its real checkpoint index sits frozen far behind
+// the chain tip, which is exactly what happened here (root cause: both
+// validators were OOM-crash-looping — see docs/production-readiness-
+// hardening-pass.md). The actual per-index checkpoint JSON files this
+// project's validators write were not reachable via any filename this
+// script tried (checkpoint_<index>.json, checkpoint_latest_index.json —
+// all 403, unlike metadata_latest.json/announcement.json which are
+// reachable), so this check cannot yet read the real signed index
+// directly. Rather than silently skip currency checking entirely (the
+// original bug this check fixes), it says so explicitly — a WARN naming
+// exactly what's unverifiable — instead of a false PASS.
+async function checkCheckpointCurrency(): Promise<void> {
+  try {
+    const currentNonce = await client.readContract({
+      address: deployment.sepolia.mailbox,
+      abi: [{ type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint32" }] }] as const,
+      functionName: "nonce",
+    });
+    record(
+      "checkpoint-currency",
+      "warn",
+      `could not independently verify validator checkpoint index against live Mailbox nonce (${currentNonce}) — ` +
+        `the real per-index checkpoint files were not reachable at any filename this script tried, only the unrelated ` +
+        `metadata_latest.json/announcement.json heartbeat files. Do not treat agent-liveness above as proof the checkpoint ` +
+        `index is current — cross-check via validator logs directly: 'flyctl logs -a <validator-app> --no-tail | grep "Latest checkpoint"' ` +
+        `and compare its index to this Mailbox nonce.`
+    );
+  } catch (err) {
+    record("checkpoint-currency", "warn", `could not read Mailbox nonce for comparison: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -402,7 +453,7 @@ async function checkRecentDelivery(): Promise<void> {
         "delivery:recent",
         "fail",
         `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old (SLA ${deployment.undeliveredMessageSlaSeconds}s) and NOT delivered — ` +
-          `check validator freshness above first (a stalled/stale validator is the most common real cause found during this project's own verification), then check ` +
+          `check validator process health directly (agent-liveness and checkpoint-currency above only partially cover this — see their own caveats; a crash-looping or indexing-lagging validator is the most common real cause found during this project's own verification), then check ` +
           `https://explorer.hyperlane.xyz for tx ${latest.transactionHash} for relayer-side detail.`
       );
     } else {
@@ -421,6 +472,7 @@ async function main() {
   const byValidator = await checkAnnouncements();
   await checkReachability(byValidator);
   await checkFreshness(byValidator);
+  await checkCheckpointCurrency();
   await checkRecentDelivery();
   await checkIsm();
   await checkDecisionRelayIsm();

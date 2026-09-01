@@ -10,4 +10,6 @@ primary_region = 'ord'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  # See fly.validator1.toml's comment — same OOM/restart-exhaustion root
+  # cause confirmed independently for this machine too.
+  memory = '512mb'

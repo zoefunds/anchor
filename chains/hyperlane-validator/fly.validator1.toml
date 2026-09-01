@@ -10,4 +10,14 @@ primary_region = 'ord'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  # Was 256mb. Real root cause of this validator's checkpoint index
+  # freezing far behind chain tip (and ultimately its Fly machine
+  # exhausting its 10-restart budget and going fully offline): the agent
+  # OOM-kills building its in-memory Merkle tree over 870k+ leaves plus
+  # RPC/S3 client buffers — confirmed via `flyctl logs`: "Out of memory:
+  # Killed process ... (validator)" immediately followed by "machine has
+  # reached its max restart count of 10". Prior "S3 connect timeout" /
+  # "AccessDenied" findings were real but secondary symptoms of the same
+  # underlying resource starvation, not the root cause. See
+  # docs/production-readiness-hardening-pass.md for the full trace.
+  memory = '512mb'
