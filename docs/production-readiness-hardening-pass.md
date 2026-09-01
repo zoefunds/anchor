@@ -673,3 +673,84 @@ unaffected by the pause. No case data, message IDs, or transaction
 hashes were deleted or modified — all undelivered-message evidence
 gathered this pass remains exactly as captured above for a
 Support case if one is still wanted for a different reason.
+
+## Fifth addendum (same day): delivery proven end-to-end, both messages
+
+A `DeliveryProofReceiver` contract was deployed and used for a
+delivery-only proof, and — while monitoring it — the original flagged
+message delivered too, once validator backfill closed the remaining
+gap.
+
+**`DeliveryProofReceiver`** (`chains/evm/contracts/DeliveryProofReceiver.sol`,
+deployed at `0xd08093116B56Da9653F46e3f9013E7989c1ec99f`): a minimal
+Hyperlane recipient with no settlement logic, no escrow access, no
+attestation requirement, and no connection to any real case — its
+`interchainSecurityModule()` is fixed to the same real
+`StaticMerkleRootMultisigIsm` `DecisionRelay` uses, so a message
+delivered to it goes through the identical validator checkpoint/ISM
+path a real decision would, with zero funds-movement risk. 3 new tests
+(correct ISM reporting, non-mailbox caller rejected, mailbox caller
+accepted + event emitted); full EVM suite 45/45 passing. A test message
+was dispatched via the project's existing `HYPERLANE_RELAY_PRIVATE_KEY`
+(already used for exactly this purpose by `lib/hyperlane.ts`) — real
+Sepolia ETH, no new key created.
+
+**Both messages confirmed delivered, same block (`11613593`)**:
+
+| Message | Evidence |
+|---|---|
+| New test (`DeliveryProofReceiver`) | Dispatch tx `0x11c66d486fb5a424b4c4b3aaa84c5b021d25e382122ec848c554a4aa22ad4a1d`, message ID `0x32652e9557ebd4f5828bbc71559445ca6eb18da46971f12e46305cdd0a2ff255`, `Mailbox.delivered() == true`, `ProofReceived` event emitted (tx `0x043c1d02938dcda50d7d40ef51156dc7e2a5dca73974969923c48f1232ac6921`) |
+| Original flagged (`DecisionRelay`, outcome `RELEASE_FULL`) | Dispatch tx `0x2331a1fdaacf9d6c0d50cc5e34caf0554626a1b52d5b2f33cc1ca4d7999128c0`, message ID `0x61b6e9e3923a8b097d8580dfd29d8de5a85222634bf772895b499a37f815df71`, `Mailbox.delivered() == true`, `DecisionReceived` event (tx `0xdefa80f448f63ed7cdfefbf4a28c21df1ca48116b039db55ac2641415e69ca3a`), `DecisionRelay.processedDecisions(proofHash) == true` |
+
+Both validators' checkpoint backfill and the relayer's own processing
+caught up to and past nonce 872850 organically once the bucket policy
+fix was applied — no manual forcing, no shortcuts, real wall-clock
+catch-up time.
+
+**What this does and doesn't close out**:
+- The repaired delivery path is now proven end-to-end, for a genuinely
+  new message dispatched after the fix — this is the strongest form of
+  proof (not just "the old backlog eventually cleared," but "the fixed
+  system handles a fresh message correctly").
+- The old flagged message was itself a verification test case from
+  earlier in this pass (case ID `CASE-MULTISIG-ISM-VERIFY-1`), not a
+  real customer decision — so there is no real settlement backlog
+  needing reconciliation from this specific message. `settlementTarget`
+  for this origin was unset, so no settlement call was attempted
+  regardless.
+- `SETTLEMENT_PAUSED=true` remains in place on both `anc-hor-worker`
+  and Vercel production — left for the operator to lift when ready, not
+  lifted automatically by this pass.
+
+**Post-fix `verify-deployment.ts` run**: 12 pass, 1 warn, **6 fail** —
+worse-looking than before, for two understood, non-alarming reasons,
+plus one still-real, still-open issue:
+1. `agent-liveness` now fails for both validators (`metadata_latest.json`
+   is 2137s/3557s old) — this is the write-once-at-boot artifact
+   documented in an earlier addendum, not a real problem: both
+   validators have been running continuously, without restart, and are
+   demonstrably delivering real messages right now. This check's
+   design flaw (conflating "recently booted" with "currently healthy")
+   remains open as a follow-up, not fixed this pass.
+2. `checkpoint-currency` (now able to actually read the real object,
+   thanks to the same `ListBucket` fix) reports both validators'
+   sequential "latest index" pointer at `871512`, vs. mailbox nonce
+   `872882` — a reported lag of 1370, despite nonce `872850` being
+   *confirmed delivered*. Not a contradiction: `write_latest_index`
+   tracks sequential/contiguous completion, while parallel backfill
+   chunks write individual per-index checkpoints out of strict order —
+   a specific message's checkpoint can exist and validate before the
+   contiguous pointer catches up to it. The check's `fail` threshold
+   (`maxCheckpointLagLeaves: 100`) is measuring a real, honest signal,
+   just not one that maps 1:1 onto "can this specific message be
+   delivered" — worth a follow-up refinement (e.g. also checking
+   whether the SPECIFIC message's own checkpoint exists, not just the
+   sequential pointer) but not chased further this pass.
+3. `reachability:validatorN` (literal announced path, `403`) remains a
+   real, still-unfixed issue — the separate ValidatorAnnounce path
+   mismatch, deliberately not conflated with the bucket-policy fix,
+   still needs its own resolution (see the operator-action list above).
+
+None of the three represent a regression in real capability — the
+system just-proven to deliver real messages end-to-end simply isn't
+fully reflected by every check's current framing yet.
