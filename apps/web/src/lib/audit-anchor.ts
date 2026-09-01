@@ -14,16 +14,20 @@ import { prisma } from "@/lib/prisma";
 // rewriting history now also requires rewriting this contract's own
 // history, which a public chain doesn't allow.
 //
-// SCOPE NOTE (see AuditAnchor.sol's own comment too): this reuses
-// HYPERLANE_RELAY_PRIVATE_KEY for pragmatism (already funded, already
-// used for other infra), not a dedicated key — under Anchor's current
-// single-operator trust model that means this doesn't defend against a
-// fully malicious operator who controls both the database and this key.
-// What it DOES add: detection of accidental/bug-caused database
-// corruption, detection of a compromised database that doesn't also
-// compromise this specific key, and a genuinely independent, publicly-
-// checkable timestamped record any external auditor can verify without
-// trusting Anchor's own database at all.
+// SCOPE NOTE (see AuditAnchor.sol's own comment too): signs with
+// AUDIT_ANCHOR_PRIVATE_KEY, a key DEDICATED to this one purpose — not
+// HYPERLANE_RELAY_PRIVATE_KEY, which a re-audit correctly flagged as
+// reusing the dispatch key here would mean "the same compromise that
+// lets an attacker forge a settlement also lets them rewrite the
+// external audit checkpoint that's supposed to catch it." A distinct
+// key at least means those two compromises are independent events, even
+// though both still ultimately live on the same backend under Anchor's
+// current single-operator trust model — see
+// docs/multisig-attestor-setup.md for the same caveat applied to the
+// attestor keys, which applies here too until this key is also moved to
+// separate custody. Falls back to HYPERLANE_RELAY_PRIVATE_KEY only if
+// AUDIT_ANCHOR_PRIVATE_KEY isn't set, so existing deployments don't
+// silently stop anchoring on upgrade.
 
 const ANCHOR_ABI = [
   {
@@ -40,7 +44,7 @@ const ANCHOR_ABI = [
 
 function getAuditAnchorConfig() {
   const contractAddress = process.env.AUDIT_ANCHOR_CONTRACT_ADDRESS;
-  const privateKey = process.env.HYPERLANE_RELAY_PRIVATE_KEY;
+  const privateKey = process.env.AUDIT_ANCHOR_PRIVATE_KEY || process.env.HYPERLANE_RELAY_PRIVATE_KEY;
   const rpcUrl = process.env.HYPERLANE_RELAY_RPC_URL;
   if (!contractAddress || !privateKey) {
     return null; // anchoring is optional infra — a missing config skips the sweep rather than crashing it
@@ -50,6 +54,48 @@ function getAuditAnchorConfig() {
     privateKey: (privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex,
     rpcUrl,
   };
+}
+
+// How stale the most recent anchor across ALL organizations is allowed
+// to get before the sweep raises a loud, visible alarm instead of just
+// a log line — the sweep runs every 30 minutes (see worker.ts), so 3
+// hours means at least ~5 consecutive sweep failures, which rules out a
+// single transient RPC blip and points at something actually wrong
+// (out of gas, revoked key, misconfigured contract address, or the
+// worker process itself being down).
+const MISSED_ANCHOR_ALERT_THRESHOLD_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Raises a loud, hard-to-miss signal (not just a log line a re-audit
+ * correctly pointed out is easy to silently ignore) when the sweep has
+ * gone unusually long without successfully anchoring ANY organization —
+ * checked against the most recent lastAnchoredAt across all orgs, since
+ * a single org's timestamp could legitimately be old if that org simply
+ * has no new audit activity to anchor. Best-effort: failing to send the
+ * alert itself must never block or fail the sweep it's monitoring.
+ */
+async function checkForMissedAnchors(): Promise<void> {
+  const mostRecent = await prisma.organization.findFirst({
+    where: { lastAnchoredAt: { not: null } },
+    orderBy: { lastAnchoredAt: "desc" },
+    select: { lastAnchoredAt: true },
+  });
+  // No organization has ever anchored yet — nothing to compare a
+  // staleness threshold against; anchorAuditChains()'s own "config not
+  // set" log already covers the "never configured" case.
+  if (!mostRecent?.lastAnchoredAt) return;
+
+  const ageMs = Date.now() - mostRecent.lastAnchoredAt.getTime();
+  if (ageMs < MISSED_ANCHOR_ALERT_THRESHOLD_MS) return;
+
+  const ageHours = (ageMs / (60 * 60 * 1000)).toFixed(1);
+  // eslint-disable-next-line no-console
+  console.error(
+    `AUDIT-ANCHOR ALERT: no organization has been successfully anchored in ${ageHours}h ` +
+      `(threshold ${MISSED_ANCHOR_ALERT_THRESHOLD_MS / (60 * 60 * 1000)}h) — the external audit ` +
+      `checkpoint is stale. Check AUDIT_ANCHOR_PRIVATE_KEY's balance/validity, ` +
+      `AUDIT_ANCHOR_CONTRACT_ADDRESS, and HYPERLANE_RELAY_RPC_URL on anc-hor-worker.`
+  );
 }
 
 /** keccak256 of the organization id string — matches AuditAnchor.sol's own comment on why it never needs to know what an org actually is. */
@@ -66,6 +112,13 @@ function orgIdHash(organizationId: string): Hex {
  * organizations actually anchored this run.
  */
 export async function anchorAuditChains(): Promise<number> {
+  try {
+    await checkForMissedAnchors();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("audit-anchor: missed-anchor check itself failed:", err instanceof Error ? err.message : err);
+  }
+
   const config = getAuditAnchorConfig();
   if (!config) {
     // eslint-disable-next-line no-console

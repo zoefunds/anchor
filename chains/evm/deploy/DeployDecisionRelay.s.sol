@@ -17,24 +17,31 @@ import {TrustedRelayerIsm} from "../contracts/TrustedRelayerIsm.sol";
 //   forge script deploy/DeployDecisionRelay.s.sol --rpc-url sepolia --broadcast --private-key $PRIVATE_KEY
 // Requires ATTESTOR_ADDRESSES (comma-separated public addresses matching
 // apps/web's ATTESTOR_PRIVATE_KEYS — see DecisionRelay.sol's
-// `isAttestor`/`attestorThreshold` doc comment) and ATTESTOR_THRESHOLD
-// (how many of those must sign for handle() to accept a decision).
-// Deliberately not derived from any key this script itself holds — the
-// deployer and the attestors are different trust roles.
+// `isAttestor`/`attestorThreshold` doc comment), ATTESTOR_THRESHOLD (how
+// many of those must sign for handle() to accept a decision), and
+// GOVERNANCE_OWNER (the address that can add/remove attestors and
+// change the threshold — see DecisionRelay.sol's `owner` doc comment on
+// why this must be a real governance multisig/timelock for anything
+// holding real value, never the deployer key or an attestor/backend
+// key). Deliberately not derived from any key this script itself
+// holds — deployer, attestors, and governance owner are three different
+// trust roles.
 contract DeployDecisionRelay is Script {
     function run() external returns (address) {
         address mailbox = vm.envAddress("HYPERLANE_MAILBOX");
+        address governanceOwner = vm.envAddress("GOVERNANCE_OWNER");
         address[] memory attestorAddresses = vm.envAddress("ATTESTOR_ADDRESSES", ",");
         uint256 attestorThreshold = vm.envUint("ATTESTOR_THRESHOLD");
 
         vm.startBroadcast();
         TrustedRelayerIsm ism = new TrustedRelayerIsm();
-        DecisionRelay relay = new DecisionRelay(mailbox, address(ism), attestorAddresses, attestorThreshold);
+        DecisionRelay relay = new DecisionRelay(mailbox, governanceOwner, address(ism), attestorAddresses, attestorThreshold);
         vm.stopBroadcast();
 
         console.log("TrustedRelayerIsm deployed at:", address(ism));
         console.log("DecisionRelay deployed at:", address(relay));
         console.log("Mailbox used:", mailbox);
+        console.log("Governance owner:", governanceOwner);
         console.log("Attestor count:", attestorAddresses.length);
         console.log("Attestor threshold:", attestorThreshold);
         return address(relay);

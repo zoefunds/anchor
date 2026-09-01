@@ -87,7 +87,7 @@ contract DecisionRelayTest is Test {
         attestors[1] = attestorAddress2;
         attestors[2] = attestorAddress3;
 
-        relay = new DecisionRelay(address(mailbox), address(0), attestors, 2);
+        relay = new DecisionRelay(address(mailbox), address(this), address(0), attestors, 2);
         target = new RecordingSettlementTarget();
 
         relay.setTrustedSender(ORIGIN, TRUSTED_SENDER);
@@ -381,7 +381,7 @@ contract DecisionRelayTest is Test {
         attestors[0] = attestorAddress1;
         attestors[1] = attestorAddress2;
         vm.expectRevert("invalid threshold");
-        new DecisionRelay(address(mailbox), address(0), attestors, 3);
+        new DecisionRelay(address(mailbox), address(this), address(0), attestors, 3);
     }
 
     function test_constructor_rejects_zero_threshold() public {
@@ -389,7 +389,7 @@ contract DecisionRelayTest is Test {
         attestors[0] = attestorAddress1;
         attestors[1] = attestorAddress2;
         vm.expectRevert("invalid threshold");
-        new DecisionRelay(address(mailbox), address(0), attestors, 0);
+        new DecisionRelay(address(mailbox), address(this), address(0), attestors, 0);
     }
 
     function test_constructor_rejects_duplicate_attestors() public {
@@ -397,7 +397,72 @@ contract DecisionRelayTest is Test {
         attestors[0] = attestorAddress1;
         attestors[1] = attestorAddress1;
         vm.expectRevert("duplicate attestor");
-        new DecisionRelay(address(mailbox), address(0), attestors, 1);
+        new DecisionRelay(address(mailbox), address(this), address(0), attestors, 1);
+    }
+
+    function test_constructor_rejects_zero_address_owner() public {
+        address[] memory attestors = new address[](2);
+        attestors[0] = attestorAddress1;
+        attestors[1] = attestorAddress2;
+        vm.expectRevert("zero address owner");
+        new DecisionRelay(address(mailbox), address(0), address(0), attestors, 1);
+    }
+
+    /// Governance change events — an off-chain monitor watching for these
+    /// is the actual enforcement mechanism behind "owner should be a
+    /// real multisig, not a single key" (see DecisionRelay.sol's `owner`
+    /// doc comment): the contract itself can't stop a compromised owner
+    /// from lowering the threshold, but it can guarantee the change is
+    /// impossible to make silently.
+    function test_addAttestor_emits_event() public {
+        uint256 newAttestorKey = 0xC0FFEE;
+        address newAttestor = vm.addr(newAttestorKey);
+        vm.expectEmit(true, false, false, false);
+        emit DecisionRelay.AttestorAdded(newAttestor);
+        relay.addAttestor(newAttestor);
+    }
+
+    function test_removeAttestor_emits_event() public {
+        vm.expectEmit(true, false, false, false);
+        emit DecisionRelay.AttestorRemoved(attestorAddress3);
+        relay.removeAttestor(attestorAddress3);
+    }
+
+    function test_setAttestorThreshold_emits_event() public {
+        vm.expectEmit(false, false, false, true);
+        emit DecisionRelay.AttestorThresholdChanged(2, 3);
+        relay.setAttestorThreshold(3);
+    }
+
+    function test_setTrustedSender_emits_event() public {
+        bytes32 newSender = bytes32(uint256(0xf00d));
+        vm.expectEmit(true, false, false, true);
+        emit DecisionRelay.TrustedSenderChanged(ORIGIN, TRUSTED_SENDER, newSender);
+        relay.setTrustedSender(ORIGIN, newSender);
+    }
+
+    function test_setSettlementTarget_emits_event() public {
+        address newTarget = address(0xBEEF);
+        vm.expectEmit(true, false, false, true);
+        emit DecisionRelay.SettlementTargetChanged(ORIGIN, address(target), newTarget);
+        relay.setSettlementTarget(ORIGIN, newTarget);
+    }
+
+    /// The availability-hardening guard: an oversized signature array
+    /// (more entries than there are registered attestors) is rejected
+    /// outright rather than burning gas on the O(n^2) dedup loop — see
+    /// handle()'s own comment on why this cap exists.
+    function test_handle_rejects_oversized_signature_array() public {
+        uint256[] memory keys = new uint256[](4);
+        keys[0] = attestorKey1;
+        keys[1] = attestorKey2;
+        keys[2] = attestorKey1;
+        keys[3] = attestorKey2;
+        bytes memory body = _bodyWithKeys(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), bytes32(uint256(0xabc)), keys);
+
+        vm.prank(address(mailbox));
+        vm.expectRevert("too many signatures supplied");
+        relay.handle(ORIGIN, TRUSTED_SENDER, body);
     }
 
     /// The atomicity guarantee behind the idempotency claim: if the

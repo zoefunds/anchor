@@ -490,8 +490,52 @@ dispatch wallet's address (`setTrustedSender`) — this is a fresh
 contract, so it starts with no trusted sender or settlement target
 configured, same as every prior redeploy in this file's history.
 
-Anchor's backend currently holds 2 of the 3 keys itself
-(`ATTESTOR_PRIVATE_KEYS` on `anc-hor-worker`) purely so dispatch keeps
-working automatically before real external custody is set up — see
-`docs/multisig-attestor-setup.md` for why that's a stand-in, not the
-intended security posture, and the steps to actually split custody.
+## Real independent custody: 2-of-2 attestors + Safe governance (superseding the above)
+
+A re-audit correctly flagged that the backend holding 2-of-3 attestor
+keys itself was "one-operator M-of-N" — not real multisig protection —
+and that DecisionRelay's `owner` (able to add/remove attestors and
+lower the threshold) was an equivalent funds authority with no
+independent governance. Both are now fixed with real, externally-held
+keys, not more backend-held secrets:
+
+- **Redeployed again**: ISM `0x617978fb6176d7458312a40734FAAd2219f16a4B`,
+  DecisionRelay `0xC7e496870cdd4A694fffBFa466056aE427E71Dee`.
+- **Governance owner**: a real Gnosis Safe (canonical v1.4.1,
+  `SafeProxyFactory` on Sepolia) at
+  `0xc200534F7DEbF2816C085C5A156aBd686fA19f4C`, 2-of-2, owned by the
+  deployer wallet and a governance key generated and held offline by
+  Anchor's operator (not this backend). Every `setTrustedSender`,
+  `addAttestor`/`removeAttestor`, `setAttestorThreshold`, and
+  `setSettlementTarget` call now requires both signatures — real Safe
+  `execTransaction` calls with 2 independently-collected ECDSA
+  signatures, verified live (txs
+  `0x8c17c430457c0f21e3c40f80b19bc83e65a45a9d25caa9ae6db2bbc870755cd5`
+  and `0xbb06da04c364264f4fb0a6b38305d0feb6927550ba798fab48218141b71f2d35`).
+- **Attestors**: 2-of-2, `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70`
+  (backend-held, `ATTESTOR_PRIVATE_KEYS` on `anc-hor-worker`) and
+  `0x229d46B4C22B5AA42fE7cDAae37cf611e726f732` (generated and held
+  offline by Anchor's operator — the backend never sees this private
+  key). A third attestor generated during the interim rollout
+  (`0xB8De63e6D9fE94a38599251e2bE913bc02756F64`) was deliberately
+  `removeAttestor`'d once its key had been exposed in a conversation
+  transcript — a known key is not custody, regardless of who
+  "controls" it.
+- **Real 2-of-2 settlement verified live end-to-end**: the backend
+  alone cannot produce a valid dispatch anymore — confirmed by
+  `dispatchDecisionForCase` throwing `InsufficientAttestorSignaturesError`
+  with only 1 of 2 required signatures, then completing only once the
+  offline attestor's real signature (collected out-of-band, verified to
+  recover to `0x229d46B4...` via `viem`'s `recoverAddress` before use)
+  was added. Dispatch tx
+  `0x804ed5882a1ec114274e23fd7f5b64dadb3996be637056dfdf596da24693f580`,
+  `processedDecisions` flipped to `true` on the new contract.
+- **Ongoing co-signing**: real decisions that can't reach threshold from
+  backend-held keys alone now pause (see
+  `InsufficientAttestorSignaturesError` in `apps/web/src/lib/hyperlane.ts`)
+  and are exposed via `GET /api/internal/pending-attestations` and
+  completed via `POST /api/internal/pending-attestations/[decisionId]/sign`
+  (bearer-secret protected via `ATTESTOR_COSIGN_SECRET`) — see
+  `docs/multisig-attestor-setup.md`. The offline holder signs the given
+  hash with `cast wallet sign --private-key <key> --no-hash <hash>` and
+  submits only the resulting signature, never the key.

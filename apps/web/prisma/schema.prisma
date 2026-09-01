@@ -503,6 +503,20 @@ model Decision {
   // decisionHash.
   relayClaimedAt DateTime?
 
+  // M-of-N attestor co-signing (see lib/hyperlane.ts's
+  // InsufficientAttestorSignaturesError and docs/multisig-attestor-setup.md):
+  // set when the backend's own ATTESTOR_PRIVATE_KEYS alone can't reach
+  // attestorThreshold on DecisionRelay.sol, so dispatch is paused
+  // pending an external attestor's signature over this exact hash
+  // rather than failing outright. pendingAttestationHash is
+  // deterministic from the decision's own content (see
+  // computeDecisionAttestationHash) — recomputing it never changes once
+  // set. pendingAttestationSignatures accumulates externally-submitted
+  // signatures (via POST /api/internal/pending-attestations/[id]/sign)
+  // until dispatchSettlementForDecision has enough to actually dispatch.
+  pendingAttestationHash       String?
+  pendingAttestationSignatures String[] @default([])
+
   @@index([caseId])
 }
 

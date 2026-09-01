@@ -1,159 +1,135 @@
-# Setting up real M-of-N attestor key custody (free, self-hosted)
+# EVM attestor custody + governance — DONE, and how to keep operating it
 
-This is the part of "harden attestor key custody" that code alone can't
-finish. `DecisionRelay.sol` and `decision-relay` (Solana) now both
-*support* M-of-N — the contract requires `attestorThreshold`-many
-distinct signatures rather than trusting one key — but the security
-value of M-of-N depends entirely on the M keys being held by genuinely
-separate parties or machines. Right now Anchor's backend holds 2-of-3
-EVM keys and 100% of the (still single) Solana key itself, because that
-was the only way to keep dispatch working automatically without you
-first deciding who/what holds the rest. That's a placeholder, not the
-end state. Below is exactly what to do to fix it, for free, no paid KMS
-or HSM required.
+This used to be a plan for setting up real M-of-N attestor key custody.
+As of this pass, the EVM side is actually done and verified live, not
+just designed. This doc now records what's real, and how to operate it
+day-to-day. The Solana side is still a placeholder — see the bottom.
+
+## Current live state
+
+- **DecisionRelay**: `0xC7e496870cdd4A694fffBFa466056aE427E71Dee` (Sepolia)
+- **Attestors**: 2-of-2 —
+  - `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70`, backend-held (`ATTESTOR_PRIVATE_KEYS` on `anc-hor-worker`)
+  - `0x229d46B4C22B5AA42fE7cDAae37cf611e726f732`, held **offline**, generated on a machine never connected to Fly/Vercel — the backend never had this private key
+- **Governance owner**: Gnosis Safe `0xc200534F7DEbF2816C085C5A156aBd686fA19f4C`, 2-of-2, owned by the deployer wallet + a separate governance key also held offline (`0xEDc300fb7Bd8437C90aF68393381514722FE128c`) — distinct from the attestor key above, on purpose (see "Why governance is a separate key" below)
+
+Real 2-of-2 settlement was proven end-to-end: `dispatchDecisionForCase`
+genuinely throws `InsufficientAttestorSignaturesError` when only the
+backend's 1 key is available, and only completes once the offline
+attestor's real signature is added — verified via a live dispatch
+(`0x804ed5882a1ec114274e23fd7f5b64dadb3996be637056dfdf596da24693f580`)
+that settled only after both signatures were present.
 
 ## Why "the backend holds threshold-many keys" isn't real security
 
-If `attestorThreshold = 2` and the backend process holds 2 (or all 3)
-keys, compromising that one process is still enough to forge a
-settlement — you've re-created a single point of failure, just spread
-across more key files. Real M-of-N requires that no single
-compromise — one laptop, one cloud account, one person — can produce
-`attestorThreshold` signatures alone.
+If `attestorThreshold = 2` and the backend process holds both keys,
+compromising that one process is enough to forge a settlement — a
+single point of failure, just spread across more key files. That's
+exactly the gap this closes: the backend now holds strictly fewer than
+`attestorThreshold` keys (1 of 2), so it structurally cannot dispatch
+alone anymore.
 
-## EVM side (DecisionRelay.sol)
+## Why governance is a separate key from the attestor key
 
-Currently deployed: 3 attestors, threshold 2, at
-`0x41aE73812c35F8b45a0c883E0675dBAC5c2d2974` on Sepolia.
+`DecisionRelay.sol`'s `owner` can `addAttestor`/`removeAttestor` and
+`setAttestorThreshold` — i.e., rewrite the very policy the attestors
+enforce. An owner that's the same key as an attestor (or the backend)
+could lower the threshold to 1 and settle unilaterally, defeating the
+M-of-N guarantee entirely without ever forging a signature. That's why
+`owner` is now a separate 2-of-2 Safe, not a wallet, and why the
+governance key is distinct from the attestor key even though the same
+person holds both offline — a compromise of one doesn't hand over the
+other's authority.
 
-- `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70` — held by the backend
-  (`ATTESTOR_PRIVATE_KEYS` on Fly, first key)
-- `0xe958c21846907768572C2087830f06754BC5D549` — held by the backend
-  (`ATTESTOR_PRIVATE_KEYS` on Fly, second key)
-- `0xB8De63e6D9fE94a38599251e2bE913bc02756F64` — generated but never
-  given to the backend; you should treat this one as the seed of your
-  real key-custody plan below
+## Day-to-day: co-signing a real decision
 
-### Step 1 — decide who/what holds each key
+When a real decision can't settle because the backend's key alone
+doesn't reach threshold, `Decision.pendingAttestationHash` gets set and
+`relayError` shows `"awaiting external attestor signature(s): 1/2
+collected"`.
 
-Pick 3 (or more — you can `addAttestor` later) genuinely independent
-holders. Realistic free options, in order of security vs. convenience:
-
-1. **You personally, offline.** Generate a key with `cast wallet new`
-   on a machine that's never connected to the same cloud account as
-   the backend (even a spare laptop is fine), write the private key on
-   paper or a metal backup, and never put it in any file, password
-   manager synced to the same account, or chat log. This is free and
-   is what most small teams should actually do for at least one key.
-2. **A second person on your team, same process as above.** Now no
-   single person can sign alone, and no single laptop/cloud account
-   compromise reaches the threshold.
-3. **A second, isolated cloud environment you don't otherwise use** —
-   e.g. a free-tier VM at a different provider than Fly (Oracle Cloud's
-   free tier, a Raspberry Pi at home, etc.) running a small signing
-   service you deploy (see Step 3) — still needs a *human* to
-   authorize each signature request, otherwise it's just another
-   automated single point of failure.
-
-Do NOT reuse GitHub Actions secrets, the same Vercel/Fly account, or
-any store the backend's own credentials already live in for a second
-"independent" key — that's not independent.
-
-### Step 2 — regenerate and redistribute
-
-The 3 keys deployed above were generated by this session and are
-already known to this conversation history, which is not real custody
-separation for anything that will hold genuine value. Once you've
-decided on real holders:
-
-```bash
-# for each new holder, on THEIR machine, offline if possible:
-cast wallet new
-```
-
-Then rotate the contract to the new addresses:
-
-```bash
-cd chains/evm
-cast send 0x41aE73812c35F8b45a0c883E0675dBAC5c2d2974 \
-  "addAttestor(address)" <new_holder_address> \
-  --rpc-url $SEPOLIA_RPC_URL --private-key $DEPLOYER_KEY
-
-cast send 0x41aE73812c35F8b45a0c883E0675dBAC5c2d2974 \
-  "removeAttestor(address)" <old_backend_held_address> \
-  --rpc-url $SEPOLIA_RPC_URL --private-key $DEPLOYER_KEY
-```
-
-`removeAttestor` refuses to drop the count below `attestorThreshold`,
-so add new holders before removing old ones. Only the contract
-`owner` (the deployer wallet) can call these — keep that key safe too,
-since it can add/remove attestors and change the threshold, though it
-cannot itself forge a settlement without also compromising
-`attestorThreshold` attestor keys.
-
-### Step 3 — collecting the missing signature(s) at dispatch time
-
-Once the backend holds fewer than `attestorThreshold` keys, a real
-decision dispatch needs a signature from someone else before it can go
-on-chain. `apps/web/src/lib/hyperlane.ts`'s `dispatchDecisionForCase`
-currently signs with every key in `ATTESTOR_PRIVATE_KEYS` and submits
-immediately — once you've moved a key out, that function will need to:
-
-1. Compute `attestationHash` and the backend's own signature(s) (as it
-   does now).
-2. Send the hash (not the private key, obviously) to whatever
-   external signer holds the remaining key — the simplest free option
-   is a tiny CLI/script the human holder runs themselves:
+1. **Find pending decisions:**
    ```bash
-   cast wallet sign --private-key $MY_ATTESTOR_KEY --no-hash <attestationHash>
+   curl -H "Authorization: Bearer $ATTESTOR_COSIGN_SECRET" \
+     https://anc-hor.vercel.app/api/internal/pending-attestations
    ```
-   and pastes the resulting signature back (Slack DM, a shared
-   password-manager note, whatever out-of-band channel you trust — the
-   signature itself is not sensitive, it can only be used for this one
-   decision's exact content).
-3. Append that signature into `attestationSignatures` and dispatch.
+2. **Sign the hash offline**, using the attestor private key (never
+   paste this key anywhere online):
+   ```bash
+   cast wallet sign --private-key <attestor_key> --no-hash <attestationHash>
+   ```
+3. **Submit only the signature:**
+   ```bash
+   curl -X POST -H "Authorization: Bearer $ATTESTOR_COSIGN_SECRET" \
+     -H "Content-Type: application/json" \
+     -d '{"signature":"0x..."}' \
+     https://anc-hor.vercel.app/api/internal/pending-attestations/<decisionId>/sign
+   ```
+   The route verifies the signature actually recovers to a registered
+   attestor address before accepting it (`isRegisteredAttestor` on-chain
+   read) — a bad or unregistered signature is rejected outright, not
+   silently stored.
+4. Settlement completes within ~10 minutes via `anc-hor-worker`'s
+   `retryFailedSettlements` sweep (that process is the only one holding
+   `HYPERLANE_RELAY_PRIVATE_KEY`/`ATTESTOR_PRIVATE_KEYS`; the Vercel-side
+   API route deliberately doesn't attempt dispatch itself).
 
-This turns dispatch from "fully automatic" into "automatic once a
-human has approved it" — which is the actual point: nobody with access
-to only the backend can move funds alone anymore. A small internal
-approval queue (a Slack message with the hash + a form to paste the
-signature back) is enough; there's no need for anything fancier or any
-paid service.
+`ATTESTOR_COSIGN_SECRET` gates *who can attempt to submit* a signature,
+not whether it's valid — treat it like any other backend secret
+(rotatable, not attestor-key-equivalent), since a submitted signature
+that doesn't recover to a registered attestor is rejected regardless of
+who submitted it.
 
-## Solana side (decision-relay)
+## Day-to-day: a governance change (adding/removing an attestor, changing threshold)
 
-Currently: a single `ATTESTOR_PUBKEY` hardcoded in
-`chains/solana/programs/decision-relay/src/lib.rs`, backed by
-`SOLANA_ATTESTOR_PRIVATE_KEY` on the backend — no M-of-N yet, unlike
-the EVM side. Implementing this is more work than the EVM side because
-Solana's Ed25519 native-program verification (see
-`verify_decision_attestation`) checks exactly ONE signature per
-instruction by construction. Real M-of-N here means the on-chain
-program must require multiple separate Ed25519-verify instructions
-(one per required signer) all preceding the `AttestedSettle`
-instruction in the same transaction, each checked against a different
-member of an `attestor_pubkeys: Vec<Pubkey>` + `attestor_threshold: u8`
-pair (mirroring the EVM contract's `isAttestor`/`attestorThreshold`),
-with the same "distinct signer" dedup logic. This is a real, scoped
-follow-up — flag it if you want it built next; it was intentionally
-left out of this pass so the guide above (which needs your real-world
-decisions) wasn't blocked on it.
+Any `addAttestor`/`removeAttestor`/`setAttestorThreshold`/
+`setTrustedSender`/`setSettlementTarget` call now needs 2 Safe
+signatures, not 1 EOA transaction:
 
-Until then, treat `SOLANA_ATTESTOR_PRIVATE_KEY` with the same offline,
-never-shared handling as an EVM attestor key even though it's
-currently a single key — losing it or having it compromised is a full
-Solana-side forgery risk today, same as before this session's Solana
-program/cluster-binding work, which only closed the cross-instruction
-redirection and cross-deployment replay gaps, not the single-key gap.
+1. Compute the call's inner calldata (e.g.
+   `cast calldata "addAttestor(address)" <addr>`).
+2. Read the Safe's current `nonce()` and call `getTransactionHash(...)`
+   on the Safe (`0xc200534F7DEbF2816C085C5A156aBd686fA19f4C`) with that
+   calldata, `operation=0`, all gas/refund params zeroed, to get the
+   hash to sign.
+3. Both owners run `cast wallet sign --private-key <key> --no-hash
+   <hash>` independently.
+4. Concatenate the two signatures **sorted by signer address
+   ascending** and call `execTransaction(...)` on the Safe with them —
+   see this session's transcript for the exact `cast send` invocation
+   used for the two governance changes made during setup, as a working
+   template.
 
-## What NOT to do
+Every one of these emits a distinct event now (`AttestorAdded`,
+`AttestorRemoved`, `AttestorThresholdChanged`, `TrustedSenderChanged`,
+`SettlementTargetChanged` — see `DecisionRelay.sol`) — worth watching
+via a block explorer alert or a small script if this becomes routine,
+since a re-audit specifically flagged that a compromised owner
+rewriting the policy should be loud, not silent.
 
-- Don't put any attestor private key in this repo, in Fly secrets you
-  don't strictly need automated, or in any chat/document a compromised
-  laptop could read.
-- Don't set `attestorThreshold` to `attestorCount` (an N-of-N) unless
-  you're comfortable that losing ANY one holder's key permanently
-  blocks all settlement — 2-of-3 or 3-of-5 style thresholds give you
-  both security and a safety margin for one lost/rotated key.
-- Don't skip Step 3 by just handing the backend all the keys again —
-  that silently undoes everything above.
+## Never do
+
+- Never let the backend hold `attestorThreshold`-or-more attestor keys
+  at once — that silently undoes all of the above.
+- Never let a Safe owner key double as an attestor key, or vice versa.
+- Never treat a key whose private material has appeared anywhere
+  online (a chat log, a committed file, a screen-shared terminal) as
+  real custody again — remove it as an attestor/owner and generate a
+  fresh one, the way the interim "spare" attestor key was removed once
+  its key had appeared in this conversation's transcript.
+
+## Solana side (decision-relay) — still not M-of-N
+
+Unlike the EVM side, Solana's `decision-relay` program still uses a
+single hardcoded `ATTESTOR_PUBKEY`, backed by a single
+`SOLANA_ATTESTOR_PRIVATE_KEY` held entirely by the backend. Real M-of-N
+there needs the on-chain program to require multiple separate
+Ed25519-verify instructions (one per signer) preceding
+`AttestedSettle`, checked against an `attestor_pubkeys: Vec<Pubkey>` +
+`attestor_threshold: u8` pair mirroring the EVM contract — genuinely
+more Rust/on-chain work than the EVM side, not just a config change.
+Flagged as a real, scoped follow-up rather than attempted in this pass.
+Until then, `SOLANA_ATTESTOR_PRIVATE_KEY` should get the same
+never-shared, offline-generated handling described above even though
+it's a single key today — losing or leaking it is a full Solana-side
+forgery risk.

@@ -4,7 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/lib/genlayer";
 import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
-import { dispatchDecisionForCase, DecisionAlreadySettledError } from "@/lib/hyperlane";
+import { dispatchDecisionForCase, DecisionAlreadySettledError, InsufficientAttestorSignaturesError } from "@/lib/hyperlane";
+import type { Hex } from "viem";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 import { resolveEvidenceUri } from "@/lib/storage";
 
@@ -97,7 +98,7 @@ export function requiredEvidenceTypesFor(policyId: string): string[] {
  * so settling against it would let an appeal contest a verdict after
  * funds were already released against the earlier one.
  */
-async function dispatchSettlementForDecision(kase: Case, decision: Decision): Promise<void> {
+export async function dispatchSettlementForDecision(kase: Case, decision: Decision): Promise<void> {
   if (!kase.settlementChain || !kase.settlementContract) return;
   if (decision.consensus !== "ACCEPTED") return;
   if (decision.relayTxHash) return; // already settled — retryFailedSettlements can call this again, must not double-dispatch
@@ -150,10 +151,18 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
       settlementSolanaCaseId: kase.settlementSolanaCaseId,
       evidenceHash: decision.proofHash,
       decisionHash: decision.decisionHash,
+      externalAttestationSignatures: decision.pendingAttestationSignatures as Hex[],
     });
     await prisma.decision.update({
       where: { id: decision.id },
-      data: { relayTxHash: txHash, relayMessageId: messageId, relayError: null, relayAttempts: { increment: 1 } },
+      data: {
+        relayTxHash: txHash,
+        relayMessageId: messageId,
+        relayError: null,
+        relayAttempts: { increment: 1 },
+        pendingAttestationHash: null,
+        pendingAttestationSignatures: [],
+      },
     });
     dispatchWebhookEvent({
       organizationId: kase.organizationId,
@@ -179,6 +188,30 @@ async function dispatchSettlementForDecision(kase: Case, decision: Decision): Pr
       await prisma.decision.update({
         where: { id: decision.id },
         data: { relayTxHash: "reconciled:onchain", relayError: null, relayAttempts: { increment: 1 } },
+      });
+      return;
+    }
+    if (relayErr instanceof InsufficientAttestorSignaturesError) {
+      // Not a real failure — expected once real attestor-key custody is
+      // split across independent holders (see
+      // docs/multisig-attestor-setup.md): the backend's own keys alone
+      // don't reach attestorThreshold, so this decision waits for a
+      // signature submitted via POST
+      // /api/internal/pending-attestations/[decisionId]/sign. Deliberately
+      // does NOT increment relayAttempts — a human collecting a
+      // signature can take much longer than MAX_RELAY_ATTEMPTS' ~100
+      // minute budget for genuine transient failures, and this isn't one.
+      // eslint-disable-next-line no-console
+      console.log(
+        `decision ${decision.id} for case ${kase.id} awaiting external attestor signature(s): ` +
+          `${relayErr.collectedCount}/${relayErr.threshold} collected (hash ${relayErr.attestationHash})`
+      );
+      await prisma.decision.update({
+        where: { id: decision.id },
+        data: {
+          pendingAttestationHash: relayErr.attestationHash,
+          relayError: `awaiting external attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
+        },
       });
       return;
     }

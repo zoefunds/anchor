@@ -20,6 +20,47 @@ const PROCESSED_DECISIONS_ABI = [
   },
 ] as const;
 
+const ATTESTOR_THRESHOLD_ABI = [
+  {
+    type: "function",
+    name: "attestorThreshold",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "isAttestor",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+export function getEvmPublicClient() {
+  return createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
+}
+
+/** Reads DecisionRelay.sol's own attestorThreshold() — the source of truth for "how many signatures are actually needed," so this never drifts out of sync with whatever the deployed contract currently requires (e.g. after a setAttestorThreshold governance change). */
+export async function getAttestorThreshold(relayAddress: Address): Promise<number> {
+  const count = await getEvmPublicClient().readContract({
+    address: relayAddress,
+    abi: ATTESTOR_THRESHOLD_ABI,
+    functionName: "attestorThreshold",
+  });
+  return Number(count);
+}
+
+/** Reads DecisionRelay.sol's own isAttestor(address) — used to reject a submitted co-signature from an address that isn't (or is no longer) a registered attestor, before it's ever stored. */
+export async function isRegisteredAttestor(relayAddress: Address, signer: Address): Promise<boolean> {
+  return getEvmPublicClient().readContract({
+    address: relayAddress,
+    abi: ATTESTOR_THRESHOLD_ABI,
+    functionName: "isAttestor",
+    args: [signer],
+  });
+}
+
 // GenLayer isn't a Hyperlane domain (checked - not supported by Hyperlane
 // or LayerZero), so Anchor's backend dispatches the DecisionRelay message
 // itself from an EVM chain it controls, on the decided case's behalf. The
@@ -85,6 +126,8 @@ export interface DispatchDecisionParams {
   settlementSolanaRespondent?: string | null;
   settlementSolanaEscrowProgram?: string | null;
   settlementSolanaCaseId?: string | null;
+  /** Signatures already collected from EXTERNAL attestors (not held by this backend) for this exact decision's attestation hash — see Decision.pendingAttestationSignatures. Combined with whatever the backend signs itself; if the combined total still doesn't reach attestorThreshold, dispatchDecisionForCase throws InsufficientAttestorSignaturesError instead of a hard failure. */
+  externalAttestationSignatures?: Hex[];
 }
 
 /** Formats a sha256 hex digest (evidenceHash or decisionHash, no 0x prefix) as a bytes32 for DecisionRelay.sol. */
@@ -103,6 +146,30 @@ export class DecisionAlreadySettledError extends Error {
   constructor(decisionHash: string) {
     super(`decision ${decisionHash} is already marked processed on the destination contract`);
     this.name = "DecisionAlreadySettledError";
+  }
+}
+
+/**
+ * Thrown when the backend's own ATTESTOR_PRIVATE_KEYS, combined with
+ * whatever externalAttestationSignatures the caller already supplied,
+ * still don't reach the deployed contract's attestorThreshold — expected
+ * and NOT a bug once real key custody is split (see
+ * docs/multisig-attestor-setup.md): it means dispatch is genuinely
+ * waiting on an independent attestor's signature, not that anything is
+ * broken. Callers should persist attestationHash (see
+ * adjudication-service.ts's dispatchSettlementForDecision) so a
+ * signature submitted later via POST
+ * /api/internal/pending-attestations/[decisionId]/sign can complete the
+ * same dispatch without recomputing anything.
+ */
+export class InsufficientAttestorSignaturesError extends Error {
+  constructor(
+    public readonly attestationHash: Hex,
+    public readonly collectedCount: number,
+    public readonly threshold: number
+  ) {
+    super(`only ${collectedCount} of ${threshold} required attestor signatures available for hash ${attestationHash}`);
+    this.name = "InsufficientAttestorSignaturesError";
   }
 }
 
@@ -162,9 +229,15 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       escrowId,
       proofHash: decisionHashBytes32,
     });
-    const attestationSignatures = await Promise.all(
+    const backendSignatures = await Promise.all(
       getAttestorAccounts().map((account) => account.sign({ hash: attestationHash }))
     );
+    const attestationSignatures = [...backendSignatures, ...(params.externalAttestationSignatures ?? [])];
+
+    const threshold = await getAttestorThreshold(params.settlementContract as Address);
+    if (attestationSignatures.length < threshold) {
+      throw new InsufficientAttestorSignaturesError(attestationHash, attestationSignatures.length, threshold);
+    }
 
     const payload: DecisionRelayPayload = {
       caseId: params.caseId,
