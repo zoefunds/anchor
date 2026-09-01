@@ -1,6 +1,5 @@
 {
   "sepolia": {
-    "rpcUrl": "https://ethereum-sepolia.publicnode.com",
     "mailbox": "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
     "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9",
     "decisionRelay": "0x94f3FF552CC879a36B19b829af3325Ea72cbC71C",

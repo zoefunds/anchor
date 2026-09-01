@@ -34,7 +34,30 @@ hexify() {
 # that rejects Sepolia on its free plan, confirmed live) and CLI flags
 # like --chains.sepolia.customRpcUrls do NOT override that; only
 # CONFIG_FILES actually replaces it.
-export CONFIG_FILES=/config/config.json
+# Same fail-closed RPC policy as chains/hyperlane-validator/scripts/resolve-rpc-url.ts
+# and chains/hyperlane-relayer/entrypoint.sh — a dedicated endpoint is
+# required in production; the shared public endpoint caused real
+# rate-limiting that degraded checkpoint indexing (see
+# docs/production-readiness-hardening-pass.md), so this no longer
+# defaults to it silently. Only ALLOW_PUBLIC_RPC_FALLBACK=true (local
+# development) permits the fallback. Never echo the resolved URL itself
+# — only its host, so an API key embedded in the URL's path/query never
+# reaches logs.
+if [ -n "$HYPERLANE_SEPOLIA_RPC_URL" ]; then
+  RESOLVED_RPC_URL="$HYPERLANE_SEPOLIA_RPC_URL"
+  RESOLVED_RPC_HOST=$(printf '%s' "$HYPERLANE_SEPOLIA_RPC_URL" | sed -E 's#^[a-zA-Z]+://##; s#/.*##')
+  echo "[rpc] using dedicated endpoint: $RESOLVED_RPC_HOST"
+elif [ "$ALLOW_PUBLIC_RPC_FALLBACK" = "true" ]; then
+  RESOLVED_RPC_URL="https://ethereum-sepolia.publicnode.com"
+  echo "[rpc] using PUBLIC FALLBACK (local-dev only) endpoint: ethereum-sepolia.publicnode.com"
+else
+  echo "FATAL: HYPERLANE_SEPOLIA_RPC_URL is not set. A dedicated RPC endpoint is required in" >&2
+  echo "production. To use the public endpoint anyway (local development ONLY), set" >&2
+  echo "ALLOW_PUBLIC_RPC_FALLBACK=true." >&2
+  exit 1
+fi
+sed "s#__SEPOLIA_RPC_URL__#${RESOLVED_RPC_URL}#g" /config/config.json > /tmp/config.json
+export CONFIG_FILES=/tmp/config.json
 
 exec ./validator \
   --db /data \

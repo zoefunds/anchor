@@ -25,13 +25,13 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createPublicClient, http, keccak256, type Address, type Hex } from "viem";
 import { sepolia } from "viem/chains";
+import { resolveSepoliaRpcUrl, hostOf, MissingRpcUrlError } from "./resolve-rpc-url.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const asJson = process.argv.includes("--json");
 
 interface Deployment {
   sepolia: {
-    rpcUrl: string;
     mailbox: Address;
     validatorAnnounce: Address;
     decisionRelay: Address;
@@ -55,7 +55,28 @@ function record(name: string, status: CheckResult["status"], detail: string) {
   results.push({ name, status, detail });
 }
 
-const client = createPublicClient({ chain: sepolia, transport: http(deployment.sepolia.rpcUrl) });
+// Fail closed: HYPERLANE_SEPOLIA_RPC_URL is required; the shared public
+// endpoint is only used when ALLOW_PUBLIC_RPC_FALLBACK=true is also set
+// explicitly (local development). See resolve-rpc-url.ts for the full
+// policy — this project previously had real production impact from the
+// shared public endpoint's rate limits (see
+// docs/production-readiness-hardening-pass.md), so this script no
+// longer defaults to it silently.
+let resolvedRpc: ReturnType<typeof resolveSepoliaRpcUrl>;
+try {
+  resolvedRpc = resolveSepoliaRpcUrl();
+} catch (err) {
+  if (err instanceof MissingRpcUrlError) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  throw err;
+}
+// Only the host is ever logged — never the full URL (a dedicated
+// endpoint's query string can carry an API key).
+console.error(`[rpc] using ${resolvedRpc.isPublicFallback ? "PUBLIC FALLBACK (local-dev only)" : "dedicated"} endpoint: ${hostOf(resolvedRpc.url)}`);
+
+const client = createPublicClient({ chain: sepolia, transport: http(resolvedRpc.url) });
 
 const VALIDATOR_ANNOUNCE_ABI = [
   {

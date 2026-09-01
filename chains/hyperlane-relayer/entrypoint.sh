@@ -63,16 +63,35 @@ WHITELIST='[
 #
 # config.json is baked into the image and can't hold a real API key
 # (that would commit a live credential to git). It has a
-# __ALCHEMY_SEPOLIA_RPC_URL__ placeholder instead, substituted here at
-# container start from the ALCHEMY_SEPOLIA_RPC_URL Fly secret — never
-# baked into the image, never written to disk except this generated
-# runtime copy. If the secret isn't set, the substitution falls back
-# to an unreachable placeholder host — the fallback provider list (the
-# other free providers) will just keep failing to connect to it,
-# which is harmless: one more failed fallback attempt per rotation,
-# same as any other down provider.
-sed "s#__ALCHEMY_SEPOLIA_RPC_URL__#${ALCHEMY_SEPOLIA_RPC_URL:-https://invalid.example.invalid}#g" \
-  /config/config.json > /tmp/config.json
+# __SEPOLIA_RPC_URL__ placeholder instead, substituted here at
+# container start — never baked into the image, never written to disk
+# except this generated runtime copy.
+#
+# Fail-closed policy (same as chains/hyperlane-validator/entrypoint.sh
+# and chains/hyperlane-validator/scripts/resolve-rpc-url.ts): a
+# dedicated endpoint (HYPERLANE_SEPOLIA_RPC_URL) is required in
+# production. An earlier version of this substitution fell back to an
+# unreachable placeholder host when unset, which "worked" only by
+# accident (the fallback provider list in config.json just kept
+# skipping the dead entry) — that's a silent misconfiguration, not a
+# real fallback. The shared public endpoint is now only used with an
+# explicit ALLOW_PUBLIC_RPC_FALLBACK=true opt-in (local development).
+# Only the host is ever logged — never the full URL (a dedicated
+# endpoint's path/query can carry an API key).
+if [ -n "$HYPERLANE_SEPOLIA_RPC_URL" ]; then
+  RESOLVED_RPC_URL="$HYPERLANE_SEPOLIA_RPC_URL"
+  RESOLVED_RPC_HOST=$(printf '%s' "$HYPERLANE_SEPOLIA_RPC_URL" | sed -E 's#^[a-zA-Z]+://##; s#/.*##')
+  echo "[rpc] using dedicated endpoint: $RESOLVED_RPC_HOST"
+elif [ "$ALLOW_PUBLIC_RPC_FALLBACK" = "true" ]; then
+  RESOLVED_RPC_URL="https://ethereum-sepolia.publicnode.com"
+  echo "[rpc] using PUBLIC FALLBACK (local-dev only) endpoint: ethereum-sepolia.publicnode.com"
+else
+  echo "FATAL: HYPERLANE_SEPOLIA_RPC_URL is not set. A dedicated RPC endpoint is required in" >&2
+  echo "production. To use the public endpoint anyway (local development ONLY), set" >&2
+  echo "ALLOW_PUBLIC_RPC_FALLBACK=true." >&2
+  exit 1
+fi
+sed "s#__SEPOLIA_RPC_URL__#${RESOLVED_RPC_URL}#g" /config/config.json > /tmp/config.json
 export CONFIG_FILES=/tmp/config.json
 
 exec ./relayer \

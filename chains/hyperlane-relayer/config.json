@@ -18,7 +18,7 @@
       "nativeToken": { "decimals": 18, "name": "Ether", "symbol": "ETH" },
       "protocol": "ethereum",
       "rpcUrls": [
-        { "http": "__ALCHEMY_SEPOLIA_RPC_URL__" },
+        { "http": "__SEPOLIA_RPC_URL__" },
         { "http": "https://ethereum-sepolia.publicnode.com" },
         { "http": "https://sepolia.gateway.tenderly.co" },
         { "http": "https://sepolia.rpc.thirdweb.com" }

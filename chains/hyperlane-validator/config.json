@@ -4,7 +4,7 @@
       "domainId": 11155111,
       "name": "sepolia",
       "protocol": "ethereum",
-      "rpcUrls": [{ "http": "https://ethereum-sepolia.publicnode.com" }]
+      "rpcUrls": [{ "http": "__SEPOLIA_RPC_URL__" }]
     }
   }
 }
