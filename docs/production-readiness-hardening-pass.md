@@ -501,3 +501,79 @@ both are back to `started` state as of this addendum. No credential
 values are recorded anywhere in this repository, its history, or this
 document — only the fact that rotation happened and which digests
 changed.
+
+## Third addendum (same day): identity fully proven good — this is an AWS Support case
+
+A follow-up round did the decisive test: run the exact same effective
+identity the validator uses against the exact same bucket, locally,
+with the AWS CLI, and compare.
+
+**Read-only diagnostic script**: `chains/hyperlane-validator/scripts/diagnose-s3-auth.sh`
+(added this round) — runs `sts:GetCallerIdentity`, `GetBucketLocation`/
+`HeadBucket`, `ListBucket` scoped to `validator1/`, and a full
+`PutObject`→`HeadObject`→`GetObject`→`DeleteObject` round trip on a
+disposable key, using the same credential installed on the Fly apps.
+Designed to run locally (never through Claude) so no secret value
+passes through any tool call — only ARNs, region strings, status codes,
+and AWS request IDs are printed.
+
+**Results, run by the operator**:
+- `sts:GetCallerIdentity` → `arn:aws:iam::691687039029:user/anchor-hyperlane-validators`
+  — a real, valid identity.
+- `GetBucketLocation`/`HeadBucket` → `eu-north-1`, matching the
+  configured `S3_REGION` exactly.
+- `ListBucket` on `validator1/` → only `announcement.json` and
+  `metadata_latest.json` exist; no checkpoint file has ever been
+  written.
+- **Full `PutObject`→`HeadObject`→`GetObject`→`DeleteObject` round trip
+  on a disposable object succeeded completely, with this exact
+  identity, in this exact bucket/prefix.**
+- `HeadObject` on the two most likely checkpoint-pointer filenames
+  (`checkpoint_latest_index.json`, `reorg_flag.json` — both confirmed
+  real Hyperlane S3 key names from source) both returned a **clean
+  `404 Not Found`, not `403 AccessDenied`.**
+- The access key ID actually loaded inside the running validator
+  container (`AKIA2CC6CUA2RANYY7I6` — an access key ID, not secret;
+  AWS treats these as non-sensitive identifiers, unlike the paired
+  secret) was confirmed by the operator to be the exact same one used
+  for the successful local test above.
+
+**This proves the AWS side is entirely correct**: right identity, right
+region, right bucket, full working read/write/delete access, and even
+the specific files the validator is trying to reach return an honest
+404 (never written) rather than any kind of denial. The
+`AccessDenied` the validator's own process logs — confirmed still
+occurring after this exact identity was proven good — is not AWS
+legitimately rejecting a well-formed request from this identity.
+
+**Ruled out via a debug-logging attempt**: set
+`RUST_LOG=info,aws_config=debug,aws_credential_types=debug,...` on
+validator1 to see which credential provider the Rust AWS SDK actually
+resolves at runtime. Produced zero additional trace output — this is a
+release build that does not compile in debug/trace-level tracing for
+those crates, so this specific approach is a dead end without a custom
+debug build. Reverted afterward (`flyctl secrets unset RUST_LOG`).
+
+**One further real lead, not yet run to ground**: the specific
+component logging `AccessDenied` is `BackfillCheckpointSubmitter`, not
+just the tip/latest checker — meaning it's working through a range of
+historical checkpoint indices, not only the two filenames tested above.
+It's possible (not confirmed) it targets additional key patterns, uses
+conditional-write headers (`If-None-Match`), or otherwise diverges from
+the specific calls tested. This wasn't chased further because doing so
+needs either a custom-instrumented build or a packet-level capture,
+both out of scope for this pass.
+
+**Also ruled out this round**: bucket Versioning (`Disabled`), MFA
+delete (`Disabled`), Object Lock (`Disabled`) — none of the remaining
+plausible bucket-configuration explanations hold up either.
+
+**Conclusion: this now needs AWS Support.** Every angle available from
+read-only console/CLI access has been exhausted and has come back
+clean. The evidence trail above — real ARN, real request IDs (visible
+in the validator's own error logs, e.g. `aws_request_id: "X8PRDTHA8AA6XW1P"`),
+exact failing operation (`GetObject`/`HeadObject` inside
+`BackfillCheckpointSubmitter`, `hyperlane-base/src/types/s3_storage.rs:126`),
+and a proven-clean identity — is exactly what an AWS Support case needs
+to get a definitive, server-side answer. No credential values appear
+anywhere in this document, this repository, or its history.
