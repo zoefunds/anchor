@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AnchorMark } from "@/components/AnchorMark";
 
 export default function Home() {
   return (
@@ -9,6 +10,8 @@ export default function Home() {
       />
 
       <div className="relative mx-auto flex min-h-screen max-w-3xl flex-col justify-center px-8 py-24">
+        <AnchorMark className="mb-8 h-8 w-8 text-seal-500 dark:text-seal-400" />
+
         <p className="kicker mb-6 text-seal-500 dark:text-seal-400">
           Adjudication infrastructure
         </p>

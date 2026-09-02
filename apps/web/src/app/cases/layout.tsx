@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getSessionMember } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { LogoutButton } from "@/components/LogoutButton";
+import { AnchorMark } from "@/components/AnchorMark";
 
 // Server-side guard: every route under /cases requires a dashboard
 // session. Checked here (a Server Component) rather than client-side so
@@ -22,8 +23,12 @@ export default async function CasesLayout({ children }: { children: React.ReactN
     <div>
       <nav className="border-b border-line dark:border-line-dark">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-8 py-4">
-          <Link href="/cases" className="font-display text-base font-semibold text-ink-950 dark:text-ink">
-            Anchor
+          <Link
+            href="/cases"
+            className="flex items-center gap-2 text-ink-950 dark:text-ink"
+          >
+            <AnchorMark className="h-5 w-5" />
+            <span className="font-display text-base font-semibold">Anchor</span>
           </Link>
           <div className="flex items-center gap-6 font-mono text-xs text-muted dark:text-muted-dark">
             <span>{organization?.name}</span>
