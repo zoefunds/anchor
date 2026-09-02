@@ -1067,3 +1067,82 @@ before deployment, which is corroborating, independent evidence.
 Full details, all real transaction signatures, and the honest
 delivery/replay/no-side-effect breakdown are in
 `chains/solana/REPLAYGUARD_DEPLOYMENT.md`.
+
+## Twelfth addendum: audit response — verifier semantics fixed, replay finding corrected, item-11 checklist produced
+
+An external audit found the live verifier's actual result (9 pass, 5
+warn, 3 fail — not the 10/5/2 previously reported) and identified two
+real, distinct bugs behind two of those fails, plus gave an 11-item
+action list with an explicit governing instruction: *"Continue
+read-only until explicitly authorized for each production change. Do
+not lift `SETTLEMENT_PAUSED`."*
+
+**Item 1 fixed — verifier dispatch classification.**
+`checkRecentDelivery()` in
+[verify-deployment.ts](../chains/hyperlane-validator/scripts/verify-deployment.ts)
+used to judge only the single most recent dispatch as the production
+health signal, with no purpose classification — so a deliberate
+replay-rejection test message (dispatched by this project's own
+tooling) was scored by the same "past SLA = fail" rule as a real
+settlement. Rewrote it to walk every dispatch in the lookback window,
+classify each against a new `knownNonSettlementDispatches` list in
+[deployment.json](../chains/hyperlane-validator/deployment.json), and
+apply the hard SLA-fail path only to the most recent *unclassified,
+same-chain* dispatch.
+
+**A second, previously-undiscovered real bug found and fixed in the
+same pass**: `Mailbox.delivered()` on Sepolia is structurally
+meaningless for a dispatch whose destination is a different chain
+(e.g. Solana) — Sepolia's own Mailbox never sees that message's
+actual delivery, so it always reads `false` regardless of what really
+happened on the destination chain. Every genuinely cross-chain test
+dispatch was being silently misreported as "undelivered." Fixed by
+decoding the `destination` domain from the Dispatch event and gating
+the Sepolia-side `delivered()` check to same-chain dispatches only;
+cross-chain dispatches now get an honest "not checkable from Sepolia"
+warning instead of a false fail.
+
+**Verified live** (dedicated RPC): 20 checks, 13 pass, 5 warn, 2
+fail — the two remaining fails are the pre-existing, genuine,
+unrelated validator1/validator2 contiguous backfill lag, not
+misclassification artifacts.
+
+**Item 2 corrected — replay-rejection finding.** Re-checked the
+replay-test message's on-chain history using the raw
+`getSignaturesForAddress` RPC method (its `err` field reliably
+reports success/failure, unlike the `solana transaction-history` CLI
+helper used previously). Corrected finding: `decision-relay`'s entire
+history is 15 signatures, all `err: null`, with no new signature at
+all since the first delivery — meaning the relayer never submitted a
+`process()` for the replay message, not that one was submitted and
+failed. `chains/solana/REPLAYGUARD_DEPLOYMENT.md` was rewritten to
+state this precisely: replay rejection is proven only at the Rust
+unit-test level (`rejects_replay_of_the_same_decision_hash`, passing),
+**not** on-chain — a genuinely deterministic on-chain rejection proof
+(a real Mailbox `process()` call with valid ISM metadata, built
+outside the relayer) remains outstanding and was assessed as
+substantial additional work, not attempted this pass.
+
+**Item 3 — 24h reliability gate.** Logged Snapshot 2 in
+[24H_OBSERVATION_LOG.md](../chains/hyperlane-validator/24H_OBSERVATION_LOG.md)
+with persistent state (all three apps clean: no restart/OOM/AccessDenied
+since window start) plus the two sections the audit explicitly asked
+for: checkpoint publication (signed index 871646 vs. mailbox nonce
+873016, lag 1370 leaves — unchanged in magnitude across several
+real-time checks, flagged as a genuine open question, not just
+restart/OOM counts) and specific-message checkpoint coverage. Explicit
+pass/fail criteria for the gate were also added to the file's header.
+
+**Item 11 — key-rotation checklist produced** (not executed):
+[key-rotation-checklist.md](key-rotation-checklist.md) covers the two
+Solana private keys and three RPC endpoint keys exposed earlier this
+session, procedure per credential, and an explicit note that the
+operator declined rotation for these specifically and that decision
+stands as an accepted residual risk, not an oversight.
+
+**Items 4-10 — explicitly on hold, not started.** Settlement
+rehearsal, daily reconciliation, policy governance/human escalation,
+evidence provenance, validator3 cutover + Safe ISM migration, Solana
+ISM migration, and real alert delivery all require per-item
+authorization the operator has not yet given. `SETTLEMENT_PAUSED` has
+not been touched.
