@@ -33,5 +33,26 @@
   "checkpointFreshnessThresholdSeconds": 900,
   "undeliveredMessageSlaSeconds": 3600,
   "dispatchLookbackBlocks": 9000,
-  "maxCheckpointLagLeaves": 100
+  "maxCheckpointLagLeaves": 100,
+  "sepoliaDomainId": 11155111,
+  "knownNonSettlementDispatches": [
+    {
+      "messageId": "0x32652e9557ebd4f5828bbc71559445ca6eb18da46971f12e46305cdd0a2ff255",
+      "purpose": "delivery-proof",
+      "expectedOutcome": "delivered",
+      "note": "DeliveryProofReceiver test message -- no settlement target, proves transport only."
+    },
+    {
+      "messageId": "0x2676915c4106fff9acc0d4e79ee096d9c81bac6e919adc0d56e0f28191ae5a9c",
+      "purpose": "replay-guard-first-delivery",
+      "expectedOutcome": "delivered",
+      "note": "First real delivery used to seed ReplayGuard's first recorded decision hash."
+    },
+    {
+      "messageId": "0xb6d6bf41fe994f81684b2dd15f3cc5a7f4ec46beb681088cdb2f091713b9a172",
+      "purpose": "replay-guard-rejection-test",
+      "expectedOutcome": "rejected-or-never-submitted",
+      "note": "Deliberate replay of the prior message's decision content -- expected to never settle. Undelivered past SLA is the EXPECTED state for this message, not a real outage. See chains/solana/REPLAYGUARD_DEPLOYMENT.md for the full, honestly-stated result (no on-chain attempt observed, not a confirmed on-chain rejection)."
+    }
+  ]
 }

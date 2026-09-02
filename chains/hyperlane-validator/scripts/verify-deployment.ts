@@ -53,6 +53,15 @@ interface Deployment {
   // window (still ~30h of Sepolia blocks at ~12s/block).
   dispatchLookbackBlocks: number;
   maxCheckpointLagLeaves: number;
+  sepoliaDomainId: number;
+  // Dispatches this project itself made for testing/proof/security
+  // purposes, not real settlements — checked against every dispatch
+  // this script sees so a deliberate test (e.g. a replay-rejection
+  // probe expected to never deliver) never gets judged by the same
+  // "undelivered past SLA = fail" rule a real stuck financial
+  // settlement would be. Real audit finding this fixes: an intentional
+  // replay-test message was misclassified as a generic delivery outage.
+  knownNonSettlementDispatches?: { messageId: Hex; purpose: string; expectedOutcome: string; note: string }[];
 }
 
 const deployment: Deployment = JSON.parse(readFileSync(join(__dirname, "..", "deployment.json"), "utf-8"));
@@ -466,6 +475,23 @@ const MAILBOX_DELIVERED_ABI = [
   { type: "function", name: "delivered", stateMutability: "view", inputs: [{ name: "", type: "bytes32" }], outputs: [{ name: "", type: "bool" }] },
 ] as const;
 
+// Real bug found and fixed here: this check used to look only at the
+// single MOST RECENT dispatch and treat its delivery status as THE
+// production health signal — regardless of what that dispatch actually
+// was. Two real problems with that: (1) a deliberate test/proof/replay
+// message (dispatched by this project's own tooling, not the app) would
+// get judged by the same "past SLA = fail" rule as a real financial
+// settlement, producing a false alarm exactly once, on the audit's own
+// account, this pass; (2) `Mailbox.delivered()` is only meaningful on
+// the MAILBOX THAT ACTUALLY DELIVERS the message — for a same-chain
+// self-loop test (origin == destination == Sepolia) that's this
+// deployment's own Sepolia Mailbox, but for a real cross-chain dispatch
+// (e.g. Sepolia -> Solana, which is what real Solana settlements are)
+// the delivering Mailbox is on the DESTINATION chain, and Sepolia's own
+// `delivered()` will structurally always read false regardless of
+// whether the destination actually processed it — this script has no
+// Solana-side delivery check, so it must say so rather than silently
+// misreport a cross-chain dispatch as "undelivered."
 async function checkRecentDelivery(): Promise<void> {
   try {
     const currentBlock = await client.getBlockNumber();
@@ -483,45 +509,76 @@ async function checkRecentDelivery(): Promise<void> {
       return;
     }
 
-    const latest = logs[logs.length - 1];
-    const block = await client.getBlock({ blockNumber: latest.blockNumber! });
-    const ageSeconds = Date.now() / 1000 - Number(block.timestamp);
+    // Walk from most recent backward and evaluate each dispatch against
+    // its own classification, instead of assuming the single latest one
+    // is the only thing worth checking.
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const dispatch = logs[i];
+      const block = await client.getBlock({ blockNumber: dispatch.blockNumber! });
+      const ageSeconds = Date.now() / 1000 - Number(block.timestamp);
+      const messageId = keccak256(dispatch.args.message as Hex);
+      const destinationDomain = dispatch.args.destination as number;
+      const known = deployment.knownNonSettlementDispatches?.find((d) => d.messageId.toLowerCase() === messageId.toLowerCase());
 
-    // The Dispatch event's own `message` field IS the exact raw message
-    // bytes the Mailbox already assembled (header + body) — Hyperlane's
-    // message id is simply keccak256 of those bytes. No re-encoding of
-    // the header is needed (that was the earlier, overly-cautious
-    // concern this comment used to describe); reading it straight off
-    // the log and hashing it is the same computation the Mailbox/relayer
-    // themselves do, not a reimplementation with its own bug surface.
-    const messageId = keccak256(latest.args.message as Hex);
-    const delivered = await client.readContract({
-      address: deployment.sepolia.mailbox,
-      abi: MAILBOX_DELIVERED_ABI,
-      functionName: "delivered",
-      args: [messageId],
-    });
+      if (known) {
+        // A deliberate test/proof/rejection message — never contributes
+        // to the "production dispatch stuck" fail path. Report it
+        // separately, against its OWN expected outcome.
+        let deliveredKnown: boolean | null = null;
+        if (destinationDomain === deployment.sepoliaDomainId) {
+          deliveredKnown = await client.readContract({
+            address: deployment.sepolia.mailbox,
+            abi: MAILBOX_DELIVERED_ABI,
+            functionName: "delivered",
+            args: [messageId],
+          });
+        }
+        const deliveredStr = deliveredKnown === null ? "unknown (cross-chain, not checkable from Sepolia)" : deliveredKnown ? "delivered" : "not delivered";
+        record(
+          `delivery:known-test:${known.purpose}`,
+          "pass",
+          `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch, not a production settlement — expected outcome: ${known.expectedOutcome}, actual: ${deliveredStr}. ${known.note}`
+        );
+        continue;
+      }
 
-    if (delivered) {
-      record(
-        "delivery:recent",
-        "pass",
-        `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old and confirmed delivered`
-      );
-    } else if (ageSeconds > deployment.undeliveredMessageSlaSeconds) {
-      record(
-        "delivery:recent",
-        "fail",
-        `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old (SLA ${deployment.undeliveredMessageSlaSeconds}s) and NOT delivered — ` +
-          `check validator process health directly (agent-liveness and checkpoint-currency above only partially cover this — see their own caveats; a crash-looping or indexing-lagging validator is the most common real cause found during this project's own verification), then check ` +
-          `https://explorer.hyperlane.xyz for tx ${latest.transactionHash} for relayer-side detail.`
-      );
-    } else {
-      record(
-        "delivery:recent",
-        "warn",
-        `most recent dispatch (tx ${latest.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old and not yet delivered, but still within the ${deployment.undeliveredMessageSlaSeconds}s SLA`
-      );
+      if (destinationDomain !== deployment.sepoliaDomainId) {
+        // A real cross-chain dispatch (e.g. a genuine Solana
+        // settlement) — this script cannot check delivery on the
+        // destination chain, so it says so explicitly rather than
+        // calling Sepolia's own delivered() (which would always read
+        // false for a message addressed elsewhere) and misreporting a
+        // false failure.
+        record(
+          "delivery:cross-chain",
+          "warn",
+          `dispatch (tx ${dispatch.transactionHash}, messageId ${messageId}, ${Math.round(ageSeconds)}s old) targets destination domain ${destinationDomain}, not Sepolia (${deployment.sepoliaDomainId}) — delivery can only be confirmed on the destination chain's own Mailbox, which this script does not yet check. Not treated as a failure on the Sepolia side alone.`
+        );
+        continue;
+      }
+
+      // A real, unclassified, same-chain dispatch — the only case this
+      // check can validly judge as "production dispatch, SLA applies."
+      const delivered = await client.readContract({
+        address: deployment.sepolia.mailbox,
+        abi: MAILBOX_DELIVERED_ABI,
+        functionName: "delivered",
+        args: [messageId],
+      });
+      if (delivered) {
+        record("delivery:recent", "pass", `dispatch (tx ${dispatch.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old and confirmed delivered`);
+      } else if (ageSeconds > deployment.undeliveredMessageSlaSeconds) {
+        record(
+          "delivery:recent",
+          "fail",
+          `dispatch (tx ${dispatch.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old (SLA ${deployment.undeliveredMessageSlaSeconds}s) and NOT delivered — ` +
+            `check validator process health directly (agent-liveness and checkpoint-currency above only partially cover this — see their own caveats; a crash-looping or indexing-lagging validator is the most common real cause found during this project's own verification), then check ` +
+            `https://explorer.hyperlane.xyz for tx ${dispatch.transactionHash} for relayer-side detail.`
+        );
+      } else {
+        record("delivery:recent", "warn", `dispatch (tx ${dispatch.transactionHash}, messageId ${messageId}) is ${Math.round(ageSeconds)}s old and not yet delivered, but still within the ${deployment.undeliveredMessageSlaSeconds}s SLA`);
+      }
+      break; // only the most recent unclassified same-chain dispatch needs the SLA check
     }
   } catch (err) {
     record("delivery:recent", "warn", `could not check recent dispatches: ${err instanceof Error ? err.message : String(err)}`);
