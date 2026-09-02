@@ -139,3 +139,11 @@ cause is therefore **partially, not fully, established**:
 **No production action taken during this investigation** — read-only log
 capture only, no secrets touched, no config or deploy changes, no plan
 upgrades. `SETTLEMENT_PAUSED` untouched.
+
+**Quick re-check — 2026-09-02 17:19 UTC** (~4 minutes after the root-cause
+capture above, too soon for a new checkpoint-lag reading to carry any
+signal): all three machines still `started` with unchanged `Last
+Updated` timestamps — no restarts since the window began. Skipping a
+full checkpoint-currency re-run this cycle; the next scheduled snapshot
+(with real elapsed time behind it) will carry the next meaningful lag
+data point.
