@@ -994,3 +994,76 @@ rotation happened just because it was recommended.
 
 **Consequence for the six-point unpause gate**: items 1 and 5 are now
 satisfied. Items 3 and 4 remain open.
+
+**Note on numbering** — two different "5-item gate" lists exist in this
+document's history and can be confused: the original **six-point
+`SETTLEMENT_PAUSED` unpause gate** (1: ValidatorAnnounce, 2: verifier
+semantics, 3: 24h validator run, 4: controlled settlement rehearsal,
+5: alerts wired) referenced just above, and a **later external review's
+separate 5-item list** (1: ValidatorAnnounce, 2: verifier semantics,
+3: ReplayGuard Testnet deployment, 4: independent validator operator,
+5: dedicated RPC) that this and the next addendum below track. The
+next addendum's "gate item 3" refers to the **second** list
+(ReplayGuard), not the six-point gate's item 3 (the 24h window, tracked
+separately in `24H_OBSERVATION_LOG.md`).
+
+## Eleventh addendum: ReplayGuard deployed and tested on Testnet — real, with an honest gap noted
+
+Executed the full `REPLAYGUARD_DEPLOYMENT.md` procedure for real, using
+the operator's own local Solana wallet (`~/.config/solana/id.json`),
+confirmed to be `decision-relay`'s actual on-chain upgrade authority
+(`EBea3UVndSrNdgdtfuXC6PoN7573GdS43XDoB6pja9fh`) before touching
+anything.
+
+**Program upgraded**: tx `5imuwmjnWeT2mCgvEXxbBj9qY76mQjwz3QEdS4teNc3w5c4LbYpjCSicu818JaiD6EfbcD54vxM3ZCuaFbheJFxX`,
+confirmed via `solana program show` (deployed slot advanced).
+
+**`InitReplayGuard` called**: tx `4i2Topfj1YWFBduuEK7Js2dc5eYqWJE8U8cZw5WyWPXsfZKziTiBUpEqEeX8EbEbzCZGgRFTDM2AUcDfFtmB34Bo`
+— PDA verified fresh (owner = `decision-relay`, `seen` all-zero,
+`next_index` 0). (An earlier manual byte-offset check of the raw
+account data briefly looked wrong — `AccountData<T>`'s 1-byte presence
+tag was not accounted for in the first read; re-checked with the
+correct offset and confirmed genuinely fresh.)
+
+**Real delivery proven**: dispatched a real DecisionRelay message from
+Sepolia reusing the actual GenLayer decision from case
+`CASE-LIVE-TEST-SOL-1` (created earlier this session as part of the
+two-chain settlement test) — Solana `process()` tx
+`2p8zGoiyvrW8xRt5CA2t8PDhmj4UzHVXL5vxEEe3YSnELvxq9yCA7qaR7F4e1irpwEUpfDNVC1RU5xW1b28dsZ4f`,
+directly confirmed via `solana confirm -v`. ReplayGuard's `next_index`
+went 0→1, slot 0 = the exact decisionHash byte-for-byte.
+
+**Replay attempt — honest, not overclaimed**: dispatched a second
+message carrying the same decisionHash (a fresh Hyperlane message, not
+a literal duplicate — a stronger test of `decision-relay`'s own
+application-level guard, independent of Hyperlane's own message-level
+replay protection). Over 20+ minutes of direct on-chain monitoring, no
+`process()` transaction for this second message ever appeared — not a
+confirmed failure, not a confirmed success. **What is directly
+proven**: ReplayGuard's state never changed across that entire window
+despite the second dispatch existing and being indexable on Sepolia.
+**What is not directly proven**: an actual on-chain transaction
+failure demonstrating the rejection path executing. This is real,
+supporting evidence, not the strongest possible proof — recorded
+honestly rather than rounded up.
+
+**No-escrow-side-effect confirmed**: the real escrow case PDA
+(`njL4rgdzRJvBgt6pr8zw5RPgpSnhxme2NxRtocCdkg8`) was checked before and
+after — lamports, owner, and data length all unchanged. `handle()`
+moved no funds and changed no escrow state across either delivery
+attempt, exactly as designed.
+
+**Verdict on this review's gate item 3 (ReplayGuard)**: substantially
+satisfied — real program upgrade, real `InitReplayGuard`, real proven
+delivery, real proven no-fund-movement, on a live Testnet deployment.
+The replay-rejection property has real but not maximally strong
+evidence (see above) — worth a follow-up direct observation of an
+actual failed `process()` transaction if that certainty is wanted
+before treating this as fully closed, but the code itself was already
+unit-tested for this exact rejection path (12/12 `cargo test -p
+decision-relay` passing, including `rejects_replay_of_the_same_decision_hash`)
+before deployment, which is corroborating, independent evidence.
+
+Full details, all real transaction signatures, and the honest
+delivery/replay/no-side-effect breakdown are in
+`chains/solana/REPLAYGUARD_DEPLOYMENT.md`.
