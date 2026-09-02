@@ -203,6 +203,46 @@ unattended check-in (expected: mid-deploy production infra shouldn't
 be prodded without the user present), so its current version wasn't
 re-confirmed this cycle. No impact on this observation window.
 
+## Snapshot 8 — 2026-09-02 21:31 UTC (~12h11m elapsed, ~85% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same display artifact) | 0 | 0 |
+
+**Checkpoint publication — validator1's stall is now confirmed across
+TWO consecutive intervals, not one.** Signed index still `871681` —
+completely unchanged since Snapshot 6 (~2h05m ago now, spanning both
+this interval and the last). Live Mailbox nonce advanced `873059` →
+`873066` (+7). Lag: `1378` → `1385` (+7, again the full interval's
+worth of new dispatches, none absorbed). This is no longer a single
+bad reading — validator1's backfill indexer has made literally zero
+forward progress for over two hours while continuing to accept new
+dispatches into the growing gap. **Validator2 continues perfectly
+steady**: index `871689` → `871696` (+7, exactly matching the nonce),
+lag unchanged at `1370`.
+
+**Read-only verifier**: 19 checks, 11 pass, 6 warn, 2 fail — same two
+checkpoint-currency fails; validator1's is now the worst reading of
+the whole window (`1385`, vs `1370` at the window's start).
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~11h49m
+remaining to target end. Per this file's own explicit pass/fail
+criteria, this gate item should very likely be marked FAILED at the
+24h mark unless validator1's backfill resumes — a two-hour-plus
+complete stall, not mere slowness, is exactly the kind of finding this
+window was designed to catch rather than paper over with a clean
+restart/OOM count. The confirmed root cause (Infura RPC rate-limiting
+on validator1's dedicated endpoint) has not been acted on — no
+production action has been authorized for that yet.
+
+Separately: the webhook-secret-encryption follow-up migration was
+confirmed applied to production this session (via `anc-hor-worker`
+v34, user-run deploy) and `apps/web` was redeployed to Vercel to
+match — both confirmed healthy (200/401 responses, no 500s). Unrelated
+to, and no impact on, this observation window.
+
 **Quick re-check — 2026-09-02 17:19 UTC** (~4 minutes after the root-cause
 capture above, too soon for a new checkpoint-lag reading to carry any
 signal): all three machines still `started` with unchanged `Last
