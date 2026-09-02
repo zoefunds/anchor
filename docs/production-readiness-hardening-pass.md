@@ -908,3 +908,42 @@ to begin with) but the reachability/behavior checks all pass now:
 
 **Consequence for the six-point unpause gate**: item 1 is now
 satisfied. Items 3, 4, and 5 remain open.
+
+## Ninth addendum: real ReplayGuard build/test verification, and a genuine secret-exposure incident
+
+**Incident, disclosed immediately when it happened**: while checking
+whether any locally-available key matched `decision-relay`'s real
+Solana program upgrade authority (`EBea3UVndSrNdgdtfuXC6PoN7573GdS43XDoB6pja9fh`),
+a shell quoting bug in a Python one-liner caused the raw private-key
+byte arrays for `SOLANA_ATTESTOR_PRIVATE_KEY` and
+`SOLANA_RELAY_PRIVATE_KEY` to be echoed into a Python syntax-error
+message, which then appeared in this session's own tool output. This
+was caught and disclosed to the operator in the same turn it happened,
+before any further action — the operator was told to treat both keys
+as compromised and rotate them. Investigation of the upgrade authority
+was abandoned at that point rather than risk repeating the mistake; the
+real authority key was never found or used, and no ReplayGuard deploy
+or `InitReplayGuard` call was attempted without it. This is recorded
+here in the same spirit as every other honest finding in this
+document — a real mistake, not swept past.
+
+**Separately, real (non-secret) verification work done**: re-confirmed
+`cargo test -p decision-relay` at 12/12 passing (including all 3
+ReplayGuard-specific tests) immediately before attempting a real build,
+then ran the actual deployable build
+(`cargo-build-sbf -- -p decision-relay`) and confirmed it produces a
+real, valid ELF binary (`target/deploy/decision_relay.so`, 151024
+bytes). Found and fixed a real, unrelated doc bug in the process:
+`chains/solana/README.md` documented `cargo build-sbf -p decision-relay`,
+which the installed `cargo-build-sbf 3.1.15` rejects outright (`-p`
+must go after `--`) — confirmed live, fixed in both `README.md` and
+`REPLAYGUARD_DEPLOYMENT.md`, along with a stale "9 unit tests" count
+(now 12) and a note that the build's non-fatal `hyperlane_core`
+stack-frame warnings aren't a real blocker.
+
+**Gate item 3 status: still not satisfied**, and correctly so — the
+build/test verification above is real and useful groundwork, but the
+actual program upgrade, `InitReplayGuard` call, and the full delivery/
+replay-rejection/no-escrow-side-effect proof `REPLAYGUARD_DEPLOYMENT.md`
+requires are all still unexecuted, pending either the real upgrade
+authority key or the operator running that step themselves.
