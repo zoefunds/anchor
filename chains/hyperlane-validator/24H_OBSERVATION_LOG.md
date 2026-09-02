@@ -140,6 +140,22 @@ cause is therefore **partially, not fully, established**:
 capture only, no secrets touched, no config or deploy changes, no plan
 upgrades. `SETTLEMENT_PAUSED` untouched.
 
+## Snapshot 6 — 2026-09-02 19:23 UTC (~10h03m elapsed, ~70% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same display artifact) | 0 | 0 |
+
+**Checkpoint publication**: validator1 signed index `871681` (nonce advanced +4 since Snapshot 5), validator2 `871683` (+6). Live Mailbox nonce `873053` (+6). Lag: validator1 `1372` leaves (**up 2 from 1370** — the first snapshot where the lag has actually widened, not just held flat), validator2 `1370` leaves (unchanged). Consistent with validator1's confirmed RPC rate-limiting (see the root-cause investigation above): it processed fewer new checkpoints (+4) than new dispatches arrived (+6) this interval, so it lost a little ground rather than merely treading water.
+
+**Coverage**: still no production/rehearsal dispatch in the lookback window to check (same as Snapshot 5 — the window has aged past the last real production dispatch).
+
+**Read-only verifier**: 19 checks, 11 pass, 6 warn, 2 fail — same two checkpoint-currency fails.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~14h remaining to target end. Separately, unrelated to this gate: a `flyctl deploy` of `anc-hor-worker` was handed to the user this session (to carry the webhook-secret-encryption migration/backfill work) — not yet run as of this snapshot (`anc-hor-worker` still on machine version 30, unchanged). No impact on this observation window.
+
 **Quick re-check — 2026-09-02 17:19 UTC** (~4 minutes after the root-cause
 capture above, too soon for a new checkpoint-lag reading to carry any
 signal): all three machines still `started` with unchanged `Last
