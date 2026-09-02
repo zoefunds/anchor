@@ -920,8 +920,12 @@ byte arrays for `SOLANA_ATTESTOR_PRIVATE_KEY` and
 message, which then appeared in this session's own tool output. This
 was caught and disclosed to the operator in the same turn it happened,
 before any further action — the operator was told to treat both keys
-as compromised and rotate them. Investigation of the upgrade authority
-was abandoned at that point rather than risk repeating the mistake; the
+as compromised and rotate them. **The operator decided not to rotate
+for now** — a real, standing residual risk on these two keys, not
+something resolved by this pass; anyone reviewing this later should not
+assume rotation happened just because it was recommended. Investigation
+of the upgrade authority was abandoned at that point rather than risk
+repeating the mistake; the
 real authority key was never found or used, and no ReplayGuard deploy
 or `InitReplayGuard` call was attempted without it. This is recorded
 here in the same spirit as every other honest finding in this
