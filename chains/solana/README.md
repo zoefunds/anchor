@@ -191,10 +191,19 @@ boundary.
 
 ```bash
 cd chains/solana
-cargo build-sbf -p decision-relay          # produces target/deploy/decision_relay.so
-cargo test -p decision-relay                # 9 unit tests: attestation parsing/dedup,
-                                             # handle_account_metas regression
+cargo-build-sbf -- -p decision-relay        # produces target/deploy/decision_relay.so
+                                             # (NOT "cargo build-sbf -p ..." — the
+                                             # installed cargo-build-sbf 3.1.15 doesn't
+                                             # accept -p directly, confirmed live; cargo
+                                             # args must go after --)
+cargo test -p decision-relay                # 12 unit tests: attestation parsing/dedup,
+                                             # handle_account_metas regression, ReplayGuard
 ```
+`cargo-build-sbf` may print `Error: Function ... Stack offset ... exceeded max offset`
+for functions inside the `hyperlane_core` dependency (not this program's own code) —
+confirmed non-fatal: the build still finishes and produces a valid
+`target/deploy/decision_relay.so`. Worth watching for a future
+`hyperlane_core` upgrade fixing it, but not a blocker today.
 
 ### Redeploying (program upgrade, same program ID)
 

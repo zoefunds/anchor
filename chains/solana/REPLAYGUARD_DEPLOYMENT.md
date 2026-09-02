@@ -24,7 +24,34 @@ decision-relay` passing — see git history). It does **not**:
 ### 1. Upgrade the program
 ```bash
 cd chains/solana
-anchor build --program-name decision-relay   # or the project's real build command — confirm against chains/solana/README.md before running
+cargo-build-sbf -- -p decision-relay
+```
+**Verified live this pass**: this build succeeds and produces a real,
+valid `target/deploy/decision_relay.so` (151024 bytes, confirmed
+`file`-checked as a valid ELF binary; `cargo test -p decision-relay`
+also re-confirmed 12/12 passing including all 3 ReplayGuard tests
+immediately before this build). It prints `Error: Function ...
+Stack offset ... exceeded max offset` for functions inside the
+`hyperlane_core` dependency — not this program's own code — but this
+is non-fatal; the build still finishes and the `.so` is real and
+usable. (`anchor build --program-name decision-relay`, this doc's
+previous suggestion, was never actually confirmed to work — replaced
+with the verified command.)
+
+```bash
+solana program show <decision-relay-program-id> --url https://api.testnet.solana.com
+```
+Confirm the `Authority` field matches whoever is about to run the next
+command — **not yet executed this pass**, since this project's own
+upgrade authority key was not available to this session (see
+`docs/production-readiness-hardening-pass.md` for why: two unrelated
+secrets were accidentally exposed to this session's own tool output
+during an attempt to check for it, prompting a stop rather than
+continuing to search for the authority key by inspecting local
+secrets — both were flagged for rotation, and the authority key itself
+was never found or used).
+
+```bash
 solana program deploy \
   --program-id <decision-relay-program-id> \
   target/deploy/decision_relay.so \
