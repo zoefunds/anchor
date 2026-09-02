@@ -28,11 +28,14 @@ point of this runbook is that Anchor's operator can verify your
 validator is real and correctly configured (`scripts/verify-deployment.ts`)
 without ever holding your key.
 
-**Anchor's operator will provide you:** the Sepolia RPC URL to index
-(any reliable public one works — you aren't required to use the same
-provider Anchor uses), the Mailbox and ValidatorAnnounce addresses, and
-— once you've announced — will add your validator address to a new
-multisig ISM deployment and coordinate the cutover.
+**Anchor's operator will provide you:** the Mailbox and
+ValidatorAnnounce addresses, and — once you've announced — will add
+your validator address to a new multisig ISM deployment and coordinate
+the cutover. **Not an RPC URL** — bring your own dedicated Sepolia
+endpoint (see "RPC provider" below); this project's own validators hit
+a real production incident from a shared public RPC's rate limits, so
+this runbook no longer points anyone at one, including for a new
+operator's first setup.
 
 ## Step-by-step
 
@@ -105,14 +108,17 @@ bucket.)
 ### 3. Run the validator
 
 Copy `Dockerfile`, `entrypoint.sh`, and `config.json` from this
-directory as a starting point (they're generic — nothing Anchor-specific
-except the Sepolia RPC override, which you can point at your own
-provider). Deploy on your own infrastructure — Fly.io, a VPS, your own
-Kubernetes, whatever you already operate. Set (as secrets, never
-committed):
+directory as a starting point (they're generic — nothing
+Anchor-specific). Deploy on your own infrastructure — Fly.io, a VPS,
+your own Kubernetes, whatever you already operate. Set (as secrets,
+never committed):
 - `VALIDATOR_KEY` — from step 1
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — from step 2
 - `S3_BUCKET`, `S3_REGION`, `S3_FOLDER` — from step 2
+- `HYPERLANE_SEPOLIA_RPC_URL` — your own dedicated Sepolia endpoint (see
+  "RPC provider" below). The entrypoint fails closed and refuses to
+  start without this unless you explicitly set
+  `ALLOW_PUBLIC_RPC_FALLBACK=true` for local testing only.
 
 ### 4. Confirm it announced and is publishing real checkpoints
 
@@ -124,9 +130,12 @@ public faucet). Confirm:
 ```bash
 cast call 0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9 \
   "getAnnouncedStorageLocations(address[])(string[][])" "[<your_validator_address>]" \
-  --rpc-url https://ethereum-sepolia.publicnode.com
+  --rpc-url <your-own-sepolia-rpc-or-any-public-one-for-this-single-read>
 ```
-Should return your bucket/prefix, not an empty array.
+Should return your bucket/prefix, not an empty array. (This one-off
+read-only query is fine against a public endpoint even though the
+validator's own continuous indexing shouldn't be — see "RPC provider"
+below for why.)
 
 ### 5. Send Anchor's operator
 
