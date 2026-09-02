@@ -51,3 +51,19 @@ Baseline. All three machines healthy immediately after the dedicated-RPC redeplo
 **Specific-message checkpoint coverage** (`message-checkpoint-coverage` check): neither validator has yet published a checkpoint covering the most recent real dispatch's leaf (nonce `872991`) — informational, not a failure by itself; this is what determines whether *that specific* message can be delivered, independent of the contiguous lag above.
 
 No restarts, no OOM, no AccessDenied across all three since the window started. The unclosing backfill lag is the one real open question this window should keep tracking — if it's still `~1370` at the 24h mark with zero progress, that's a different, more concerning finding than "validators are merely behind."
+
+## Snapshot 3 — 2026-09-02 15:12 UTC (~5h52m elapsed, ~41% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (the `12:25:56Z` "Last Updated" display artifact from Snapshot 2 is still shown by `flyctl status`, still with no boot-sequence log lines behind it — treated as the same non-event, not a new restart) | 0 | 0 |
+
+**Checkpoint publication**: validator1 signed index `871653` (validator2 `871654`), live Mailbox nonce `873024`. Lag: validator1 `1371` leaves, validator2 `1370` leaves — against Snapshot 2's `871646`/nonce `873016`/lag `1370`, the signed index and the nonce both advanced by essentially the same amount (~7-8) in the ~78 minutes between snapshots. **This means contiguous backfill is not closing the gap at all — it is only barely keeping pace with new dispatches, not catching up.** This is the concerning version of "no real progress," not the initial ambiguous one: two consecutive snapshots now show the same ~1370-leaf lag persisting through real elapsed time and real new dispatch activity.
+
+**Specific-message checkpoint coverage**: neither validator has yet published a checkpoint for the most recent production dispatch's leaf (nonce `872850`, unchanged since Snapshot 2 — no new production/rehearsal dispatch has occurred since then, only the earlier replay-test dispatch).
+
+**Read-only verifier full run this snapshot**: 21 checks — the two `checkpoint-currency` checks are the only fails (both are this same backfill-lag finding); everything else pass/warn as expected, including the new destination-side ReplayGuard check (still confirms real presence on Solana Testnet) and the corrected checkpoint-coverage selection (still correctly targets nonce 872850, not the replay test).
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. Window remains IN PROGRESS — ~18h8m remaining to target end (2026-09-03 09:20 UTC). The flat backfill lag across two consecutive real-time-separated snapshots is now the dominant open question for this gate; if it is still flat at the deadline, per this file's own stated pass/fail criteria, this gate item should be marked FAILED and root-caused, not passed on a clean restart/OOM count alone.
