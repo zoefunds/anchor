@@ -160,22 +160,9 @@ export async function deliverWebhookAttempt(webhookId: string, payload: {
     return;
   }
 
-  if (!webhook.secretCiphertext || !webhook.secretIv || !webhook.secretAuthTag) {
-    // A pre-migration row whose plaintext secret hasn't been backfilled
-    // into the encrypted columns yet (see the migration's own comment
-    // for the required rollout order) — refuse to deliver rather than
-    // silently sign with no secret or crash on a null decrypt.
-    await prisma.webhookDelivery.create({
-      data: {
-        webhookId: webhook.id,
-        event: payload.event,
-        payload: payload as Prisma.InputJsonValue,
-        responseStatus: null,
-        error: "webhook secret not yet backfilled to encrypted storage — run scripts/backfill-webhook-secrets.ts",
-      },
-    });
-    return;
-  }
+  // secretCiphertext/secretIv/secretAuthTag are required columns as of
+  // prisma/migrations/20260902200000_webhook_secrets_not_null — every
+  // row is guaranteed to have them, so no defensive null-check here.
   const secret = decryptWebhookSecret({ ciphertext: webhook.secretCiphertext, iv: webhook.secretIv, authTag: webhook.secretAuthTag });
   const signature = signPayload(secret, timestamp, body);
   let responseStatus: number | null = null;

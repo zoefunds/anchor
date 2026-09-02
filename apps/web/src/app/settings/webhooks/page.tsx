@@ -14,7 +14,7 @@ interface WebhookSummary {
   // short masked prefix) from a list — the real secret is shown exactly
   // once, right after creation or rotation, via revealedSecret state
   // below, never persisted or re-fetchable after that.
-  secretPreview: string | null;
+  secretPreview: string;
   events: string[];
   active: boolean;
   createdAt: string;
@@ -202,7 +202,7 @@ export default function WebhooksPage() {
                 </div>
               ) : (
                 <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">
-                  secret: {w.secretPreview ?? "(not yet encrypted — see scripts/backfill-webhook-secrets.ts)"}
+                  secret: {w.secretPreview}
                 </p>
               )}
             </div>
