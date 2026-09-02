@@ -147,3 +147,19 @@ Updated` timestamps — no restarts since the window began. Skipping a
 full checkpoint-currency re-run this cycle; the next scheduled snapshot
 (with real elapsed time behind it) will carry the next meaningful lag
 data point.
+
+## Snapshot 5 — 2026-09-02 18:21 UTC (~9h01m elapsed, ~62% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same `12:25:56Z` display artifact, no new boot lines) | 0 | 0 |
+
+**Checkpoint publication**: both validators' signed index `871677`, live Mailbox nonce `873047`. Lag: `1370` leaves for both — index advanced +15, nonce advanced +15 since Snapshot 4 (65 minutes apart). **Fourth consecutive snapshot confirming the lag is flat**: 1370 → 1371/1370 → 1370 → 1370. The known root cause on validator1 (Infura RPC rate-limiting starving `eth_getLogs`, confirmed via live log capture between Snapshots 4 and 5) is consistent with this continuing to hold steady rather than close.
+
+**Checkpoint coverage**: the previously-tracked production dispatch (nonce 872850) has now aged out of the 9000-block lookback window entirely — the verifier correctly reports no production/rehearsal dispatch currently in scope to check coverage for (informational, not a new problem; the lookback window is time-bounded by design).
+
+**Read-only verifier**: 19 checks, 11 pass, 6 warn, 2 fail — same two checkpoint-currency fails as every prior snapshot.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~15h remaining to target end (2026-09-03 09:20 UTC). Per this file's own stated pass/fail criteria, a lag that shows zero real progress across four consecutive snapshots spanning ~2.5 hours should be treated as heading toward a FAILED gate outcome on the "checkpoint currency confirmed" criterion, regardless of the clean restart/OOM/AccessDenied record — that record alone was never sufficient by this file's own header.
