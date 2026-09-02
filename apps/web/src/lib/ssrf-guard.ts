@@ -1,5 +1,6 @@
 import { isIP } from "net";
 import { lookup } from "dns/promises";
+import { Agent, fetch as undiciFetch } from "undici";
 
 // Webhook URLs are operator-supplied (POST /api/webhooks) and this app
 // fetch()es them from a real request handler and from Fly workers on a
@@ -62,19 +63,28 @@ export function isDangerousHostname(hostname: string): boolean {
 }
 
 /**
- * Resolves `url`'s hostname and throws if it resolves to a private,
- * loopback, link-local, or reserved address. Call this immediately
- * before every fetch of an operator-supplied URL — not just once at
- * registration — since DNS can change between the two.
+ * Resolves `url`'s hostname, throws if any resolved address is private/
+ * loopback/link-local/reserved, and returns the validated addresses.
+ * Real audit finding fixed here: this function used to only validate and
+ * return — the caller (safeFetch, below) then called plain `fetch()`,
+ * which performs its OWN independent DNS resolution internally. Between
+ * this validation and that second resolution, an attacker who controls
+ * the DNS record (a classic rebinding attack) can repoint the hostname
+ * at 127.0.0.1 or a cloud metadata endpoint; the two resolutions have no
+ * guarantee of returning the same address. Validating here is
+ * necessary but was never sufficient — see connectToValidatedAddress
+ * below for the actual fix (pin the TCP connection to the address that
+ * was just validated, not the hostname).
  */
-export async function assertSafeToFetch(url: string): Promise<void> {
+async function resolveAndValidate(url: string): Promise<{ address: string; family: number }[] | null> {
   const parsed = new URL(url);
   if (isDangerousHostname(parsed.hostname)) {
     throw new Error(`refusing to fetch ${url}: hostname resolves to a private/internal address`);
   }
   // A literal IP in the URL has nothing to resolve — already covered by
-  // isDangerousHostname above.
-  if (isIP(parsed.hostname)) return;
+  // isDangerousHostname above, and there is no separate resolution step
+  // for safeFetch to race against.
+  if (isIP(parsed.hostname)) return null;
 
   let addresses: { address: string; family: number }[];
   try {
@@ -82,12 +92,49 @@ export async function assertSafeToFetch(url: string): Promise<void> {
   } catch (err) {
     throw new Error(`refusing to fetch ${url}: DNS lookup failed (${err instanceof Error ? err.message : err})`);
   }
+  if (addresses.length === 0) {
+    throw new Error(`refusing to fetch ${url}: DNS lookup returned no addresses`);
+  }
   for (const { address, family } of addresses) {
     const unsafe = family === 6 ? isPrivateOrReservedIPv6(address) : isPrivateOrReservedIPv4(address);
     if (unsafe) {
       throw new Error(`refusing to fetch ${url}: resolves to private/internal address ${address}`);
     }
   }
+  return addresses;
+}
+
+/**
+ * Resolves `url`'s hostname and throws if it resolves to a private,
+ * loopback, link-local, or reserved address. Kept as a standalone export
+ * for callers that only need the validation, not a connection — prefer
+ * safeFetch below for anything that actually fetches the URL, since only
+ * safeFetch closes the DNS-rebinding race this function alone cannot.
+ */
+export async function assertSafeToFetch(url: string): Promise<void> {
+  await resolveAndValidate(url);
+}
+
+/**
+ * Builds an undici Agent whose connector ALWAYS connects to
+ * `pinnedAddress` for this one request, regardless of what a fresh DNS
+ * lookup for the URL's hostname would return — TLS SNI and the HTTP
+ * Host header still come from the original URL (undici derives both
+ * from the request URL, not from the connector's resolved address), so
+ * this only removes the second, racy DNS resolution, not virtual-hosting
+ * correctness. This is the actual fix for the DNS-rebinding TOCTOU gap:
+ * the address that gets connected to is provably the same one that was
+ * just validated, not a fresh, independently-resolved, possibly-attacker-
+ * controlled answer.
+ */
+function pinnedDispatcher(pinnedAddress: string, family: number): Agent {
+  return new Agent({
+    connect: {
+      lookup: (_hostname, _options, callback) => {
+        callback(null, [{ address: pinnedAddress, family: family as 4 | 6 }]);
+      },
+    },
+  });
 }
 
 const MAX_SAFE_FETCH_REDIRECTS = 3;
@@ -106,10 +153,18 @@ const MAX_SAFE_FETCH_REDIRECTS = 3;
 export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
   let currentUrl = url;
   for (let hop = 0; hop <= MAX_SAFE_FETCH_REDIRECTS; hop++) {
-    await assertSafeToFetch(currentUrl);
-    const res = await fetch(currentUrl, { ...init, redirect: "manual" });
+    const addresses = await resolveAndValidate(currentUrl);
+    // A literal-IP URL has no separate resolution step to pin against —
+    // plain fetch is fine there, since there's no hostname lookup for an
+    // attacker to race. A hostname URL gets a dispatcher pinned to the
+    // exact address just validated above, so undici's own internal DNS
+    // resolution (which would otherwise re-resolve the hostname and
+    // could legitimately get a different, unvalidated answer) never
+    // runs for this request.
+    const dispatcher = addresses ? pinnedDispatcher(addresses[0].address, addresses[0].family) : undefined;
+    const res = await undiciFetch(currentUrl, { ...init, redirect: "manual", dispatcher } as Parameters<typeof undiciFetch>[1]);
     if (res.status < 300 || res.status >= 400 || !res.headers.has("location")) {
-      return res;
+      return res as unknown as Response;
     }
     if (hop === MAX_SAFE_FETCH_REDIRECTS) {
       throw new Error(`refusing to follow more than ${MAX_SAFE_FETCH_REDIRECTS} redirects for ${url}`);

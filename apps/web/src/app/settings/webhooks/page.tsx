@@ -8,7 +8,13 @@ const ALL_EVENTS = ["case.status_changed", "case.decided", "case.appealed"] as c
 interface WebhookSummary {
   id: string;
   url: string;
-  secret: string;
+  // Real P1 fixed here (external audit finding, raised twice): this used
+  // to be the full plaintext signing secret, returned and displayed on
+  // every page load. The API now only ever returns secretPreview (a
+  // short masked prefix) from a list — the real secret is shown exactly
+  // once, right after creation or rotation, via revealedSecret state
+  // below, never persisted or re-fetchable after that.
+  secretPreview: string | null;
   events: string[];
   active: boolean;
   createdAt: string;
@@ -21,6 +27,10 @@ export default function WebhooksPage() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
+  // { webhookId, secret } for the one-time-reveal banner — cleared as
+  // soon as the user navigates away or creates/rotates another one.
+  const [revealedSecret, setRevealedSecret] = useState<{ webhookId: string; secret: string } | null>(null);
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
 
   async function load() {
     const res = await fetch("/api/webhooks");
@@ -52,6 +62,7 @@ export default function WebhooksPage() {
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "failed to create webhook");
       setUrl("");
+      setRevealedSecret({ webhookId: body.id, secret: body.secret });
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -61,8 +72,25 @@ export default function WebhooksPage() {
   }
 
   async function handleDelete(id: string) {
+    if (revealedSecret?.webhookId === id) setRevealedSecret(null);
     await fetch(`/api/webhooks/${id}`, { method: "DELETE" });
     await load();
+  }
+
+  async function handleRotate(id: string) {
+    setRotatingId(id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/webhooks/${id}/rotate-secret`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to rotate secret");
+      setRevealedSecret({ webhookId: id, secret: body.secret });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRotatingId(null);
+    }
   }
 
   if (forbidden) {
@@ -146,19 +174,37 @@ export default function WebhooksPage() {
             <div key={w.id} className="border-b border-line py-4 dark:border-line-dark">
               <div className="flex items-center justify-between">
                 <p className="break-all text-sm font-medium">{w.url}</p>
-                <button
-                  onClick={() => handleDelete(w.id)}
-                  className="ml-4 shrink-0 font-mono text-xs text-muted hover:text-status-undetermined dark:text-muted-dark"
-                >
-                  Remove
-                </button>
+                <div className="ml-4 flex shrink-0 gap-3">
+                  <button
+                    onClick={() => handleRotate(w.id)}
+                    disabled={rotatingId === w.id}
+                    className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
+                  >
+                    {rotatingId === w.id ? "Rotating…" : "Rotate secret"}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(w.id)}
+                    className="font-mono text-xs text-muted hover:text-status-undetermined dark:text-muted-dark"
+                  >
+                    Remove
+                  </button>
+                </div>
               </div>
               <p className="mt-1 font-mono text-xs text-muted dark:text-muted-dark">
                 events: {w.events.join(", ")}
               </p>
-              <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">
-                secret: {w.secret}
-              </p>
+              {revealedSecret?.webhookId === w.id ? (
+                <div className="mt-2 rounded border border-seal-500/40 bg-seal-500/5 p-3 dark:border-seal-400/40">
+                  <p className="text-xs font-medium text-seal-500 dark:text-seal-400">
+                    Copy this secret now — it will not be shown again.
+                  </p>
+                  <p className="mt-1 break-all font-mono text-xs">{revealedSecret.secret}</p>
+                </div>
+              ) : (
+                <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">
+                  secret: {w.secretPreview ?? "(not yet encrypted — see scripts/backfill-webhook-secrets.ts)"}
+                </p>
+              )}
             </div>
           ))}
         </div>

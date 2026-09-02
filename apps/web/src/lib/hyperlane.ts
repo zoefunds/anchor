@@ -41,6 +41,66 @@ export function getEvmPublicClient() {
   return createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
 }
 
+// --- Approved settlement targets ---
+// Real P0 fixed here (found by an external audit, twice): case creation
+// used to accept an arbitrary caller-provided settlementContract/
+// settlementSolanaEscrowProgram with no validation against anything this
+// project actually deployed. Combined with escrowId being a hardcoded
+// zero placeholder (see dispatchDecisionForCase below — that half of the
+// finding is NOT fixed by this allowlist; there is still no real
+// per-case on-chain escrow binding, so this remains "notification +
+// attested settlement to a known contract," not a general escrow release
+// flow), an arbitrary address meant a caller could point "settlement" at
+// literally any contract/program, not just this project's own deployment.
+// This does not build the real escrow-adapter model the audit correctly
+// asks for (approved integration records, per-case escrow IDs,
+// asset/party/amount/state validation) — that's a real, larger follow-up.
+// It does close the immediate hole: only known, operator-approved
+// addresses can be used as a settlement target at all. Defaults to this
+// project's own real deployed addresses (recorded in
+// chains/hyperlane-validator/deployment.json and confirmed live via
+// `solana program show` this session) so existing legitimate dispatches
+// keep working; override via env for a genuinely new approved
+// integration, never by loosening this to "anything."
+const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = ["0x94f3FF552CC879a36B19b829af3325Ea72cbC71C"];
+const DEFAULT_APPROVED_SOLANA_SETTLEMENT_PROGRAMS = ["DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"];
+// The escrow program actually invoked to move funds on Solana settlement
+// (see solana-settle.ts's submitAttestedSettle) — a separate, even more
+// sensitive address than the decision-relay program above, and it was
+// equally unvalidated caller input before this fix.
+const DEFAULT_APPROVED_SOLANA_ESCROW_PROGRAMS = ["825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn"];
+
+function parseApprovedList(envValue: string | undefined, fallback: string[]): Set<string> {
+  const raw = envValue?.trim() ? envValue.split(",").map((s) => s.trim()).filter(Boolean) : fallback;
+  return new Set(raw.map((s) => s.toLowerCase()));
+}
+
+/**
+ * Whether `address` is an operator-approved settlement target for
+ * `chain` ("sepolia" or a Solana chain name). Case creation must reject
+ * anything not in this set — see api/cases/route.ts.
+ */
+export function isApprovedSettlementContract(chain: string, address: string): boolean {
+  if (chain === "sepolia") {
+    return parseApprovedList(process.env.APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS, DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS).has(
+      address.toLowerCase()
+    );
+  }
+  // Solana addresses are base58 and case-sensitive — do not lowercase.
+  const approved = process.env.APPROVED_SOLANA_SETTLEMENT_PROGRAMS?.trim()
+    ? process.env.APPROVED_SOLANA_SETTLEMENT_PROGRAMS.split(",").map((s) => s.trim()).filter(Boolean)
+    : DEFAULT_APPROVED_SOLANA_SETTLEMENT_PROGRAMS;
+  return approved.includes(address);
+}
+
+/** Same idea as isApprovedSettlementContract, for the separate Solana escrow-program address (see solana-settle.ts's submitAttestedSettle) — the account that actually moves funds, not the decision-relay notification program. */
+export function isApprovedSolanaEscrowProgram(address: string): boolean {
+  const approved = process.env.APPROVED_SOLANA_ESCROW_PROGRAMS?.trim()
+    ? process.env.APPROVED_SOLANA_ESCROW_PROGRAMS.split(",").map((s) => s.trim()).filter(Boolean)
+    : DEFAULT_APPROVED_SOLANA_ESCROW_PROGRAMS;
+  return approved.includes(address);
+}
+
 /** Reads DecisionRelay.sol's own attestorThreshold() — the source of truth for "how many signatures are actually needed," so this never drifts out of sync with whatever the deployed contract currently requires (e.g. after a setAttestorThreshold governance change). */
 export async function getAttestorThreshold(relayAddress: Address): Promise<number> {
   const count = await getEvmPublicClient().readContract({

@@ -2,11 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
-import { WEBHOOK_EVENTS, generateWebhookSecret } from "@/lib/webhooks";
+import { WEBHOOK_EVENTS, generateWebhookSecret, encryptWebhookSecret, webhookSecretPreview } from "@/lib/webhooks";
 import { isDangerousHostname } from "@/lib/ssrf-guard";
 
-// GET /api/webhooks — list this org's webhooks (secrets included: the org
-// needs to read its own signing secret back to verify deliveries).
+// GET /api/webhooks — list this org's webhooks. Real P1 fixed here
+// (external audit finding, raised twice): this used to return the full
+// plaintext signing secret on every call. It now returns only
+// secretPreview (a short masked prefix) — the raw secret is shown once,
+// at creation (POST below) or rotation (POST .../rotate-secret), never
+// again after that.
 export async function GET() {
   const member = await requireOwner();
   if ("error" in member) {
@@ -16,6 +20,7 @@ export async function GET() {
   const webhooks = await prisma.webhook.findMany({
     where: { organizationId: member.organizationId },
     orderBy: { createdAt: "desc" },
+    select: { id: true, url: true, secretPreview: true, events: true, active: true, createdAt: true },
   });
   return NextResponse.json(webhooks);
 }
@@ -56,12 +61,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `unknown event(s): ${invalid.join(", ")}`, validEvents: WEBHOOK_EVENTS }, { status: 400 });
   }
 
+  const rawSecret = generateWebhookSecret();
+  const encrypted = encryptWebhookSecret(rawSecret);
   const webhook = await prisma.$transaction(async (tx) => {
     const created = await tx.webhook.create({
       data: {
         organizationId: member.organizationId,
         url,
-        secret: generateWebhookSecret(),
+        secretCiphertext: encrypted.ciphertext,
+        secretIv: encrypted.iv,
+        secretAuthTag: encrypted.authTag,
+        secretPreview: webhookSecretPreview(rawSecret),
         events: requestedEvents,
       },
     });
@@ -79,5 +89,8 @@ export async function POST(req: NextRequest) {
     return created;
   });
 
-  return NextResponse.json(webhook, { status: 201 });
+  // The raw secret is returned exactly once, here — it is never
+  // retrievable again after this response (same convention as API keys).
+  const { secretCiphertext: _c, secretIv: _iv, secretAuthTag: _at, ...webhookWithoutCiphertext } = webhook;
+  return NextResponse.json({ ...webhookWithoutCiphertext, secret: rawSecret }, { status: 201 });
 }

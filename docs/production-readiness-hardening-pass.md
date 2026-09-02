@@ -1229,3 +1229,129 @@ deadline.
 proof, the no-customer-funds settlement rehearsal, validator3 + Safe
 ISM cutover, the Solana ISM migration, and live alert wiring. All
 remain items 4-10's responsibility, not this addendum's.
+
+## Fourteenth addendum: full product/security audit — P0 authorization escalation and settlement-target validation fixed
+
+A separate, full-product external audit (two independent submissions,
+converging on the same findings) reviewed the web app's own code — API/
+auth, case lifecycle, settlement, webhooks, audit chain — not just the
+Hyperlane validator infra the prior addenda cover. It found two real P0
+code defects and several P1 gaps. Fixed the P0s and the tractable P1s
+this pass; the rest are real, larger follow-ups, listed honestly below
+rather than glossed over.
+
+**P0 fixed — VIEWER-to-API-key privilege escalation.**
+[api-keys/route.ts](../apps/web/src/app/api/api-keys/route.ts) and
+[api-keys/[id]/route.ts](../apps/web/src/app/api/api-keys/%5Bid%5D/route.ts)
+used `getSessionMember()` (any authenticated member) instead of
+`requireOwner()` for create/list/revoke. Combined with API-key auth
+carrying no `role` (so it always passes `requireWriteAccess`'s
+VIEWER-only check) and
+[case-access.ts](../apps/web/src/lib/case-access.ts) treating any
+API-key caller as full-trust (same as OWNER) for restricted-case
+access, a read-only VIEWER member could mint a key and use it to become
+an unrestricted, org-wide writer with full case access. Fixed: both
+routes now require `requireOwner()`, matching the same gate this
+project already used for webhooks/member management/audit log. Since
+minting is now OWNER-only, the API-key full-trust design in
+case-access.ts is coherent again (an API key can now only be created by
+someone who's already full-trust org-wide) — that file itself needed no
+change. Also fixed a related, real gap found in the same pass: API-key
+creation and revocation were never audited at all; both are now wrapped
+in one transaction with a `logAction` call (`api_key.created`/
+`api_key.revoked`), matching this project's existing atomic
+mutation+audit pattern.
+**Not done this pass, explicitly flagged**: scoped/expiring API keys
+(the audit's further recommendation beyond the P0 fix itself), and
+revoking/reissuing any keys that existed before this fix — their
+historical scope is genuinely unknown and that's an operator decision
+on live data, not something to do unasked.
+
+**P0 fixed (partially, honestly) — arbitrary EVM/Solana settlement
+targets rejected.** [cases/route.ts](../apps/web/src/app/api/cases/route.ts)
+accepted a fully caller-provided `settlementContract` (used directly as
+both the EVM DecisionRelay recipient and the Solana decision-relay
+program ID) and `settlementSolanaEscrowProgram` (the actual Solana
+escrow program invoked to move funds) with zero validation against
+anything this project actually deployed.
+[hyperlane.ts](../apps/web/src/lib/hyperlane.ts) now exposes
+`isApprovedSettlementContract`/`isApprovedSolanaEscrowProgram`, checked
+against an operator-controlled allowlist — defaults to this project's
+own real deployed addresses (Sepolia DecisionRelay
+`0x94f3FF...cbC71C`, Solana decision-relay program
+`DGWSTw1P...VBbpVN`, Solana escrow program `825aV7GJ...NMugeZn` — the
+last two confirmed live via `solana program show` this session, not
+guessed), overridable via
+`APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS`/`APPROVED_SOLANA_SETTLEMENT_PROGRAMS`/
+`APPROVED_SOLANA_ESCROW_PROGRAMS` env vars for a genuinely new approved
+integration. Case creation now rejects any settlement target not on
+this list. **What this does NOT fix, stated plainly**: the EVM dispatch
+still hardcodes `escrowId` to a zero placeholder (see
+`dispatchDecisionForCase`'s own comment, unchanged) — there is still no
+real per-case on-chain escrow binding, asset/party/amount/state
+validation, or approved-integration data model. This allowlist closes
+"arbitrary address," not "no real escrow integration" — the audit's
+own required correction (a `SettlementIntegration` model, a tested
+escrow adapter) remains real, larger, unstarted follow-up work. The
+Sepolia settlement path should continue to be described as incomplete,
+not as live generic escrow settlement.
+
+**P1 fixed — SSRF DNS-rebinding race.**
+[ssrf-guard.ts](../apps/web/src/lib/ssrf-guard.ts)'s `assertSafeToFetch`
+validated a hostname's resolved IPs, but the caller then called plain
+`fetch()`, which performs its own independent DNS resolution — a
+classic TOCTOU gap letting a rebound DNS record point at a private
+address between validation and connection. Added the `undici` package
+and rewrote `safeFetch` to resolve+validate once, then connect via an
+`undici.Agent` with a `connect.lookup` pinned to the exact validated
+address (TLS SNI/Host still come from the original URL — only the
+second, racy DNS resolution is removed). Real fix, not a mitigation.
+
+**P1 fixed — webhook signing secrets no longer plaintext.**
+`Webhook.secret` was a plaintext DB column, returned in full on every
+`GET /api/webhooks`. Added AES-256-GCM encryption at rest
+(`encryptWebhookSecret`/`decryptWebhookSecret` in
+[webhooks.ts](../apps/web/src/lib/webhooks.ts), key from
+`WEBHOOK_SECRET_ENCRYPTION_KEY`), a new
+`POST /api/webhooks/:id/rotate-secret` endpoint, and changed both
+create and list to return only a masked `secretPreview` from GET — the
+raw secret is now shown exactly once, at creation or rotation (updated
+the dashboard page to match: a one-time reveal banner, a "Rotate
+secret" button). **This is envelope encryption in spirit, not a real
+KMS** — the audit's suggested further step (managed KMS, per-secret
+data keys, key rotation) is real, larger follow-up work.
+**Schema/migration handled carefully, not applied**: added the new
+columns as **nullable** in
+[prisma/migrations/20260902190000_encrypt_webhook_secrets](../apps/web/prisma/migrations/20260902190000_encrypt_webhook_secrets/migration.sql)
+(a raw SQL migration cannot itself encrypt existing plaintext secrets —
+that needs the app-level key) and left the old plaintext `secret`
+column in place for now; wrote
+[scripts/backfill-webhook-secrets.ts](../apps/web/scripts/backfill-webhook-secrets.ts)
+to encrypt existing rows once, after the migration is applied. A
+follow-up migration (not written yet, on purpose) should set the new
+columns NOT NULL and drop the plaintext column only after the backfill
+is confirmed complete. **This migration was NOT applied to the live
+database this pass** — it's a real schema change to production data
+and needs the operator's own deploy step (per DEPLOYMENT.md's
+`flyctl`/`vercel` redeploy flow), not something to run unasked from
+here.
+
+**Verified**: `npx tsc --noEmit` clean across all changes. The existing
+`vitest` integration suite could not be run against a local Postgres
+(none configured in this environment — all 7 failures are
+`Can't reach database server at localhost:5555`, unrelated to these
+changes; 10 unit-style tests not needing a DB passed).
+
+**Real, larger P1/P2 gaps correctly NOT attempted this pass** (each
+would be its own substantial piece of work, not a same-session fix):
+money validation still uses JavaScript `Number` instead of exact
+decimal/atomic-unit types; audit-write atomicity is fixed for the two
+routes touched this pass (api-keys, webhooks) but not audited
+end-to-end across every mutation; no rate limiting, MFA/WebAuthn, or
+verified-email gating on auth routes; party authority is still bearer-
+token possession, not verified identity; the Solana transport is still
+relayer-trust (`TRUSTED_ISM`), not multisig-verified; cross-chain
+delivery monitoring is still per-message rather than a durable
+reconciliation table; the validator set is still not independent. All
+consistent with, and mostly already tracked by, the prior addenda's own
+"held pending authorization" list.

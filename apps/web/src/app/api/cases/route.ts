@@ -79,6 +79,32 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  // Real P0 fixed here (external audit finding, raised twice): both
+  // settlementContract and settlementSolanaEscrowProgram used to be
+  // accepted as-is from the caller with no validation against anything
+  // this project actually deployed — an arbitrary EVM/Solana address
+  // could be set as a case's "settlement" or "escrow" target. Reject
+  // anything not on the operator-approved list (see
+  // lib/hyperlane.ts's isApprovedSettlementContract/
+  // isApprovedSolanaEscrowProgram doc comments for why this is a real
+  // fix but not the full escrow-adapter model the audit also correctly
+  // asks for — that remains a separate, larger follow-up: this closes
+  // "arbitrary address," not "no real per-case escrow binding").
+  if (settlementChain && settlementContract) {
+    const { isApprovedSettlementContract, isApprovedSolanaEscrowProgram } = await import("@/lib/hyperlane");
+    if (!isApprovedSettlementContract(settlementChain, settlementContract)) {
+      return NextResponse.json(
+        { error: `settlementContract "${settlementContract}" is not an approved settlement target for chain "${settlementChain}"` },
+        { status: 400 }
+      );
+    }
+    if (isSealevelSettlement && settlementSolanaEscrowProgram && !isApprovedSolanaEscrowProgram(settlementSolanaEscrowProgram)) {
+      return NextResponse.json(
+        { error: `settlementSolanaEscrowProgram "${settlementSolanaEscrowProgram}" is not an approved escrow program` },
+        { status: 400 }
+      );
+    }
+  }
 
   const policy = getPolicy(policyId);
   if (!policy) {

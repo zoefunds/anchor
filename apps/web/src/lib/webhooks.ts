@@ -1,8 +1,59 @@
-import { createHmac, randomBytes } from "crypto";
+import { createHmac, randomBytes, createCipheriv, createDecipheriv } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdjudicationQueue } from "@/lib/queue";
 import { assertSafeToFetch, safeFetch } from "@/lib/ssrf-guard";
+
+// --- Webhook secret encryption at rest ---
+// Real P1 fixed here (external audit finding, raised twice): webhook
+// signing secrets used to be stored as plaintext (Webhook.secret) and
+// returned in full on every GET /api/webhooks — anyone with read access
+// to the database, or a backup/replica, or the API response itself
+// (before this fix, a real signing secret leaves the server on every
+// listing) could recover the exact secret used to authenticate webhook
+// deliveries. Encrypted at rest with AES-256-GCM below; the raw secret
+// is now only ever returned once, at creation or rotation — see the
+// GET/POST handlers and the new rotate-secret route. This is envelope
+// encryption in spirit (a data-encryption key derived from one root
+// secret held outside the database) but not a real KMS — the audit's
+// suggested next step, a managed KMS with per-secret data keys and key
+// rotation, is a real, larger follow-up this does not attempt.
+function getWebhookSecretEncryptionKey(): Buffer {
+  const hex = process.env.WEBHOOK_SECRET_ENCRYPTION_KEY;
+  if (!hex) {
+    throw new Error("WEBHOOK_SECRET_ENCRYPTION_KEY is not set — see apps/web/.env.example");
+  }
+  const key = Buffer.from(hex, "hex");
+  if (key.length !== 32) {
+    throw new Error("WEBHOOK_SECRET_ENCRYPTION_KEY must be 32 bytes (64 hex chars) for AES-256-GCM");
+  }
+  return key;
+}
+
+export interface EncryptedSecret {
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+}
+
+export function encryptWebhookSecret(secret: string): EncryptedSecret {
+  const iv = randomBytes(12); // GCM standard IV size
+  const cipher = createCipheriv("aes-256-gcm", getWebhookSecretEncryptionKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
+  return { ciphertext: ciphertext.toString("hex"), iv: iv.toString("hex"), authTag: cipher.getAuthTag().toString("hex") };
+}
+
+export function decryptWebhookSecret(enc: EncryptedSecret): string {
+  const decipher = createDecipheriv("aes-256-gcm", getWebhookSecretEncryptionKey(), Buffer.from(enc.iv, "hex"));
+  decipher.setAuthTag(Buffer.from(enc.authTag, "hex"));
+  const plaintext = Buffer.concat([decipher.update(Buffer.from(enc.ciphertext, "hex")), decipher.final()]);
+  return plaintext.toString("utf8");
+}
+
+/** Display-only, never the real secret — same masking convention as API keys' keyPrefix. */
+export function webhookSecretPreview(rawSecret: string): string {
+  return `${rawSecret.slice(0, 11)}...`; // "whsec_" + 5 hex chars, matches ak_live_'s display length
+}
 
 // Fixed vocabulary, enforced in application code (not the DB schema,
 // which stores events as a plain string array) - keep this in sync with
@@ -109,7 +160,24 @@ export async function deliverWebhookAttempt(webhookId: string, payload: {
     return;
   }
 
-  const signature = signPayload(webhook.secret, timestamp, body);
+  if (!webhook.secretCiphertext || !webhook.secretIv || !webhook.secretAuthTag) {
+    // A pre-migration row whose plaintext secret hasn't been backfilled
+    // into the encrypted columns yet (see the migration's own comment
+    // for the required rollout order) — refuse to deliver rather than
+    // silently sign with no secret or crash on a null decrypt.
+    await prisma.webhookDelivery.create({
+      data: {
+        webhookId: webhook.id,
+        event: payload.event,
+        payload: payload as Prisma.InputJsonValue,
+        responseStatus: null,
+        error: "webhook secret not yet backfilled to encrypted storage — run scripts/backfill-webhook-secrets.ts",
+      },
+    });
+    return;
+  }
+  const secret = decryptWebhookSecret({ ciphertext: webhook.secretCiphertext, iv: webhook.secretIv, authTag: webhook.secretAuthTag });
+  const signature = signPayload(secret, timestamp, body);
   let responseStatus: number | null = null;
   let error: string | null = null;
   try {

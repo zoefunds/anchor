@@ -108,7 +108,24 @@ model Webhook {
   organization   Organization @relation(fields: [organizationId], references: [id])
   organizationId String
   url            String
-  secret         String
+  // Real P1 fixed here (external audit finding, raised twice): the
+  // signing secret used to be a single plaintext `secret` column,
+  // returned in full on every GET. Now AES-256-GCM-encrypted at rest
+  // (see lib/webhooks.ts's encryptWebhookSecret/decryptWebhookSecret) —
+  // only secretPreview (a short masked prefix, same convention as
+  // ApiKey.keyPrefix) is ever returned from a list/read; the raw secret
+  // is shown once, at creation or rotation, and never again.
+  // Nullable to match the actual rollout: the migration that adds these
+  // columns cannot backfill existing plaintext secrets from raw SQL (it
+  // needs the app-level encryption key) — see
+  // prisma/migrations/20260902190000_encrypt_webhook_secrets/migration.sql
+  // for the required backfill-then-NOT-NULL follow-up order. Every
+  // *new* webhook (created after this deploys) always gets all four
+  // populated in the same transaction — see api/webhooks/route.ts.
+  secretCiphertext String?
+  secretIv         String?
+  secretAuthTag    String?
+  secretPreview    String?
   // Event names this webhook wants, e.g. "case.status_changed",
   // "case.decided". Enforced against a fixed vocabulary in application
   // code (src/lib/webhooks.ts), not the DB schema.
