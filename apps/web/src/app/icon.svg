@@ -1,0 +1,22 @@
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .disc { fill: #ffffff; stroke: #16232f; }
+    .ring { stroke: #16232f; opacity: 0.35; }
+    .glyph { stroke: #16232f; }
+    @media (prefers-color-scheme: dark) {
+      .disc { fill: #16232f; stroke: #ad8143; }
+      .ring { stroke: #ad8143; }
+      .glyph { stroke: #eceeec; }
+    }
+  </style>
+  <circle class="disc" cx="50" cy="50" r="47" stroke-width="3" />
+  <circle class="ring" cx="50" cy="50" r="40" fill="none" stroke-width="1" />
+  <g class="glyph" fill="none" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"
+     transform="translate(50 50) scale(0.62) translate(-50 -50)">
+    <circle cx="50" cy="21" r="9" />
+    <line x1="50" y1="30" x2="50" y2="74" />
+    <line x1="36" y1="41" x2="64" y2="41" />
+    <path d="M50,74 Q25,76 22,50" />
+    <path d="M50,74 Q75,76 78,50" />
+  </g>
+</svg>
