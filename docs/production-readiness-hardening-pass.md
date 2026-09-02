@@ -951,3 +951,46 @@ actual program upgrade, `InitReplayGuard` call, and the full delivery/
 replay-rejection/no-escrow-side-effect proof `REPLAYGUARD_DEPLOYMENT.md`
 requires are all still unexecuted, pending either the real upgrade
 authority key or the operator running that step themselves.
+
+## Tenth addendum: gate item 5 (dedicated RPC) satisfied
+
+The operator obtained free-tier Infura and Alchemy endpoints (real
+separation, not one shared paid endpoint reused three times — validator1
+uses a dedicated Infura key, validator2 and the relayer each use their
+own separate Alchemy key) and set `HYPERLANE_SEPOLIA_RPC_URL` directly
+via `flyctl secrets set` on all three apps themselves (never through
+this session). All three were then redeployed with the fail-closed
+entrypoint code from the earlier RPC plumbing pass — necessary since
+the previously-running images predated that code and hadn't picked up
+the new env var at all.
+
+**Verified directly, not assumed**: SSH'd into each container and
+confirmed the actual resolved RPC config (`cat /tmp/config.json`,
+host only) — validator1 resolved to `sepolia.infura.io`, validator2 and
+the relayer both resolved to `eth-sepolia.g.alchemy.com` (different
+underlying keys per `flyctl secrets list` digests, even though the
+hostname is the same for both). Zero `AccessDenied`/`Out of memory`
+across all three post-redeploy.
+
+**A real, live bug found and fixed in the process**: Infura's free tier
+caps `eth_getLogs` at a 10,000-block range; `deployment.json`'s
+`dispatchLookbackBlocks` was `50000` (worked fine on the old public
+endpoint, which apparently permits larger ranges) — a genuine
+provider-compatibility break, not a config typo, confirmed via a real
+`"range 50000 exceeds limit of 10000"` RPC error. Fixed: lowered to
+`9000`. Re-ran `verify-deployment.ts` against the dedicated endpoint
+afterward and confirmed clean: 17 checks, 10 pass, 5 warn, **2 fail**
+— both remaining fails are the pre-existing, unrelated contiguous
+backfill lag, not anything RPC-related.
+
+**Two RPC keys were pasted directly into chat during this exchange**
+(same pattern as the earlier Solana key exposure) — flagged
+immediately each time, not used directly by this session for anything
+beyond the operator's own `flyctl secrets set` commands they ran
+themselves. **The operator declined rotation for these too** — another
+standing, deliberately-accepted residual risk, recorded here for the
+same reason as the Solana keys above: so no later reviewer assumes
+rotation happened just because it was recommended.
+
+**Consequence for the six-point unpause gate**: items 1 and 5 are now
+satisfied. Items 3 and 4 remain open.
