@@ -83,3 +83,59 @@ No restarts, no OOM, no AccessDenied across all three since the window started. 
 **Read-only verifier**: 21 checks, 12 pass, 7 warn, 2 fail — same two checkpoint-currency fails, nothing else changed.
 
 **No production action taken.** `SETTLEMENT_PAUSED` untouched. ~17h4m remaining to target end. With three consecutive snapshots now showing this lag genuinely static rather than trending down, the working assumption should shift from "still catching up" to "not going to close on its own before the window ends" — worth planning a root-cause pass (S3 backfill throughput? indexing bottleneck unrelated to RPC?) rather than waiting passively for the remaining ~17 hours to resolve it.
+
+## Root-cause investigation — 2026-09-02 17:15-17:16 UTC (live log capture, read-only)
+
+Captured live `flyctl logs` streams (not just the log buffer snapshot) for
+30-45 second windows on both validators to directly observe what each is
+actually doing in real time, rather than inferring from restart/OOM counts
+alone.
+
+**Confirmed, real, reproducible root cause on validator1**: its "dedicated"
+Infura RPC endpoint is being rate-limited constantly. In a 30-second live
+capture: **67 occurrences** of Infura's `-32005 Too Many Requests` error,
+against a request pattern of 54× `eth_blockNumber`, 15× `eth_getBlockByNumber`,
+6× `eth_call` — all bunched into sub-3-second bursts (`TipCheckpointSubmitter`,
+`MetricsUpdater`, and the backfill `cursor_indexer_task` all firing on
+overlapping ticks). `No Quorum reached` (an actually-failed, not just
+retried, RPC call) appeared once in the same window. **Zero `eth_getLogs`
+calls succeeded** in this window — the exact call the historical backfill
+indexer needs to pull ranges of past Dispatch events and advance the
+sequential checkpoint index. This is a genuinely different rate limit than
+the one already fixed earlier this pass (that one was Infura's free-tier
+`eth_getLogs` block-range cap, ~10000 blocks; this one is a requests-per-second
+burst limit, tripped by concurrent polling from multiple validator subtasks
+sharing one RPC endpoint) — the earlier "dedicated RPC" fix addressed
+rate-limiting from the shared PUBLIC endpoint, but did not anticipate this
+project's own multiple concurrent internal request sources exceeding a
+still-constrained Infura plan's per-second burst allowance.
+
+**Validator2 does NOT show this same signal** — a parallel 45-second live
+capture showed zero rate-limit errors, zero `eth_getLogs` calls, and zero
+`cursor_indexer_task` log lines at all (only steady `TipCheckpointSubmitter`
+"Ingested leaves"/"reached correctness checkpoint" lines with an unchanging
+merkle root and `checkpoint_queue_len: 0` throughout — consistent with the
+TIP-tracking task being idle because no very-recent dispatch is pending, not
+evidence about the separate historical backfill task). **This means
+validator1's confirmed RPC rate-limiting is not, by itself, a complete
+explanation for the lag** — validator2 (Alchemy-backed, not observed to be
+rate-limited) shows an almost identical ~1370-leaf lag with no visible
+backfill-indexer activity at all in over a minute of live capture. Root
+cause is therefore **partially, not fully, established**:
+
+- **Validator1**: real, measured, reproducible RPC-quota exhaustion
+  starving the backfill indexer of the `eth_getLogs` calls it needs.
+- **Validator2**: still genuinely unexplained by evidence gathered so far
+  — its backfill task produced no visible log activity in ~75 seconds of
+  combined capture across two windows, which is itself worth investigating
+  further (possible causes not yet checked: log verbosity/level suppressing
+  cursor-task progress after its first attempts, an internal
+  interval/backoff separate from RPC health, or a genuine stall for a
+  different reason). Do not assume the same Infura rate-limit explanation
+  applies to validator2 just because the symptom (flat lag) matches —
+  that would be exactly the kind of unverified inference this project has
+  been correcting away from all session.
+
+**No production action taken during this investigation** — read-only log
+capture only, no secrets touched, no config or deploy changes, no plan
+upgrades. `SETTLEMENT_PAUSED` untouched.
