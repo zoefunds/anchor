@@ -67,3 +67,19 @@ No restarts, no OOM, no AccessDenied across all three since the window started. 
 **Read-only verifier full run this snapshot**: 21 checks — the two `checkpoint-currency` checks are the only fails (both are this same backfill-lag finding); everything else pass/warn as expected, including the new destination-side ReplayGuard check (still confirms real presence on Solana Testnet) and the corrected checkpoint-coverage selection (still correctly targets nonce 872850, not the replay test).
 
 **No production action taken.** `SETTLEMENT_PAUSED` untouched. Window remains IN PROGRESS — ~18h8m remaining to target end (2026-09-03 09:20 UTC). The flat backfill lag across two consecutive real-time-separated snapshots is now the dominant open question for this gate; if it is still flat at the deadline, per this file's own stated pass/fail criteria, this gate item should be marked FAILED and root-caused, not passed on a clean restart/OOM count alone.
+
+## Snapshot 4 — 2026-09-02 16:16 UTC (~6h56m elapsed, ~29% remaining)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still showing the same `12:25:56Z` display-only artifact, no new boot-sequence lines) | 0 | 0 |
+
+**Checkpoint publication**: both validators' signed index `871662`, live Mailbox nonce `873032`. Lag: `1370` leaves — index advanced +9, nonce advanced +8 since Snapshot 3 (64 minutes apart). **Third consecutive snapshot confirming the lag is not closing**: 1370 (Snapshot 2) → 1371/1370 (Snapshot 3) → 1370 (Snapshot 4). Validators are processing new checkpoints at essentially the same rate new messages arrive, never gaining ground on the backlog itself.
+
+**Specific-message checkpoint coverage**: still no checkpoint published for nonce `872850` (unchanged — no new production/rehearsal dispatch since Snapshot 2).
+
+**Read-only verifier**: 21 checks, 12 pass, 7 warn, 2 fail — same two checkpoint-currency fails, nothing else changed.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~17h4m remaining to target end. With three consecutive snapshots now showing this lag genuinely static rather than trending down, the working assumption should shift from "still catching up" to "not going to close on its own before the window ends" — worth planning a root-cause pass (S3 backfill throughput? indexing bottleneck unrelated to RPC?) rather than waiting passively for the remaining ~17 hours to resolve it.
