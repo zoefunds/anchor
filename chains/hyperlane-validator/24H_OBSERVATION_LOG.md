@@ -156,6 +156,53 @@ upgrades. `SETTLEMENT_PAUSED` untouched.
 
 **No production action taken.** `SETTLEMENT_PAUSED` untouched. ~14h remaining to target end. Separately, unrelated to this gate: a `flyctl deploy` of `anc-hor-worker` was handed to the user this session (to carry the webhook-secret-encryption migration/backfill work) — not yet run as of this snapshot (`anc-hor-worker` still on machine version 30, unchanged). No impact on this observation window.
 
+## Snapshot 7 — 2026-09-02 20:26 UTC (~11h06m elapsed, ~78% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same display artifact) | 0 | 0 |
+
+**Checkpoint publication — validator1 made ZERO progress this interval.**
+Signed index unchanged at `871681` (identical to Snapshot 6, ~63 minutes
+earlier) while the live Mailbox nonce advanced `873053` → `873059` (+6).
+Lag: `1372` → `1378` (+6 — the entire interval's new dispatches, none
+absorbed). This is a real escalation from Snapshot 6's "losing ground
+slowly" to "made no forward progress at all this cycle" — directly
+consistent with the confirmed Infura rate-limiting fully blocking its
+`eth_getLogs` backfill calls for a full interval, not just slowing them.
+**Validator2 held perfectly steady**: index `871683` → `871689` (+6,
+matching the nonce advance exactly), lag unchanged at `1370`. The
+divergence between the two validators is now stark: validator2 is
+keeping perfect pace with new dispatches (not closing the historical
+gap, but not falling further behind either); validator1 is now falling
+behind in real time, not just failing to catch up.
+
+**Read-only verifier**: 19 checks, 11 pass, 6 warn, 2 fail — same two
+checkpoint-currency fails, but validator1's is now materially worse in
+magnitude than any prior snapshot.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~13h
+remaining to target end. Given this file's own explicit pass/fail
+criteria ("the contiguous backfill lag has made no real progress at
+all by the target end time"), validator1's trend this snapshot — flat
+signed index for a full interval while new dispatches keep arriving —
+is a genuine, worsening signal this gate should very likely fail on,
+not just a static one. Worth flagging for a decision on whether to
+act on the confirmed root cause (rotating/upgrading validator1's
+Infura plan or tier) before the window closes, though no such action
+has been taken or authorized.
+
+Separately: the webhook-secret-encryption follow-up migration
+(`20260902200000_webhook_secrets_not_null`) is validated on staging
+and pushed to `main`, awaiting the user running `flyctl deploy -a
+anc-hor-worker` again to apply it to production — `anc-hor-worker`
+status checks were blocked by the auto-mode classifier during this
+unattended check-in (expected: mid-deploy production infra shouldn't
+be prodded without the user present), so its current version wasn't
+re-confirmed this cycle. No impact on this observation window.
+
 **Quick re-check — 2026-09-02 17:19 UTC** (~4 minutes after the root-cause
 capture above, too soon for a new checkpoint-lag reading to carry any
 signal): all three machines still `started` with unchanged `Last
