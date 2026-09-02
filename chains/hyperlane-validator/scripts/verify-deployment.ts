@@ -61,7 +61,19 @@ interface Deployment {
   // "undelivered past SLA = fail" rule a real stuck financial
   // settlement would be. Real audit finding this fixes: an intentional
   // replay-test message was misclassified as a generic delivery outage.
-  knownNonSettlementDispatches?: { messageId: Hex; purpose: string; expectedOutcome: string; note: string }[];
+  knownNonSettlementDispatches?: { messageId: Hex; purpose: string; expectedOutcome: string; decisionHash?: Hex; note: string }[];
+  // Real audit finding this section fixes: a known cross-chain dispatch
+  // expected to be delivered was scored "pass" with actual state
+  // "unknown (cross-chain, not checkable from Sepolia)" — better than a
+  // false failure, but not positive delivery verification either. This
+  // config lets checkRecentDelivery query the actual destination-side
+  // state (the ReplayGuard PDA's `seen` ring buffer) instead of stopping
+  // at "unknown."
+  solanaTestnet?: {
+    rpcUrl: string;
+    decisionRelayProgramId: string;
+    replayGuard: { pda: string; capacity: number; layoutNote: string };
+  };
 }
 
 const deployment: Deployment = JSON.parse(readFileSync(join(__dirname, "..", "deployment.json"), "utf-8"));
@@ -475,6 +487,50 @@ const MAILBOX_DELIVERED_ABI = [
   { type: "function", name: "delivered", stateMutability: "view", inputs: [{ name: "", type: "bytes32" }], outputs: [{ name: "", type: "bool" }] },
 ] as const;
 
+// --- Destination-aware check for Sepolia -> Solana Testnet dispatches ---
+// Queries the ReplayGuard PDA directly over Solana's own JSON-RPC
+// (getAccountInfo, base64 encoding — no @solana/web3.js dependency
+// needed for a single read-only account fetch) and checks whether a
+// given decisionHash actually appears in its `seen` ring buffer. This
+// is real, positive, destination-side evidence a message's decision
+// was processed by decision-relay on Solana — not an inference from
+// the Sepolia side, which is structurally incapable of seeing this.
+// Layout matches chains/solana/REPLAYGUARD_DEPLOYMENT.md's confirmed
+// byte offsets: AccountData<T>'s 1-byte presence tag, then 32 slots of
+// 32 bytes each, then a 1-byte next_index.
+async function queryReplayGuardSeen(decisionHash: Hex): Promise<{ ok: true; found: boolean } | { ok: false; reason: string }> {
+  if (!deployment.solanaTestnet) return { ok: false, reason: "no solanaTestnet config in deployment.json" };
+  const { rpcUrl, replayGuard } = deployment.solanaTestnet;
+  try {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getAccountInfo",
+        params: [replayGuard.pda, { encoding: "base64" }],
+      }),
+    });
+    if (!res.ok) return { ok: false, reason: `Solana RPC HTTP ${res.status}` };
+    const body = (await res.json()) as { result?: { value?: { data?: [string, string] } | null }; error?: { message: string } };
+    if (body.error) return { ok: false, reason: `Solana RPC error: ${body.error.message}` };
+    const dataField = body.result?.value?.data;
+    if (!dataField) return { ok: false, reason: "ReplayGuard PDA not found or has no data" };
+    const raw = Buffer.from(dataField[0], "base64");
+    const expectedLen = 1 + 32 * replayGuard.capacity + 1;
+    if (raw.length !== expectedLen) return { ok: false, reason: `unexpected ReplayGuard account length ${raw.length}, expected ${expectedLen}` };
+    const target = decisionHash.slice(2).toLowerCase();
+    for (let i = 0; i < replayGuard.capacity; i++) {
+      const slot = raw.subarray(1 + i * 32, 1 + i * 32 + 32).toString("hex");
+      if (slot === target) return { ok: true, found: true };
+    }
+    return { ok: true, found: false };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // Real bug found and fixed here: this check used to look only at the
 // single MOST RECENT dispatch and treat its delivery status as THE
 // production health signal — regardless of what that dispatch actually
@@ -524,21 +580,70 @@ async function checkRecentDelivery(): Promise<void> {
         // A deliberate test/proof/rejection message — never contributes
         // to the "production dispatch stuck" fail path. Report it
         // separately, against its OWN expected outcome.
-        let deliveredKnown: boolean | null = null;
         if (destinationDomain === deployment.sepoliaDomainId) {
-          deliveredKnown = await client.readContract({
+          const deliveredKnown = await client.readContract({
             address: deployment.sepolia.mailbox,
             abi: MAILBOX_DELIVERED_ABI,
             functionName: "delivered",
             args: [messageId],
           });
+          record(
+            `delivery:known-test:${known.purpose}`,
+            "pass",
+            `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch, not a production settlement — expected outcome: ${known.expectedOutcome}, actual: ${deliveredKnown ? "delivered" : "not delivered"}. ${known.note}`
+          );
+          continue;
         }
-        const deliveredStr = deliveredKnown === null ? "unknown (cross-chain, not checkable from Sepolia)" : deliveredKnown ? "delivered" : "not delivered";
-        record(
-          `delivery:known-test:${known.purpose}`,
-          "pass",
-          `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch, not a production settlement — expected outcome: ${known.expectedOutcome}, actual: ${deliveredStr}. ${known.note}`
-        );
+
+        // Cross-chain (e.g. Sepolia -> Solana) known dispatch: real
+        // audit finding fixed here. This used to be reported as "pass"
+        // with actual state "unknown (cross-chain, not checkable from
+        // Sepolia)" — better than a false failure, but not positive
+        // delivery verification, and "pass" was the wrong status for
+        // something actually unverified. Now attempts a real
+        // destination-side check via the ReplayGuard PDA when a
+        // decisionHash is configured; only reports "pass" when that
+        // check actually ran and produced a positive result matching
+        // the expected outcome. An unavailable destination check is
+        // reported as "warn", never "pass".
+        if (!known.decisionHash) {
+          record(
+            `delivery:known-test:${known.purpose}`,
+            "warn",
+            `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch targeting a non-Sepolia destination, with no decisionHash configured for a destination-side check — delivery is NOT verified, only assumed from the dispatch record. ${known.note}`
+          );
+          continue;
+        }
+        const guardResult = await queryReplayGuardSeen(known.decisionHash);
+        if (!guardResult.ok) {
+          record(
+            `delivery:known-test:${known.purpose}`,
+            "warn",
+            `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch — destination-side ReplayGuard check could not run (${guardResult.reason}), so delivery is NOT verified. Expected outcome: ${known.expectedOutcome}. ${known.note}`
+          );
+          continue;
+        }
+        // "delivered" expectation is positively confirmed only by the
+        // hash actually being present in ReplayGuard's `seen` buffer.
+        // "rejected-or-never-submitted" expectations (e.g. the replay
+        // test) can't be confirmed this way at all — the hash is
+        // already present from an earlier, legitimate delivery of the
+        // same decision, so its presence proves nothing new about a
+        // later message. Report those as warn, explicitly saying so,
+        // rather than a misleading pass or fail.
+        if (known.expectedOutcome === "delivered") {
+          record(
+            `delivery:known-test:${known.purpose}`,
+            guardResult.found ? "pass" : "fail",
+            `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch expected to be delivered — decisionHash ${known.decisionHash} ${guardResult.found ? "IS" : "is NOT"} present in the live ReplayGuard PDA's seen buffer on Solana Testnet (real destination-side evidence, not inferred). ${known.note}`
+          );
+        } else {
+          record(
+            `delivery:known-test:${known.purpose}`,
+            "warn",
+            `messageId ${messageId} (tx ${dispatch.transactionHash}, ${Math.round(ageSeconds)}s old) is a known ${known.purpose} dispatch — ReplayGuard presence alone cannot verify this expected outcome (${known.expectedOutcome}), since the same decisionHash may already be recorded from an earlier legitimate delivery. decisionHash ${guardResult.found ? "IS" : "is NOT"} present in seen (informational only). ${known.note}`
+          );
+        }
         continue;
       }
 
@@ -616,23 +721,59 @@ async function checkMessageCheckpointCoverage(byValidator: Record<string, string
       record("message-checkpoint-coverage", "warn", "no recent dispatch to check coverage for");
       return;
     }
-    const latest = logs[logs.length - 1];
-    const nonce = decodeMessageNonce(latest.args.message as Hex);
 
-    for (const v of deployment.validators) {
-      const locs = byValidator[v.address] ?? [];
-      let found = false;
-      for (const loc of locs) {
-        if (!loc.startsWith("s3://") || found) continue;
-        const res = await fetch(s3ObjectUrl(loc, `checkpoint_${nonce}_with_id.json`)).catch(() => null);
-        if (res?.ok) found = true;
+    // Real audit finding fixed here: this used to always pick the
+    // single latest dispatch in the lookback window, which — when this
+    // project's own tooling had just sent a deliberate replay-test
+    // message — meant coverage was being reported for a message that
+    // was never expected to be operationally meaningful, not for the
+    // most recent real production/rehearsal dispatch. Walk backward and
+    // skip anything classified in knownNonSettlementDispatches so
+    // coverage is reported against a message whose deliverability
+    // actually matters operationally.
+    const knownIds = new Set((deployment.knownNonSettlementDispatches ?? []).map((d) => d.messageId.toLowerCase()));
+    let productionLog: (typeof logs)[number] | undefined;
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const id = keccak256(logs[i].args.message as Hex);
+      if (!knownIds.has(id.toLowerCase())) {
+        productionLog = logs[i];
+        break;
       }
+    }
+
+    if (!productionLog) {
+      record("message-checkpoint-coverage", "warn", `all ${logs.length} dispatch(es) in the lookback window are classified test/proof/replay messages (see knownNonSettlementDispatches) — no production/rehearsal dispatch to check coverage for`);
+    } else {
+      const nonce = decodeMessageNonce(productionLog.args.message as Hex);
+      for (const v of deployment.validators) {
+        const locs = byValidator[v.address] ?? [];
+        let found = false;
+        for (const loc of locs) {
+          if (!loc.startsWith("s3://") || found) continue;
+          const res = await fetch(s3ObjectUrl(loc, `checkpoint_${nonce}_with_id.json`)).catch(() => null);
+          if (res?.ok) found = true;
+        }
+        record(
+          `message-checkpoint-coverage:${v.label}`,
+          found ? "pass" : "warn",
+          found
+            ? `validator has published its own checkpoint covering the most recent production/rehearsal dispatch's leaf (nonce ${nonce}) — this message is deliverable by this validator's own attestation regardless of contiguous backfill lag`
+            : `no published checkpoint found yet for the most recent production/rehearsal dispatch's leaf (nonce ${nonce}) — this validator cannot yet contribute to delivering this specific message (informational: if backfill is still in progress, this can resolve without any other action)`
+        );
+      }
+    }
+
+    // Report the most recent classified dispatch (if it's a replay/test
+    // message) as its own explicit security-test result, separate from
+    // the production-coverage check above — never silently folded in.
+    const latest = logs[logs.length - 1];
+    const latestId = keccak256(latest.args.message as Hex);
+    const latestKnown = deployment.knownNonSettlementDispatches?.find((d) => d.messageId.toLowerCase() === latestId.toLowerCase());
+    if (latestKnown && latestKnown !== undefined && productionLog !== latest) {
       record(
-        `message-checkpoint-coverage:${v.label}`,
-        found ? "pass" : "warn",
-        found
-          ? `validator has published its own checkpoint covering the most recent dispatch's leaf (nonce ${nonce}) — this message is deliverable by this validator's own attestation regardless of contiguous backfill lag`
-          : `no published checkpoint found yet for the most recent dispatch's leaf (nonce ${nonce}) — this validator cannot yet contribute to delivering this specific message (informational: if backfill is still in progress, this can resolve without any other action)`
+        "message-checkpoint-coverage:latest-is-classified-test",
+        "warn",
+        `the most recent dispatch in the lookback window is a classified ${latestKnown.purpose} message (messageId ${latestId}), not a production/rehearsal dispatch — coverage above was reported against the latest UNCLASSIFIED dispatch instead. This is informational, not a failure.`
       );
     }
   } catch (err) {

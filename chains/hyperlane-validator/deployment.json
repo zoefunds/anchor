@@ -40,19 +40,30 @@
       "messageId": "0x32652e9557ebd4f5828bbc71559445ca6eb18da46971f12e46305cdd0a2ff255",
       "purpose": "delivery-proof",
       "expectedOutcome": "delivered",
-      "note": "DeliveryProofReceiver test message -- no settlement target, proves transport only."
+      "note": "DeliveryProofReceiver test message -- no settlement target, proves transport only. Not a decision-relay dispatch, so the ReplayGuard destination check below does not apply to it."
     },
     {
       "messageId": "0x2676915c4106fff9acc0d4e79ee096d9c81bac6e919adc0d56e0f28191ae5a9c",
       "purpose": "replay-guard-first-delivery",
       "expectedOutcome": "delivered",
-      "note": "First real delivery used to seed ReplayGuard's first recorded decision hash."
+      "decisionHash": "0x059c9879d5b415c004f10298997ef897cbd0de6ff4cc0b9e2a2fbfe2ec46bee7",
+      "note": "First real delivery used to seed ReplayGuard's first recorded decision hash. decisionHash is checked directly against the live ReplayGuard PDA's `seen` ring buffer on Solana Testnet -- see solanaTestnet.replayGuard below."
     },
     {
       "messageId": "0xb6d6bf41fe994f81684b2dd15f3cc5a7f4ec46beb681088cdb2f091713b9a172",
       "purpose": "replay-guard-rejection-test",
       "expectedOutcome": "rejected-or-never-submitted",
-      "note": "Deliberate replay of the prior message's decision content -- expected to never settle. Undelivered past SLA is the EXPECTED state for this message, not a real outage. See chains/solana/REPLAYGUARD_DEPLOYMENT.md for the full, honestly-stated result (no on-chain attempt observed, not a confirmed on-chain rejection)."
+      "decisionHash": "0x059c9879d5b415c004f10298997ef897cbd0de6ff4cc0b9e2a2fbfe2ec46bee7",
+      "note": "Deliberate replay of the prior message's decision content -- expected to never settle a SECOND time (the hash is already recorded from the first delivery above, so its presence in `seen` proves nothing new about this message). Undelivered past SLA is the EXPECTED state for this message, not a real outage. See chains/solana/REPLAYGUARD_DEPLOYMENT.md for the full, honestly-stated result (no on-chain process() attempt observed for this message, not a confirmed on-chain rejection)."
     }
-  ]
+  ],
+  "solanaTestnet": {
+    "rpcUrl": "https://api.testnet.solana.com",
+    "decisionRelayProgramId": "not yet recorded here -- see chains/solana/target/deploy/decision_relay-keypair.json or `solana address -k` against it; filled in only when this check is actually run against a specific deploy, never guessed",
+    "replayGuard": {
+      "pda": "CKriFFG52NBt4bXA1bjspn1viYo1TkswhHttYNyRQj9v",
+      "capacity": 32,
+      "layoutNote": "AccountData<T> wrapper prepends a 1-byte presence tag before the Borsh-serialized ReplayGuard struct: byte[0] = presence tag, bytes[1..1025] = seen (32 slots x 32 bytes, in ring-buffer order, not sorted or indexed by hash), byte[1025] = next_index. See chains/solana/programs/decision-relay/src/lib.rs's ReplayGuard::size()."
+    }
+  }
 }

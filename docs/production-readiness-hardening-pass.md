@@ -1146,3 +1146,86 @@ evidence provenance, validator3 cutover + Safe ISM migration, Solana
 ISM migration, and real alert delivery all require per-item
 authorization the operator has not yet given. `SETTLEMENT_PAUSED` has
 not been touched.
+
+## Thirteenth addendum: re-audit — checklist danger fixed, real destination-side delivery check added
+
+A second, harder external re-audit of the twelfth addendum's own work
+found the new key-rotation checklist was itself unsafe as written, and
+found the "fixed" cross-chain delivery check was still not positive
+verification. Both addressed for real this pass; no code or deploy
+state outside this repo was touched, and `SETTLEMENT_PAUSED` remains
+untouched.
+
+**P0 fixed — [key-rotation-checklist.md](key-rotation-checklist.md)
+was pointing at the wrong system.** It told the operator to rotate
+Solana secrets via Vercel and speculated the attestor allowlist might
+live in the escrow program. Neither is true:
+[DEPLOYMENT.md](../DEPLOYMENT.md) names Fly app `anc-hor-worker` as
+the sole holder of `SOLANA_ATTESTOR_PRIVATE_KEY`/`SOLANA_RELAY_PRIVATE_KEY`
+and the only process that ever dispatches a real settlement, and
+`ATTESTOR_PUBKEYS` in
+`chains/solana/programs/decision-relay/src/lib.rs` is a compile-time
+constant inside the `decision-relay` program — not an env-var,
+readable by neither Vercel nor the escrow program. Rewrote the
+attestor-key procedure to require, in order: resolving any in-flight
+co-signature first, a real tested `decision-relay` program upgrade
+that installs the new public key in `ATTESTOR_PUBKEYS`, a Testnet
+attested-settlement validation against the *upgraded* program before
+the private key is touched anywhere real, only then setting the new
+key on `anc-hor-worker` (not Vercel), a second post-cutover validation,
+and only then discarding the old key. The relay-key procedure was
+corrected to the same app (`anc-hor-worker`, not Vercel) — no program
+upgrade needed there since that key isn't checked against any on-chain
+allowlist.
+
+**P1 fixed — destination-aware delivery verification implemented.**
+The prior fix correctly stopped calling Sepolia's `Mailbox.delivered()`
+on cross-chain dispatches, but reported them as "pass" with actual
+state "unknown" — not positive verification. `verify-deployment.ts`
+now queries the live ReplayGuard PDA on Solana Testnet directly over
+raw JSON-RPC (`getAccountInfo`, decoding the same byte layout
+confirmed in `REPLAYGUARD_DEPLOYMENT.md`: 1-byte presence tag + 32×32
+bytes of `seen` + 1-byte `next_index`) and checks whether a
+dispatch's real `decisionHash` is actually present. An
+expected-delivered cross-chain dispatch now only reports `pass` when
+that hash is confirmed present on Solana; it reports `fail` if
+confirmably absent, and `warn` — never `pass` — if the destination
+check can't run at all (no RPC config, no decisionHash, or the query
+fails). The replay-rejection test message is explicitly reported as
+unverifiable by this method (the hash is already present from the
+first legitimate delivery, so presence alone can't distinguish
+"never submitted" from "resubmitted and rejected") rather than folded
+into either pass or fail. Verified live this pass (against the public
+RPC fallback, local dev only): the destination check genuinely
+reached Solana Testnet and confirmed
+`0x2676915c...e5a9c`'s decisionHash IS present in the real ReplayGuard
+PDA's `seen` buffer — real, positive, destination-side evidence.
+
+**P1 fixed — checkpoint coverage now selects the right message.**
+`checkMessageCheckpointCoverage` used to always check the single
+latest dispatch, which — right after this project's own tooling sent
+a deliberate replay test — was that test message, not a production or
+rehearsal dispatch. It now walks backward past every
+`knownNonSettlementDispatches`-classified message to find the latest
+real production/rehearsal dispatch, reports coverage against that
+message's actual nonce, and separately flags (informationally) when
+the very latest dispatch in the window is itself a classified test so
+that fact isn't silently lost. Verified live: coverage is now reported
+against nonce 872850 (the real prior production dispatch), not the
+replay test's nonce.
+
+**P1, correctly not addressed this pass — the backfill lag itself.**
+The audit is right that "no OOM/restart" must not substitute for
+checkpoint currency: `checkpoint-currency` still fails at a ~1370-leaf
+contiguous lag, unchanged in magnitude across this pass's checks, and
+the 24h gate is only a few hours in. No code change fixes this — it
+needs the observation window to actually run to its conclusion (see
+24H_OBSERVATION_LOG.md), and diagnosis if the lag is still flat at the
+deadline.
+
+**Not started, correctly held per the standing instruction**
+("Continue read-only until explicitly authorized... Do not lift
+`SETTLEMENT_PAUSED`"): a deterministic on-chain ReplayGuard rejection
+proof, the no-customer-funds settlement rehearsal, validator3 + Safe
+ISM cutover, the Solana ISM migration, and live alert wiring. All
+remain items 4-10's responsibility, not this addendum's.
