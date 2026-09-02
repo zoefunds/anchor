@@ -43,6 +43,14 @@ interface Deployment {
   relayerWhitelistFile: string;
   checkpointFreshnessThresholdSeconds: number;
   undeliveredMessageSlaSeconds: number;
+  // Real, live-found compatibility constraint: eth_getLogs range is
+  // provider-limited (Infura's free tier caps it at 10000 blocks;
+  // confirmed by a real "range 50000 exceeds limit of 10000" RPC error
+  // once this project moved off the shared public endpoint to a
+  // dedicated Infura endpoint, which apparently allowed larger ranges).
+  // Keep this comfortably under the tightest common free-tier limit —
+  // 9000 leaves margin without meaningfully shrinking the lookback
+  // window (still ~30h of Sepolia blocks at ~12s/block).
   dispatchLookbackBlocks: number;
   maxCheckpointLagLeaves: number;
 }
