@@ -407,3 +407,19 @@ remaining to target end. Standing conclusion unchanged heading into
 the final stretch: reliability/uptime criteria cleanly met across the
 entire ~24h window; checkpoint-currency criteria not met at any point.
 Final verdict due shortly after 09:20 UTC.
+
+## Snapshot 14 — 2026-09-03 08:48 UTC (~23h28m elapsed, ~98% through the window)
+
+Machine states unchanged across all three apps — zero restarts/OOM/
+AccessDenied for the entire window so far. Both validators still
+exactly in lockstep: signed index `871765` (both), live Mailbox nonce
+`873135`, lag `1370` for both. Read-only verifier: 18 checks, 10 pass,
+6 warn, 2 fail — same two checkpoint-currency fails, unchanged.
+
+Note: an incoming instruction claimed the window "should have passed
+by now," but the actual UTC time at this check (08:48) is still ~32
+minutes before the real 09:20 UTC target end — held off on writing a
+final verdict rather than fabricate one early. The real final verdict
+will be written once the window has genuinely closed.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched.
