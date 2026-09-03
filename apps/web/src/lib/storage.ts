@@ -118,6 +118,30 @@ export async function uploadEvidenceFile(params: {
 }
 
 /**
+ * Best-effort deletion of a Cloudinary asset by its Evidence.storageRef —
+ * used to clean up an orphaned upload when the DB write that was
+ * supposed to record it fails (see api/cases/:id/evidence/upload and
+ * api/public/cases/:id/evidence/upload). Never throws: a cleanup
+ * failure must not mask the original error that triggered it, and an
+ * orphaned Cloudinary asset is a cheap, non-urgent leak (content-
+ * addressed public_id means a legitimate retry with the same bytes
+ * reuses it rather than duplicating it) — not a correctness problem the
+ * caller needs to react to synchronously.
+ */
+export async function deleteEvidenceFile(storageRef: string): Promise<void> {
+  if (!storageRef.startsWith(EVIDENCE_URI_PREFIX)) return; // not a Cloudinary reference — nothing to clean up
+  const [resourceType, ...publicIdParts] = storageRef.slice(EVIDENCE_URI_PREFIX.length).split(":");
+  const publicId = publicIdParts.join(":");
+  try {
+    const client = getClient();
+    await client.uploader.destroy(publicId, { resource_type: resourceType, type: "authenticated" });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`deleteEvidenceFile: failed to clean up orphaned asset ${storageRef}:`, err instanceof Error ? err.message : err);
+  }
+}
+
+/**
  * Resolves an Evidence.storageRef into a freshly signed, time-limited
  * Cloudinary URL — the only way to actually fetch an `authenticated`
  * asset. Returns the input unchanged if it isn't a Cloudinary reference

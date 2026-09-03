@@ -27,6 +27,27 @@ enum PartyRole {
   respondent
 }
 
+// Real P1 fixed here (external audit finding): Evidence.submittedBy was
+// previously the ONLY attribution signal, and for organization-
+// authenticated routes it was just a caller-supplied string the org
+// could set to "claimant" or "respondent" with zero verification —
+// audited as "organization callers can self-assert party attribution."
+// This enum is set server-side, never from request input, in every
+// evidence route (see api/cases/:id/evidence*, api/public/cases/:id/
+// evidence*) — it records HOW this row's attribution was actually
+// established, independent of what submittedBy claims.
+enum EvidenceAttributionSource {
+  // Written by an org session/API-key caller — submittedBy (if set) is
+  // the org's own unverified assertion about which party this is from.
+  organization_asserted
+  // Written by the public party-evidence route, resolved from a real
+  // claimant token/session — see lib/party-auth.ts. Stronger than
+  // organization_asserted (real party-specific standing), but still not
+  // cryptographic proof unless signatureVerified is also true.
+  claimant_authenticated
+  respondent_authenticated
+}
+
 // An Organization is the tenant boundary: it owns API keys (for agent /
 // programmatic callers) and has human Members (for dashboard logins).
 // Every Case belongs to exactly one Organization — this is the scoping
@@ -420,7 +441,18 @@ model Evidence {
   // apart from a PDF/other file it can only note the existence of.
   mimeType     String?
   fileSizeBytes Int?
+  // Caller-claimed party role — kept for organization-authenticated
+  // routes as informational (still just an assertion), and set from
+  // real resolved party auth on the public routes. Never trust this
+  // alone for attribution strength; see attributionSource.
   submittedBy  PartyRole?
+  // Server-derived, never caller-controlled — see
+  // EvidenceAttributionSource's own doc comment above. Defaults to the
+  // most conservative value (organization_asserted) purely so existing
+  // rows backfill safely when this column is added — every write path
+  // sets it explicitly going forward, this default is never relied on
+  // by application code.
+  attributionSource EvidenceAttributionSource @default(organization_asserted)
   // Real extracted text content for uploaded PDFs (see
   // api/cases/:id/evidence/upload/route.ts) - previously the contract
   // could only confirm a PDF's URL was reachable, never read what was

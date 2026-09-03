@@ -94,6 +94,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         contentHash,
         storageRef: content,
         submittedBy: resolved.role,
+        attributionSource: resolved.role === "claimant" ? "claimant_authenticated" : "respondent_authenticated",
         signatureVerified,
       },
     });

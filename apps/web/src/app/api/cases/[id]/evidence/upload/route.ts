@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
-import { uploadEvidenceFile } from "@/lib/storage";
+import { uploadEvidenceFile, deleteEvidenceFile } from "@/lib/storage";
 import { canAccessCase } from "@/lib/case-access";
 import { extractPdfText } from "@/lib/pdf-extract";
+import { logAction } from "@/lib/audit";
 
 // POST /api/cases/:id/evidence/upload — multipart file evidence (images,
 // PDFs). The file goes to R2 at a real public URL; for images, the
@@ -83,18 +84,60 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
   }
 
-  const evidence = await prisma.evidence.create({
-    data: {
-      caseId: kase.id,
-      type,
-      contentHash: uploaded.contentHash,
-      storageRef: uploaded.uri,
-      mimeType: uploaded.mimeType,
-      fileSizeBytes: uploaded.sizeBytes,
-      submittedBy: submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null,
-      extractedText,
-    },
-  });
+  // Real P1 fixed here (external audit finding, raised twice): this
+  // route uploaded the file and inserted the Evidence row with no audit
+  // record at all, and no cleanup if the DB write failed after a real
+  // upload had already happened. Now: the DB write + audit record are
+  // one transaction (matching the pattern already used for inline
+  // evidence and case/webhook/api-key creation), and if that
+  // transaction fails, the just-uploaded file is best-effort cleaned up
+  // rather than left as a silent orphan. attributionSource is always
+  // "organization_asserted" here — this is the org-authenticated route,
+  // submittedBy (if present) remains only the org's own unverified
+  // claim about which party this is from, never trusted as real
+  // attribution strength.
+  let evidence;
+  try {
+    evidence = await prisma.$transaction(async (tx) => {
+      const created = await tx.evidence.create({
+        data: {
+          caseId: kase.id,
+          type,
+          contentHash: uploaded.contentHash,
+          storageRef: uploaded.uri,
+          mimeType: uploaded.mimeType,
+          fileSizeBytes: uploaded.sizeBytes,
+          submittedBy: submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null,
+          attributionSource: "organization_asserted",
+          extractedText,
+        },
+      });
+      await logAction(
+        {
+          organizationId: auth.organizationId,
+          memberId: auth.memberId,
+          apiKeyId: auth.apiKeyId,
+          action: "evidence.submitted",
+          targetType: "evidence",
+          targetId: created.id,
+          metadata: {
+            caseId: kase.id,
+            type,
+            contentHash: uploaded.contentHash,
+            mimeType: uploaded.mimeType,
+            fileSizeBytes: uploaded.sizeBytes,
+            submittedBy: submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null,
+            source: "organization",
+          },
+        },
+        tx
+      );
+      return created;
+    });
+  } catch (err) {
+    await deleteEvidenceFile(uploaded.uri);
+    throw err;
+  }
 
   return NextResponse.json(evidence, { status: 201 });
 }

@@ -31,6 +31,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!type || !content) {
     return NextResponse.json({ error: "type and content are required" }, { status: 400 });
   }
+  // Validated instead of passed straight to Prisma (a real gap: an
+  // invalid value here used to reach the DB as a raw enum write and
+  // fail with an opaque 500, not a clean 400) — matches the validation
+  // the file-upload route already had.
+  const validatedSubmittedBy = submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null;
 
   const submitError = checkEvidenceSubmittable(kase, type);
   if (submitError) return submitError;
@@ -53,7 +58,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         type,
         contentHash,
         storageRef: content,
-        submittedBy: submittedBy ?? null,
+        submittedBy: validatedSubmittedBy,
+        attributionSource: "organization_asserted",
       },
     });
     await logAction(
@@ -64,7 +70,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         action: "evidence.submitted",
         targetType: "evidence",
         targetId: created.id,
-        metadata: { caseId: kase.id, type, contentHash, submittedBy: submittedBy ?? null, source: "organization" },
+        metadata: { caseId: kase.id, type, contentHash, submittedBy: validatedSubmittedBy, source: "organization" },
       },
       tx
     );

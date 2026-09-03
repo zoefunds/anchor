@@ -18,6 +18,13 @@ function appOrigin(req: NextRequest): string {
 // regardless of whether the email matches a member, so this endpoint
 // can't be used to enumerate registered emails.
 export async function POST(req: NextRequest) {
+  // Real P1 fixed here (external audit finding): appOrigin() used to be
+  // called only after the PasswordReset row was already inserted — a
+  // misconfigured APP_ORIGIN would throw AFTER that real state write,
+  // leaving an unusable reset token in the DB with no way to ever build
+  // its link. Called first, before any state is written.
+  const resolvedAppOrigin = appOrigin(req);
+
   const { email } = await req.json();
   if (!email || typeof email !== "string") {
     return NextResponse.json({ error: "email is required" }, { status: 400 });
@@ -34,7 +41,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    const resetUrl = `${appOrigin(req)}/reset-password/${rawToken}`;
+    const resetUrl = `${resolvedAppOrigin}/reset-password/${rawToken}`;
     try {
       await sendPasswordResetEmail({ to: member.email, resetUrl });
     } catch (err) {

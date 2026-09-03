@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
-import { uploadEvidenceFile } from "@/lib/storage";
+import { uploadEvidenceFile, deleteEvidenceFile } from "@/lib/storage";
 import { extractPdfText } from "@/lib/pdf-extract";
+import { logAction } from "@/lib/audit";
 
 // POST /api/public/cases/:id/evidence/upload — multipart file evidence
 // (images, PDFs) from a party authenticated by their own per-case token
@@ -75,20 +76,52 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
   }
 
-  const evidence = await prisma.evidence.create({
-    data: {
-      caseId: kase.id,
-      type,
-      contentHash: uploaded.contentHash,
-      storageRef: uploaded.uri,
-      mimeType: uploaded.mimeType,
-      fileSizeBytes: uploaded.sizeBytes,
-      // Cryptographically derived from the token, not a form field — see
-      // the sibling text-evidence route for why this matters.
-      submittedBy: resolved.role,
-      extractedText,
-    },
-  });
+  // Real P1 fixed here (external audit finding, raised twice): no audit
+  // record and no orphan cleanup on DB failure — same fix as the
+  // org-authenticated upload route. attributionSource is derived from
+  // resolved.role (real party auth), never request input.
+  let evidence;
+  try {
+    evidence = await prisma.$transaction(async (tx) => {
+      const created = await tx.evidence.create({
+        data: {
+          caseId: kase.id,
+          type,
+          contentHash: uploaded.contentHash,
+          storageRef: uploaded.uri,
+          mimeType: uploaded.mimeType,
+          fileSizeBytes: uploaded.sizeBytes,
+          // Cryptographically derived from the token, not a form field — see
+          // the sibling text-evidence route for why this matters.
+          submittedBy: resolved.role,
+          attributionSource: resolved.role === "claimant" ? "claimant_authenticated" : "respondent_authenticated",
+          extractedText,
+        },
+      });
+      await logAction(
+        {
+          organizationId: kase.organizationId,
+          action: "evidence.submitted",
+          targetType: "evidence",
+          targetId: created.id,
+          metadata: {
+            caseId: kase.id,
+            type,
+            contentHash: uploaded.contentHash,
+            mimeType: uploaded.mimeType,
+            fileSizeBytes: uploaded.sizeBytes,
+            submittedBy: resolved.role,
+            source: "party",
+          },
+        },
+        tx
+      );
+      return created;
+    });
+  } catch (err) {
+    await deleteEvidenceFile(uploaded.uri);
+    throw err;
+  }
 
   return NextResponse.json(evidence, { status: 201 });
 }

@@ -15,6 +15,16 @@ function hashToken(token: string): string {
 // (OWNER-role) Member, then a session. Every subsequent member joins via
 // the invite flow (src/app/api/invites), arriving as MEMBER role.
 export async function POST(req: NextRequest) {
+  // Real P1 fixed here (external audit finding): secureAppOrigin() used
+  // to only be called deep inside a fire-and-forget .then() callback,
+  // AFTER the organization/member/session were already created — a
+  // misconfigured APP_ORIGIN in production would throw there, get
+  // silently swallowed by the existing .catch(), and only show up as a
+  // log line while signup otherwise "succeeded" with no way to ever
+  // verify that email. Called here, first, before any state is written,
+  // so a misconfigured deployment fails loudly and immediately instead.
+  const appOrigin = secureAppOrigin(req.nextUrl.origin);
+
   const { organizationName, email, password } = await req.json();
 
   if (!organizationName || !email || !password) {
@@ -52,7 +62,7 @@ export async function POST(req: NextRequest) {
       data: { memberId: member.id, tokenHash: hashToken(rawToken), expiresAt: new Date(Date.now() + VERIFICATION_TTL_MS) },
     })
     .then(() => {
-      const verifyUrl = `${secureAppOrigin(req.nextUrl.origin)}/verify-email/${rawToken}`;
+      const verifyUrl = `${appOrigin}/verify-email/${rawToken}`;
       return sendVerificationEmail({ to: email, verifyUrl });
     })
     .catch((err) => {
