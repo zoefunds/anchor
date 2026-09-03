@@ -55,7 +55,10 @@ export default function CutoverReadinessPage() {
   if (forbidden) {
     return (
       <main className="mx-auto max-w-3xl px-8 py-16">
-        <p className="text-sm text-status-undetermined">Only your organization's owner can run the cutover readiness check.</p>
+        <p className="text-sm text-status-undetermined">
+          This is a platform-wide operator page, not an organization setting — your account isn't on the
+          platform-admin allowlist.
+        </p>
         <Link href="/cases" className="mt-4 inline-block text-sm text-seal-500 hover:underline dark:text-seal-400">
           ← Docket
         </Link>
@@ -72,8 +75,8 @@ export default function CutoverReadinessPage() {
         >
           ← Docket
         </Link>
-        <Link href="/settings/members" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
-          Members →
+        <Link href="/settings/reconciliation-findings" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
+          Reconciliation findings →
         </Link>
       </div>
 

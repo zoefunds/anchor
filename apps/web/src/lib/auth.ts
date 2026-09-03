@@ -248,6 +248,27 @@ export async function requireOwner(): Promise<AuthedMember | { error: "unauthori
 }
 
 /**
+ * Platform-operator-only — deliberately stricter than requireOwner.
+ * ReconciliationFinding (see lib/reconciliation.ts) is global,
+ * cross-tenant data: it names real SettlementIntegration/Organization
+ * ids across every org on this deployment, not just the caller's own.
+ * An org's OWNER is the wrong authority to see that — this repo has no
+ * separate "platform admin" role/table, so PLATFORM_ADMIN_EMAILS (a
+ * comma-separated env var, unset by default) is the real, explicit
+ * allowlist. Unset means nobody passes, not "any owner" — fail closed.
+ */
+export async function requirePlatformAdmin(): Promise<AuthedMember | { error: "unauthorized" | "forbidden" }> {
+  const member = await getSessionMember();
+  if (!member) return { error: "unauthorized" };
+  const allowlist = (process.env.PLATFORM_ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  if (!allowlist.includes(member.email.toLowerCase())) return { error: "forbidden" };
+  return member;
+}
+
+/**
  * Rejects VIEWER-role session members from mutating routes. Call after
  * resolveOrgFromRequest succeeds, before performing the write — API-key
  * callers (no `role`) and OWNER/MEMBER session callers pass through

@@ -20,6 +20,20 @@ const OVERDUE_DEPOSIT_MS = Number(process.env.RECONCILIATION_OVERDUE_DEPOSIT_MS 
 // layer at all.
 const AUDIT_ANCHOR_STALE_MS = 2 * 30 * 60 * 1000;
 
+// Priority 5, item 18/20: the single source of truth for how severe
+// each finding type is — used both here (the severity actually sent
+// to sendOpsAlert) and by the reconciliation-findings dashboard/API
+// for display, so the two can never quietly disagree about how
+// urgent a given finding type is.
+export const FINDING_SEVERITY: Record<string, "info" | "warning" | "critical"> = {
+  ZERO_SETTLEMENT_TARGET: "critical",
+  TARGET_INTEGRATION_MISMATCH: "critical",
+  ESCROW_VERSION_MISMATCH: "critical",
+  OVERDUE_DEPOSIT: "warning",
+  DISPATCHED_BUT_DB_STALE: "warning",
+  AUDIT_ANCHOR_STALE: "warning",
+};
+
 const DECISION_RELAY_ABI = [
   {
     type: "function",
@@ -60,7 +74,7 @@ function hashToBytes32(hash: string): `0x${string}` {
  * on its own. Leaving alertedAt null on a skip/failure is what makes
  * raiseFinding's retry-if-never-delivered logic below actually work.
  */
-async function tryAlert(findingId: string, alert: { severity: "info" | "warning" | "critical"; title: string; detail: string }): Promise<void> {
+export async function tryAlert(findingId: string, alert: { severity: "info" | "warning" | "critical"; title: string; detail: string }): Promise<void> {
   try {
     const delivered = await sendOpsAlert(alert);
     if (delivered) {

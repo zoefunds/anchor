@@ -848,7 +848,39 @@ model ReconciliationFinding {
   // sweep tell "never alerted yet" apart from "alerted, still open,
   // don't re-alert every tick" without needing a separate table.
   alertedAt  DateTime?
+  // Priority 5 (settlement-readiness gaps, item 18): a human
+  // explicitly saying "I've seen this and I'm on it" — distinct from
+  // resolvedAt, which only the sweep itself sets once the underlying
+  // condition is actually gone. An unacknowledged critical finding is
+  // exactly what an ops dashboard needs to make visible; acknowledging
+  // it doesn't change the finding's own state, only records that a
+  // real person has taken ownership.
+  acknowledgedAt         DateTime?
+  acknowledgedByMemberId String?
+
+  events ReconciliationFindingEvent[]
 
   @@unique([type, targetId])
   @@index([resolvedAt])
+}
+
+// Priority 5, item 18: remediation history — every acknowledgement and
+// operator note against a finding, in order, so "what did we do about
+// this and when" is a real, queryable record rather than living only
+// in Slack scrollback.
+enum ReconciliationFindingEventType {
+  ACKNOWLEDGED
+  NOTE
+}
+
+model ReconciliationFindingEvent {
+  id         String                          @id @default(cuid())
+  finding    ReconciliationFinding           @relation(fields: [findingId], references: [id])
+  findingId  String
+  type       ReconciliationFindingEventType
+  memberId   String
+  note       String?
+  createdAt  DateTime                        @default(now())
+
+  @@index([findingId])
 }

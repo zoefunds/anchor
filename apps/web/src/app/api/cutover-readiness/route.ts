@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireOwner } from "@/lib/auth";
+import { requirePlatformAdmin } from "@/lib/auth";
 import { runCutoverReadinessCheck } from "@/lib/cutover-readiness";
 
 // Event-log scanning from a fixed historical start block can take a
@@ -10,12 +10,15 @@ export const maxDuration = 60;
 // GET /api/cutover-readiness — Item D UI: the same real checks
 // scripts/cutover-readiness-check.sh performs (unsettled V1 deposits,
 // Safe threshold, live settlementTarget vs. each integration), surfaced
-// to the dashboard instead of CLI+SSH only. OWNER-only and read-only —
-// makes zero writes, on-chain or in the database. Can be slow (scans
-// real event logs from a fixed start block), so this is an on-demand
-// check, not something polled automatically.
+// to the dashboard instead of CLI+SSH only. Platform-admin-only, NOT
+// org-OWNER-only: runCutoverReadinessCheck queries every Sepolia
+// SettlementIntegration across every organization (a V1->V2 cutover is
+// a platform-wide DecisionRelay concern, not a per-org one) — an
+// org's own OWNER is the wrong authority to see other orgs' escrow
+// addresses and integration ids. Read-only regardless — makes zero
+// writes, on-chain or in the database.
 export async function GET() {
-  const member = await requireOwner();
+  const member = await requirePlatformAdmin();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }

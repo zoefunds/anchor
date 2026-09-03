@@ -110,8 +110,24 @@ export async function verifyEscrowVersionUnchanged(params: { integrationId: stri
 async function recordVersionMismatch(integrationId: string, escrowContractAddress: Address, liveVersion: string, expectedVersion: string): Promise<void> {
   const integration = await prisma.settlementIntegration.findUnique({ where: { id: integrationId } });
   if (!integration) return;
-  await prisma.$transaction(async (tx) => {
-    await tx.reconciliationFinding.upsert({
+
+  const existing = await prisma.reconciliationFinding.findUnique({
+    where: { type_targetId: { type: "ESCROW_VERSION_MISMATCH", targetId: integrationId } },
+  });
+  // Real fix: this used to unconditionally reset alertedAt to null on
+  // every single call, which — since verifyEscrowVersionUnchanged runs
+  // on every real deposit-confirmation/dispatch read — would have
+  // fired a fresh Slack alert every time, not once per opened finding.
+  // Worse, it never actually delivered an alert at all (no call to
+  // sendOpsAlert/tryAlert existed here) — this closes both gaps at
+  // once, matching raiseFinding's own discipline in reconciliation.ts:
+  // alert once when newly opened, retry only if never actually
+  // delivered, never re-alert a still-open, already-alerted finding.
+  const alreadyOpenAndAlerted = existing && !existing.resolvedAt && existing.alertedAt;
+  if (alreadyOpenAndAlerted) return;
+
+  const finding = await prisma.$transaction(async (tx) => {
+    const upserted = await tx.reconciliationFinding.upsert({
       where: { type_targetId: { type: "ESCROW_VERSION_MISMATCH", targetId: integrationId } },
       create: {
         type: "ESCROW_VERSION_MISMATCH",
@@ -119,7 +135,7 @@ async function recordVersionMismatch(integrationId: string, escrowContractAddres
         targetId: integrationId,
         detail: { escrowContractAddress, expectedVersion, liveVersion },
       },
-      update: { resolvedAt: null, detail: { escrowContractAddress, expectedVersion, liveVersion }, alertedAt: null },
+      update: { resolvedAt: null, detail: { escrowContractAddress, expectedVersion, liveVersion } },
     });
     await logAction(
       {
@@ -131,6 +147,14 @@ async function recordVersionMismatch(integrationId: string, escrowContractAddres
       },
       tx
     );
+    return upserted;
+  });
+
+  const { tryAlert } = await import("@/lib/reconciliation");
+  await tryAlert(finding.id, {
+    severity: "critical",
+    title: "Escrow contract version mismatch",
+    detail: `Integration ${integrationId}'s escrow ${escrowContractAddress} now behaves like ${liveVersion}, but was registered as ${expectedVersion}. This usually means the contract was redeployed after registration.`,
   });
 }
 

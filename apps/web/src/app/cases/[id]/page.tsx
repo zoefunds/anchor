@@ -67,6 +67,7 @@ interface SettlementIntegrationSummary {
   escrowContractAddress: string;
   assetSymbol: string;
   active: boolean;
+  escrowVersion: "V1" | "V2";
 }
 
 interface CaseSettlementSummary {
@@ -871,6 +872,14 @@ function EscrowPanel({
               </button>
             )}
             {escrowNote && <p className="mt-3 text-sm text-muted dark:text-muted-dark">{escrowNote}</p>}
+            {isOwner && caseSettlement.status === "DEPOSITED" && caseSettlement.integration.escrowVersion === "V2" && (
+              <Link
+                href={`/cases/${kase.id}/emergency-refund`}
+                className="mt-6 inline-block font-mono text-xs text-status-undetermined hover:underline"
+              >
+                Stuck? Request an emergency refund →
+              </Link>
+            )}
           </>
         )}
       </div>
