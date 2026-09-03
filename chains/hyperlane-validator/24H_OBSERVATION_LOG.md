@@ -243,6 +243,31 @@ v34, user-run deploy) and `apps/web` was redeployed to Vercel to
 match — both confirmed healthy (200/401 responses, no 500s). Unrelated
 to, and no impact on, this observation window.
 
+## Snapshot 9 — 2026-09-02 22:35 UTC (~13h15m elapsed, ~90% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same display artifact) | 0 | 0 |
+
+**Checkpoint publication — validator1's signed index is STILL `871681`,
+now a third consecutive snapshot with zero movement (~3h04m since it
+last advanced, at Snapshot 6).** Live Mailbox nonce advanced `873066` →
+`873072` (+6). Lag: `1385` → `1391` (+6, again the full interval
+unabsorbed). **Validator2 continues perfectly steady**: index
+`871696` → `871702` (+6, matching the nonce exactly), lag unchanged at
+`1370`.
+
+**Read-only verifier**: 19 checks, 11 pass, 6 warn, 2 fail — same
+pattern, validator1's fail now the worst of the window (`1391`).
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~10h45m
+remaining to target end. Validator1's backfill has now been completely
+stalled for over 3 hours, roughly 13% of the entire window — this is
+no longer a borderline call. Absent a resumption, this gate item is on
+track to fail decisively at the 24h mark, not marginally.
+
 **Quick re-check — 2026-09-02 17:19 UTC** (~4 minutes after the root-cause
 capture above, too soon for a new checkpoint-lag reading to carry any
 signal): all three machines still `started` with unchanged `Last
