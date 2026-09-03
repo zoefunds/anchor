@@ -4,7 +4,10 @@
       "domainId": 11155111,
       "name": "sepolia",
       "protocol": "ethereum",
-      "rpcUrls": [{ "http": "__SEPOLIA_RPC_URL__" }]
+      "rpcUrls": [{ "http": "__SEPOLIA_RPC_URL__" }],
+      "index": {
+        "chunk": 5000
+      }
     }
   }
 }
