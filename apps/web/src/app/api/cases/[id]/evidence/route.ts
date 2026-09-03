@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { canAccessCase } from "@/lib/case-access";
+import { logAction } from "@/lib/audit";
 
 // POST /api/cases/:id/evidence — inline text/JSON evidence (task specs,
 // statements, delivery payloads). For images/PDFs, see
@@ -36,14 +37,38 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const contentHash = createHash("sha256").update(content).digest("hex");
 
-  const evidence = await prisma.evidence.create({
-    data: {
-      caseId: kase.id,
-      type,
-      contentHash,
-      storageRef: content,
-      submittedBy: submittedBy ?? null,
-    },
+  // Real audit-completeness gap fixed here (external audit finding):
+  // evidence submission was never audited at all — a real gap for a
+  // security/dispute-relevant mutation. Wrapped in one transaction with
+  // the audit write, same pattern as case/webhook/api-key creation
+  // elsewhere in this project. Also note in the audit metadata that this
+  // is organization-asserted attribution (submittedBy is a caller-
+  // supplied string here, not derived from real party auth) — see
+  // api/public/cases/:id/evidence/route.ts for the stronger, party-
+  // token-derived path.
+  const evidence = await prisma.$transaction(async (tx) => {
+    const created = await tx.evidence.create({
+      data: {
+        caseId: kase.id,
+        type,
+        contentHash,
+        storageRef: content,
+        submittedBy: submittedBy ?? null,
+      },
+    });
+    await logAction(
+      {
+        organizationId: auth.organizationId,
+        memberId: auth.memberId,
+        apiKeyId: auth.apiKeyId,
+        action: "evidence.submitted",
+        targetType: "evidence",
+        targetId: created.id,
+        metadata: { caseId: kase.id, type, contentHash, submittedBy: submittedBy ?? null, source: "organization" },
+      },
+      tx
+    );
+    return created;
   });
 
   return NextResponse.json(evidence, { status: 201 });

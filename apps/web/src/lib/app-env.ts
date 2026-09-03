@@ -35,6 +35,31 @@ export function getAppEnv(): AppEnv {
 }
 
 /**
+ * The origin to build security-sensitive links from (email verification,
+ * password reset, org invites) — never the inbound request's own Host
+ * header outside development. Real P1 fixed here (external audit
+ * finding): several routes fell back to `req.nextUrl.origin` whenever
+ * `APP_ORIGIN` wasn't set, which means a request with a spoofed/forwarded
+ * Host header could get Anchor to generate a real, working verification/
+ * reset/invite link pointing at an attacker-controlled domain — the
+ * classic Host-header-injection password-reset-poisoning pattern. In
+ * development the request's own origin is a reasonable, low-stakes
+ * default (no real users, easier local testing); in staging/production
+ * `APP_ORIGIN` is now mandatory, matching this project's existing
+ * "explicit, no guessing" posture for APP_ENV itself.
+ */
+export function secureAppOrigin(requestOrigin: string): string {
+  const configured = process.env.APP_ORIGIN;
+  if (configured) return configured;
+  if (getAppEnv() === "development") return requestOrigin;
+  throw new Error(
+    "APP_ORIGIN is not set — required outside development so security-sensitive links " +
+      "(email verification, password reset, invites) are never built from an inbound " +
+      "request's Host header. See apps/web/.env.example."
+  );
+}
+
+/**
  * Reject startup if this process's APP_ENV doesn't match the database it's
  * actually connected to. Self-bootstraps on first run against a fresh
  * database (creates the single guard row for the environment this process

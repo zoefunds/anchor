@@ -1,9 +1,10 @@
 import { randomBytes, createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSessionMember, requireOwner } from "@/lib/auth";
+import { requireOwner } from "@/lib/auth";
 import { sendInviteEmail } from "@/lib/email";
 import { logAction } from "@/lib/audit";
+import { secureAppOrigin } from "@/lib/app-env";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -12,14 +13,18 @@ function hashToken(token: string): string {
 }
 
 function appOrigin(req: NextRequest): string {
-  return process.env.APP_ORIGIN || req.nextUrl.origin;
+  return secureAppOrigin(req.nextUrl.origin);
 }
 
-// GET /api/invites — list pending invites for the caller's org (dashboard-only, session auth).
+// GET /api/invites — list pending invites for the caller's org.
+// OWNER-only: real P1 fixed here (external audit finding) — this used
+// to accept any authenticated member, letting a MEMBER/VIEWER see
+// pending invite emails for the org, which is membership-management
+// information no one but the owner asked to share with them.
 export async function GET() {
-  const member = await getSessionMember();
-  if (!member) {
-    return NextResponse.json({ error: "authentication required" }, { status: 401 });
+  const member = await requireOwner();
+  if ("error" in member) {
+    return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
   const invites = await prisma.invite.findMany({

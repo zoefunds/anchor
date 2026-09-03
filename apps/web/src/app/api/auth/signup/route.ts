@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, createSession } from "@/lib/auth";
 import { sendVerificationEmail } from "@/lib/email";
+import { secureAppOrigin } from "@/lib/app-env";
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
       data: { memberId: member.id, tokenHash: hashToken(rawToken), expiresAt: new Date(Date.now() + VERIFICATION_TTL_MS) },
     })
     .then(() => {
-      const verifyUrl = `${process.env.APP_ORIGIN || req.nextUrl.origin}/verify-email/${rawToken}`;
+      const verifyUrl = `${secureAppOrigin(req.nextUrl.origin)}/verify-email/${rawToken}`;
       return sendVerificationEmail({ to: email, verifyUrl });
     })
     .catch((err) => {

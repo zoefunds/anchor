@@ -81,6 +81,16 @@ export function toAttoAmount(amount: number | string): bigint {
     throw new Error(`toAttoAmount: amount must not be negative: ${str}`);
   }
   const [whole, frac = ""] = str.split(".");
-  const fracPadded = (frac + "0".repeat(18)).slice(0, 18);
+  // Real P1 fixed here (external audit finding): this used to silently
+  // slice off any fractional digits beyond 18 (`(frac + "0"*18).slice(0,
+  // 18)` discards excess digits instead of rejecting them) — a caller
+  // sending e.g. "1.1234567890123456789" (19 fractional digits) would
+  // have that final digit silently dropped rather than the request
+  // failing, which is exactly the kind of silent precision loss that's
+  // unacceptable for a financial amount. Reject instead.
+  if (frac.length > 18) {
+    throw new Error(`toAttoAmount: amount has more than 18 fractional digits, would lose precision: ${str}`);
+  }
+  const fracPadded = frac.padEnd(18, "0");
   return BigInt(whole) * 10n ** 18n + BigInt(fracPadded || "0");
 }

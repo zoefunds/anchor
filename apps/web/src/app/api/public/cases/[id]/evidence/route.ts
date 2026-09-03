@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { verifyPartySignature, evidenceSigningMessage } from "@/lib/party-signing";
+import { logAction } from "@/lib/audit";
 
 // POST /api/public/cases/:id/evidence — a party submitting evidence
 // directly, authenticated by their own per-case token or an exchanged
@@ -78,15 +79,35 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const contentHash = createHash("sha256").update(content).digest("hex");
 
-  const evidence = await prisma.evidence.create({
-    data: {
-      caseId: kase.id,
-      type,
-      contentHash,
-      storageRef: content,
-      submittedBy: resolved.role,
-      signatureVerified,
-    },
+  // Real audit-completeness gap fixed here (external audit finding):
+  // party-submitted evidence was never audited at all, unlike
+  // org-authenticated submissions elsewhere in this project. Wrapped in
+  // one transaction with the audit write; no memberId/apiKeyId here
+  // since this is party-token auth, not org auth — the party's role
+  // (real, resolved from their token — see this route's own header
+  // comment) is recorded in the metadata instead.
+  const evidence = await prisma.$transaction(async (tx) => {
+    const created = await tx.evidence.create({
+      data: {
+        caseId: kase.id,
+        type,
+        contentHash,
+        storageRef: content,
+        submittedBy: resolved.role,
+        signatureVerified,
+      },
+    });
+    await logAction(
+      {
+        organizationId: kase.organizationId,
+        action: "evidence.submitted",
+        targetType: "evidence",
+        targetId: created.id,
+        metadata: { caseId: kase.id, type, contentHash, submittedBy: resolved.role, signatureVerified, source: "party" },
+      },
+      tx
+    );
+    return created;
   });
 
   return NextResponse.json(evidence, { status: 201 });

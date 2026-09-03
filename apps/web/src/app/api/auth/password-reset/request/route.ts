@@ -2,6 +2,7 @@ import { randomBytes, createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { sendPasswordResetEmail } from "@/lib/email";
+import { secureAppOrigin } from "@/lib/app-env";
 
 const RESET_TTL_MS = 60 * 60 * 1000;
 
@@ -10,7 +11,7 @@ function hashToken(token: string): string {
 }
 
 function appOrigin(req: NextRequest): string {
-  return process.env.APP_ORIGIN || req.nextUrl.origin;
+  return secureAppOrigin(req.nextUrl.origin);
 }
 
 // POST /api/auth/password-reset/request — always responds the same way

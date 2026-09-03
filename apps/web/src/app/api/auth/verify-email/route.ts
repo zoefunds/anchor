@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSessionMember } from "@/lib/auth";
 import { sendVerificationEmail } from "@/lib/email";
+import { secureAppOrigin } from "@/lib/app-env";
 
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -11,7 +12,7 @@ function hashToken(token: string): string {
 }
 
 function appOrigin(req: NextRequest): string {
-  return process.env.APP_ORIGIN || req.nextUrl.origin;
+  return secureAppOrigin(req.nextUrl.origin);
 }
 
 // POST /api/auth/verify-email — send (or resend) a verification link to
