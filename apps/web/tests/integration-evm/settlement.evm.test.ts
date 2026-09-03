@@ -305,6 +305,8 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: parseEther("0.5"),
+        integrationId: "test-integration",
+        escrowVersion: "V1" as const,
       })
     ).resolves.toBeUndefined();
 
@@ -379,6 +381,8 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: parseEther("1"),
+        integrationId: "test-integration",
+        escrowVersion: "V1" as const,
       })
     ).rejects.toBeInstanceOf(EscrowValidationError);
   });
@@ -668,5 +672,61 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
         args: [escrowV2, caseId, neverDepositedEscrowId, proofHash, [sig1, sig2]],
       })
     ).rejects.toThrow();
+  });
+
+  describe("Priority 2: explicit contract-version detection", () => {
+    it("detects V1 from the real live contract's raw deposits() return length", async () => {
+      const { escrowV1 } = await deploySystem();
+      const { detectEscrowVersion } = await import("@/lib/escrow-version");
+      await expect(detectEscrowVersion(escrowV1)).resolves.toBe("V1");
+    });
+
+    it("detects V2 from the real live contract's raw deposits() return length", async () => {
+      const { escrowV2 } = await deploySystem();
+      const { detectEscrowVersion } = await import("@/lib/escrow-version");
+      await expect(detectEscrowVersion(escrowV2)).resolves.toBe("V2");
+    });
+
+    it("fails closed on an address whose deposits()-shaped call doesn't match any known version", async () => {
+      const { mailbox } = await deploySystem(); // FakeMailbox has no deposits() function at all
+      const { detectEscrowVersion, UnknownEscrowVersionError } = await import("@/lib/escrow-version");
+      await expect(detectEscrowVersion(mailbox)).rejects.toBeInstanceOf(UnknownEscrowVersionError);
+    });
+
+    it("verifyEscrowVersionUnchanged rejects and persists a real ESCROW_VERSION_MISMATCH finding when the live contract no longer matches the registered version", async () => {
+      const { escrowV1, escrowV2 } = await deploySystem();
+      const { prisma } = await import("@/lib/prisma");
+      const org = await prisma.organization.create({ data: { name: "escrow-version-mismatch-test-org" } });
+      const integration = await prisma.settlementIntegration.create({
+        data: { organizationId: org.id, chain: "sepolia", escrowContractAddress: escrowV1, assetSymbol: "ETH", assetDecimals: 18, escrowVersion: "V1", createdByMemberId: "m" },
+      });
+
+      const { verifyEscrowVersionUnchanged, EscrowVersionMismatchError } = await import("@/lib/escrow-version");
+      // Registered as V1, but check against escrowV2's real address —
+      // stands in for "this address now behaves like a different
+      // contract than what was registered" (e.g. a redeploy).
+      await expect(
+        verifyEscrowVersionUnchanged({ integrationId: integration.id, escrowContractAddress: escrowV2, expectedVersion: "V1" })
+      ).rejects.toBeInstanceOf(EscrowVersionMismatchError);
+
+      const finding = await prisma.reconciliationFinding.findUnique({
+        where: { type_targetId: { type: "ESCROW_VERSION_MISMATCH", targetId: integration.id } },
+      });
+      expect(finding).not.toBeNull();
+      expect(finding!.resolvedAt).toBeNull();
+
+      await prisma.reconciliationFinding.deleteMany({ where: { targetId: integration.id } });
+      await prisma.settlementIntegration.delete({ where: { id: integration.id } });
+      await prisma.auditLog.deleteMany({ where: { organizationId: org.id } });
+      await prisma.organization.delete({ where: { id: org.id } });
+    }, 20_000);
+
+    it("verifyEscrowVersionUnchanged passes silently when the live contract still matches the registered version", async () => {
+      const { escrowV1 } = await deploySystem();
+      const { verifyEscrowVersionUnchanged } = await import("@/lib/escrow-version");
+      await expect(
+        verifyEscrowVersionUnchanged({ integrationId: "irrelevant-on-match-path", escrowContractAddress: escrowV1, expectedVersion: "V1" })
+      ).resolves.toBeUndefined();
+    });
   });
 });

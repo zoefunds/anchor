@@ -7,9 +7,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // already-SETTLED deposit or one that was never deposited at all.
 
 const readContract = vi.fn();
+// Real V1 shape (128 raw bytes = 4 * 32-byte fields) — satisfies
+// verifyEscrowVersionUnchanged's probe (see lib/escrow-version.ts) so
+// these tests can focus on assertEscrowDepositMatches's own logic.
+const call = vi.fn().mockResolvedValue({ data: `0x${"00".repeat(128)}` });
 
 vi.mock("@/lib/hyperlane", () => ({
-  getEvmPublicClient: () => ({ readContract }),
+  getEvmPublicClient: () => ({ readContract, call }),
+}));
+
+vi.mock("@/lib/prisma", () => ({
+  prisma: { settlementIntegration: { findUnique: vi.fn().mockResolvedValue(null) } },
 }));
 
 const { assertEscrowDepositMatches, EscrowValidationError } = await import("@/lib/escrow");
@@ -34,6 +42,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).resolves.toBeUndefined();
   });
@@ -47,6 +57,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).rejects.toThrow(EscrowValidationError);
   });
@@ -60,6 +72,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).rejects.toThrow(/already SETTLED/);
   });
@@ -73,6 +87,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).rejects.toThrow(/claimant mismatch/);
   });
@@ -86,6 +102,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).rejects.toThrow(/respondent mismatch/);
   });
@@ -99,6 +117,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).rejects.toThrow(/amount mismatch/);
   });
@@ -112,6 +132,8 @@ describe("assertEscrowDepositMatches", () => {
         expectedClaimant: CLAIMANT,
         expectedRespondent: RESPONDENT,
         expectedTotalAmountWei: 1000n,
+        integrationId: "test-integration-id",
+        escrowVersion: "V1" as const,
       })
     ).resolves.toBeUndefined();
   });

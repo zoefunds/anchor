@@ -336,6 +336,17 @@ model SettlementIntegration {
   // — a demo/no-real-funds integration shouldn't force parties through
   // identity verification just to test the adjudication flow.
   requireKycApproval    Boolean      @default(false)
+  // Priority 2 (settlement-readiness gaps): which real, on-chain escrow
+  // ABI shape this contract actually has — detected once, at
+  // registration, from the contract's OWN live behavior (the raw
+  // eth_call return-data length of deposits()), never assumed from
+  // which address happens to be configured. Immutable after creation —
+  // an integration whose live contract's shape changes (a redeploy at
+  // the same address is the realistic threat model, e.g. via
+  // SELFDESTRUCT+CREATE2 or a proxy) must fail closed at every
+  // subsequent read, not silently keep decoding with a stale ABI — see
+  // lib/escrow-version.ts's verifyEscrowVersionUnchanged.
+  escrowVersion         EscrowVersion @default(V1)
   createdByMemberId     String
   createdAt             DateTime     @default(now())
 
@@ -805,6 +816,24 @@ enum ReconciliationFindingType {
   // the audit-anchor sweep's own interval — the external anchoring
   // job appears to have stopped running silently.
   AUDIT_ANCHOR_STALE
+  // Priority 2: an escrow contract's live, on-chain ABI shape (probed
+  // via deposits()'s raw return-data length) no longer matches the
+  // escrowVersion recorded at registration — the real threat model is
+  // a redeploy at the same address (SELFDESTRUCT+CREATE2 or a proxy),
+  // not a benign event. Fails closed: every read this catches refuses
+  // to decode with a possibly-wrong ABI rather than guessing.
+  ESCROW_VERSION_MISMATCH
+}
+
+// Priority 2: the real, on-chain ABI shapes actually deployed. V1 is
+// the currently-live production shape (4-field deposits(), no caseId
+// stored — see chains/evm/contracts/legacy/EscrowV1.sol). V2 is
+// Escrow.sol's current source (6-field: adds caseId, then Item E added
+// depositedAt) — not yet deployed anywhere, but real integrations will
+// be registered against it once it is.
+enum EscrowVersion {
+  V1
+  V2
 }
 
 model ReconciliationFinding {

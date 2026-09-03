@@ -1,5 +1,6 @@
 import type { Address, Hex } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
+import { verifyEscrowVersionUnchanged, depositsAbiForVersion } from "@/lib/escrow-version";
 
 // Real fix for this session's core P0 finding: dispatchDecisionForCase
 // used to hardcode escrowId to a zero placeholder because no contract
@@ -10,21 +11,6 @@ import { getEvmPublicClient } from "@/lib/hyperlane";
 // session). This module reads that contract's real on-chain deposit
 // state and validates it against what a case's CaseSettlement record
 // claims, before dispatch is ever allowed to proceed.
-
-const ESCROW_ABI = [
-  {
-    type: "function",
-    name: "deposits",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "bytes32" }],
-    outputs: [
-      { name: "status", type: "uint8" },
-      { name: "claimant", type: "address" },
-      { name: "respondent", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-  },
-] as const;
 
 const DEPOSIT_STATUS = { NONE: 0, DEPOSITED: 1, SETTLED: 2 } as const;
 
@@ -92,14 +78,26 @@ export async function assertEscrowDepositMatches(params: {
   expectedClaimant: Address;
   expectedRespondent: Address;
   expectedTotalAmountWei: bigint;
+  // Priority 2: required so this — the actual dispatch-time trust
+  // boundary — can verify the live contract still matches the version
+  // it was registered against, and select the correct deposits() ABI,
+  // instead of assuming a shape from which address is configured.
+  integrationId: string;
+  escrowVersion: "V1" | "V2";
 }): Promise<void> {
+  await verifyEscrowVersionUnchanged({
+    integrationId: params.integrationId,
+    escrowContractAddress: params.escrowContractAddress,
+    expectedVersion: params.escrowVersion,
+  });
+
   const client = getEvmPublicClient();
-  const [status, claimant, respondent, amount] = await client.readContract({
+  const [status, claimant, respondent, amount] = (await client.readContract({
     address: params.escrowContractAddress,
-    abi: ESCROW_ABI,
+    abi: depositsAbiForVersion(params.escrowVersion),
     functionName: "deposits",
     args: [params.escrowIdBytes32],
-  });
+  })) as readonly [number, Address, Address, bigint, ...unknown[]];
 
   if (status === DEPOSIT_STATUS.NONE) {
     throw new EscrowValidationError(`escrow ${params.escrowIdBytes32} has no deposit on ${params.escrowContractAddress} — nothing to settle against`);

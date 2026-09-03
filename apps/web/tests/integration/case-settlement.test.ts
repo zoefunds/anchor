@@ -12,6 +12,11 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest
 const mockReadContract = vi.fn();
 const mockGetBlockNumber = vi.fn();
 const mockGetLogs = vi.fn();
+// Priority 2: checkAndConfirmDeposit now calls verifyEscrowVersionUnchanged
+// first, which probes via a raw client.call — always answered as a real
+// V1 shape (128 raw bytes) here, since every fixture in this file
+// creates its SettlementIntegration with the schema default (V1).
+const mockCall = vi.fn().mockResolvedValue({ data: `0x${"00".repeat(128)}` });
 
 vi.mock("viem", async (importOriginal) => {
   const actual = await importOriginal<typeof import("viem")>();
@@ -21,6 +26,7 @@ vi.mock("viem", async (importOriginal) => {
       readContract: mockReadContract,
       getBlockNumber: mockGetBlockNumber,
       getLogs: mockGetLogs,
+      call: mockCall,
     }),
   };
 });

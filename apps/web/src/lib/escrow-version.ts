@@ -1,0 +1,158 @@
+import { type Address, type Hex, encodeFunctionData } from "viem";
+import { getEvmPublicClient } from "@/lib/hyperlane";
+import { prisma } from "@/lib/prisma";
+import { logAction } from "@/lib/audit";
+
+// Priority 2 (settlement-readiness gaps): explicit, verified
+// contract-version detection — never an assumption from "which address
+// happens to be configured." The real bug this closes (found live,
+// this session): case-settlement.ts and reconciliation.ts both
+// hardcoded a V1-shaped deposits() ABI everywhere, which happened to
+// be correct only because every integration so far has pointed at V1.
+// The moment a V2 integration exists, that same hardcoded assumption
+// would silently mis-decode again — this module makes the ABI
+// selection a real, per-integration, verified fact instead.
+//
+// Detection method: NOT bytecode hashing. A real attempt at that (see
+// this module's own git history / commit message) hit two dead ends —
+// an immutable constructor argument (decisionRelay) baked directly
+// into the runtime bytecode at different offsets depending on the
+// value, and a raw bytecode LENGTH mismatch between the real deployed
+// V1 contract and a fresh local build of the identical source, from
+// compiler/optimizer settings drift alone. Neither is a reliable
+// signal. What IS reliable, and independent of compiler settings: a
+// Solidity public-mapping-to-struct getter, called with ANY key
+// (deposited or not — every field is fixed-size, so the ABI encoder
+// always returns the full tuple width), returns a raw byte length
+// that exactly encodes the number of 32-byte fields the struct has.
+// V1 (status, claimant, respondent, amount) => 4 * 32 = 128 bytes. V2
+// (+ caseId, + depositedAt) => 6 * 32 = 192 bytes. This is measured via
+// a raw eth_call — deliberately never ABI-decoded, since decoding is
+// exactly the operation whose correctness this function exists to
+// establish in the first place.
+
+const DEPOSITS_SELECTOR_ABI = [
+  { type: "function", name: "deposits", stateMutability: "view", inputs: [{ name: "", type: "bytes32" }], outputs: [] },
+] as const;
+
+const V1_RETURN_BYTES = 128; // status, claimant, respondent, amount
+const V2_RETURN_BYTES = 192; // + caseId, + depositedAt
+
+export class UnknownEscrowVersionError extends Error {}
+export class EscrowVersionMismatchError extends Error {}
+
+async function probeDepositsReturnLength(escrowContractAddress: Address): Promise<number> {
+  const client = getEvmPublicClient();
+  const data = encodeFunctionData({
+    abi: DEPOSITS_SELECTOR_ABI,
+    functionName: "deposits",
+    args: [("0x" + "00".repeat(32)) as Hex],
+  });
+  try {
+    const result = await client.call({ to: escrowContractAddress, data });
+    const raw = result.data ?? "0x";
+    return (raw.length - 2) / 2;
+  } catch {
+    // A contract with no deposits() function at all (no fallback)
+    // reverts the call outright rather than returning odd-length
+    // data — real edge case found writing this suite's own "fails
+    // closed on an unrecognized contract" test. Either way — a
+    // revert or a wrong-length success — is "not a known shape";
+    // both must fail closed identically, so this collapses to
+    // length 0, which versionForReturnLength below rejects the same
+    // as any other unrecognized length.
+    return 0;
+  }
+}
+
+function versionForReturnLength(byteLength: number): "V1" | "V2" {
+  if (byteLength === V1_RETURN_BYTES) return "V1";
+  if (byteLength === V2_RETURN_BYTES) return "V2";
+  throw new UnknownEscrowVersionError(
+    `escrow contract's deposits() returned ${byteLength} raw bytes — matches neither the known V1 shape (${V1_RETURN_BYTES}) nor V2 shape (${V2_RETURN_BYTES}). Refusing to guess an ABI for an unrecognized contract.`
+  );
+}
+
+/** Called once, at registration time (POST /api/settlement-integrations) — establishes the real, verified version a new integration is recorded against. Throws UnknownEscrowVersionError (never silently defaults) for anything that doesn't match a known shape. */
+export async function detectEscrowVersion(escrowContractAddress: Address): Promise<"V1" | "V2"> {
+  const byteLength = await probeDepositsReturnLength(escrowContractAddress);
+  return versionForReturnLength(byteLength);
+}
+
+/**
+ * Re-verified on every real read that matters (deposit confirmation,
+ * dispatch-time validation) — the realistic threat model is a
+ * contract redeployed at the same address after registration
+ * (SELFDESTRUCT+CREATE2, or the address was actually a proxy), not
+ * merely "this never changes so checking once is enough." A mismatch
+ * is never silently tolerated: it throws AND persists an audited
+ * ESCROW_VERSION_MISMATCH finding, the same fail-closed discipline
+ * Phase 1's target-binding invariant established for
+ * settlementTarget/integration mismatches.
+ */
+export async function verifyEscrowVersionUnchanged(params: { integrationId: string; escrowContractAddress: Address; expectedVersion: "V1" | "V2" }): Promise<void> {
+  const byteLength = await probeDepositsReturnLength(params.escrowContractAddress);
+  let liveVersion: "V1" | "V2";
+  try {
+    liveVersion = versionForReturnLength(byteLength);
+  } catch (err) {
+    await recordVersionMismatch(params.integrationId, params.escrowContractAddress, `unrecognized (${byteLength} raw bytes)`, params.expectedVersion);
+    throw err;
+  }
+  if (liveVersion !== params.expectedVersion) {
+    await recordVersionMismatch(params.integrationId, params.escrowContractAddress, liveVersion, params.expectedVersion);
+    throw new EscrowVersionMismatchError(
+      `escrow ${params.escrowContractAddress} now behaves like ${liveVersion}, but SettlementIntegration ${params.integrationId} was registered as ${params.expectedVersion} — refusing to decode with a possibly-wrong ABI. This usually means the contract at this address was redeployed after registration.`
+    );
+  }
+}
+
+async function recordVersionMismatch(integrationId: string, escrowContractAddress: Address, liveVersion: string, expectedVersion: string): Promise<void> {
+  const integration = await prisma.settlementIntegration.findUnique({ where: { id: integrationId } });
+  if (!integration) return;
+  await prisma.$transaction(async (tx) => {
+    await tx.reconciliationFinding.upsert({
+      where: { type_targetId: { type: "ESCROW_VERSION_MISMATCH", targetId: integrationId } },
+      create: {
+        type: "ESCROW_VERSION_MISMATCH",
+        targetType: "SettlementIntegration",
+        targetId: integrationId,
+        detail: { escrowContractAddress, expectedVersion, liveVersion },
+      },
+      update: { resolvedAt: null, detail: { escrowContractAddress, expectedVersion, liveVersion }, alertedAt: null },
+    });
+    await logAction(
+      {
+        organizationId: integration.organizationId,
+        action: "settlement_integration.escrow_version_mismatch",
+        targetType: "SettlementIntegration",
+        targetId: integrationId,
+        metadata: { escrowContractAddress, expectedVersion, liveVersion },
+      },
+      tx
+    );
+  });
+}
+
+/** The version-appropriate deposits() ABI — this is the ONE place in the codebase that should ever construct this ABI; every reader (case-settlement.ts, escrow.ts, reconciliation.ts) should call this instead of hardcoding a shape. */
+export function depositsAbiForVersion(version: "V1" | "V2") {
+  const base = [
+    { name: "status", type: "uint8" },
+    { name: "claimant", type: "address" },
+    { name: "respondent", type: "address" },
+    { name: "amount", type: "uint256" },
+  ] as const;
+  const v2Extra = [
+    { name: "caseId", type: "bytes32" },
+    { name: "depositedAt", type: "uint256" },
+  ] as const;
+  return [
+    {
+      type: "function",
+      name: "deposits",
+      stateMutability: "view",
+      inputs: [{ name: "", type: "bytes32" }],
+      outputs: version === "V1" ? base : [...base, ...v2Extra],
+    },
+  ] as const;
+}

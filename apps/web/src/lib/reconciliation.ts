@@ -3,6 +3,7 @@ import { type Address, createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
 import { sendOpsAlert } from "@/lib/alerts";
+import { depositsAbiForVersion } from "@/lib/escrow-version";
 
 // Item F's reconciliation half — the real chain: decision -> attestation
 // -> dispatch -> delivery -> processed -> settled -> payout ->
@@ -33,26 +34,6 @@ const DECISION_RELAY_ABI = [
     stateMutability: "view",
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [{ name: "", type: "bool" }],
-  },
-] as const;
-
-// Real fix, matching the same bug caught in case-settlement.ts: the
-// live V1 Escrow contract's deposits() has only these four fields —
-// caseId is V2-only, unreleased source. A 5-output ABI here made
-// checkDispatchedButStale's own deposits() read fail to decode
-// against every real deposit.
-const ESCROW_ABI = [
-  {
-    type: "function",
-    name: "deposits",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "bytes32" }],
-    outputs: [
-      { name: "status", type: "uint8" },
-      { name: "claimant", type: "address" },
-      { name: "respondent", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
   },
 ] as const;
 
@@ -288,12 +269,12 @@ async function checkDispatchedButStale(): Promise<void> {
 
     let escrowStatus: number;
     try {
-      const result = await client.readContract({
+      const result = (await client.readContract({
         address: cs.integration.escrowContractAddress as Address,
-        abi: ESCROW_ABI,
+        abi: depositsAbiForVersion(cs.integration.escrowVersion),
         functionName: "deposits",
         args: [hashToBytes32(cs.escrowId)],
-      });
+      })) as readonly [number, ...unknown[]];
       escrowStatus = result[0];
     } catch (err) {
       console.error(`reconciliation: failed to read deposits() for CaseSettlement ${cs.id}`, err);

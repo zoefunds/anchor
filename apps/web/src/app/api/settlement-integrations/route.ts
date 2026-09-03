@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 import { normalizeEvmAddress, SettlementIntegrationError } from "@/lib/case-settlement";
+import { detectEscrowVersion, UnknownEscrowVersionError } from "@/lib/escrow-version";
 
 const SUPPORTED_CHAINS = ["sepolia"] as const;
 
@@ -76,6 +77,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `could not verify escrow contract on-chain: ${(err as Error).message}` }, { status: 502 });
   }
 
+  // Priority 2: the escrow's real ABI shape is established here, once,
+  // from the contract's own live behavior — never assumed. An address
+  // whose deposits() doesn't match a known shape is rejected outright
+  // (fail-closed), not registered with a best-guess ABI.
+  let escrowVersion: "V1" | "V2";
+  try {
+    escrowVersion = await detectEscrowVersion(escrowContractAddress);
+  } catch (err) {
+    if (err instanceof UnknownEscrowVersionError) {
+      return NextResponse.json({ error: err.message }, { status: 422 });
+    }
+    return NextResponse.json({ error: `could not detect escrow contract version: ${(err as Error).message}` }, { status: 502 });
+  }
+
   const integration = await prisma.$transaction(async (tx) => {
     const created = await tx.settlementIntegration.create({
       data: {
@@ -85,6 +100,7 @@ export async function POST(req: NextRequest) {
         assetSymbol,
         assetDecimals,
         requireKycApproval: requireKycApproval === true,
+        escrowVersion,
         createdByMemberId: member.memberId,
       },
     });
@@ -95,7 +111,7 @@ export async function POST(req: NextRequest) {
         action: "settlement_integration.created",
         targetType: "SettlementIntegration",
         targetId: created.id,
-        metadata: { chain, escrowContractAddress, decisionRelayAddress: relayAddress, assetSymbol, requireKycApproval: created.requireKycApproval },
+        metadata: { chain, escrowContractAddress, decisionRelayAddress: relayAddress, assetSymbol, requireKycApproval: created.requireKycApproval, escrowVersion },
       },
       tx
     );

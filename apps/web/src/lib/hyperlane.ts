@@ -412,13 +412,23 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       throw err;
     }
     const escrowId = escrowIdToBytes32(caseSettlement.escrowId, "CaseSettlement.escrowId");
-    await assertEscrowDepositMatches({
-      escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
-      escrowIdBytes32: escrowId,
-      expectedClaimant: caseSettlement.claimantAddress as Address,
-      expectedRespondent: caseSettlement.respondentAddress as Address,
-      expectedTotalAmountWei: params.claimantAmountAtto + params.respondentAmountAtto,
-    });
+    const { EscrowVersionMismatchError } = await import("@/lib/escrow-version");
+    try {
+      await assertEscrowDepositMatches({
+        escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
+        escrowIdBytes32: escrowId,
+        expectedClaimant: caseSettlement.claimantAddress as Address,
+        expectedRespondent: caseSettlement.respondentAddress as Address,
+        expectedTotalAmountWei: params.claimantAmountAtto + params.respondentAmountAtto,
+        integrationId: caseSettlement.integrationId,
+        escrowVersion: caseSettlement.integration.escrowVersion,
+      });
+    } catch (err) {
+      if (err instanceof EscrowVersionMismatchError) {
+        await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { status: "MISMATCH_BLOCKED" } });
+      }
+      throw err;
+    }
     const attestationHash = computeDecisionAttestationHash({
       originDomain: HYPERLANE_DOMAIN.sepolia,
       recipientAddress: params.settlementContract as Address,

@@ -3,6 +3,7 @@ import { type Address, type Hex, createPublicClient, http, isAddress, getAddress
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
+import { verifyEscrowVersionUnchanged, depositsAbiForVersion } from "@/lib/escrow-version";
 
 // Item C (re-audit): the real CaseSettlement/SettlementIntegration
 // creation workflow. Everything this session built before now
@@ -16,36 +17,13 @@ import { logAction } from "@/lib/audit";
 // contract's own on-chain state, never trusted from a caller-supplied
 // txHash.
 
-const ESCROW_ABI = [
+const DECISION_RELAY_LOOKUP_ABI = [
   {
     type: "function",
     name: "decisionRelay",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
-  },
-  {
-    // Real production bug fixed here: the LIVE V1 Escrow contract's
-    // Deposit struct has only these four scalar fields — caseId was
-    // only ever added to the unreleased V2 source (see Escrow.sol's
-    // own header comment). A 5-output ABI here made every real
-    // on-chain deposits() read against the live contract fail to
-    // decode ("position out of bounds"), which meant
-    // checkAndConfirmDeposit could never actually confirm a real
-    // deposit — caught only by manually running it against a real
-    // deposit, not by anything noticing on its own. escrow.ts's own
-    // deposits() ABI (used by assertEscrowDepositMatches) already had
-    // this right; this one didn't.
-    type: "function",
-    name: "deposits",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "bytes32" }],
-    outputs: [
-      { name: "status", type: "uint8" },
-      { name: "claimant", type: "address" },
-      { name: "respondent", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
   },
 ] as const;
 
@@ -108,7 +86,7 @@ export async function assertEscrowBoundToDecisionRelay(params: {
   const client = getPublicClient(params.chain);
   const liveDecisionRelay = await client.readContract({
     address: params.escrowContractAddress,
-    abi: ESCROW_ABI,
+    abi: DECISION_RELAY_LOOKUP_ABI,
     functionName: "decisionRelay",
   });
   if (liveDecisionRelay.toLowerCase() !== params.expectedDecisionRelayAddress.toLowerCase()) {
@@ -147,14 +125,23 @@ export async function checkAndConfirmDeposit(caseSettlementId: string): Promise<
     return { outcome: "not_ready", reason: "both parties must set their settlement address before a deposit can be confirmed" };
   }
 
+  // Priority 2: re-verify the live contract still behaves like the
+  // version this integration was registered against before decoding
+  // anything — never assume the ABI from which address is configured.
+  await verifyEscrowVersionUnchanged({
+    integrationId: cs.integrationId,
+    escrowContractAddress: cs.integration.escrowContractAddress as Address,
+    expectedVersion: cs.integration.escrowVersion,
+  });
+
   const client = getPublicClient(cs.integration.chain);
   const escrowIdBytes32 = deriveEscrowId(cs.caseId);
-  const [status, claimant, respondent, amount] = await client.readContract({
+  const [status, claimant, respondent, amount] = (await client.readContract({
     address: cs.integration.escrowContractAddress as Address,
-    abi: ESCROW_ABI,
+    abi: depositsAbiForVersion(cs.integration.escrowVersion),
     functionName: "deposits",
     args: [escrowIdBytes32],
-  });
+  })) as readonly [number, Address, Address, bigint, ...unknown[]];
 
   if (status === DEPOSIT_STATUS.NONE) {
     return { outcome: "no_deposit_yet" };
