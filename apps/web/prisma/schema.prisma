@@ -67,12 +67,13 @@ model Organization {
   lastAnchoredAt   DateTime?
   lastAnchorTxHash String?
 
-  members   Member[]
-  apiKeys   ApiKey[]
-  cases     Case[]
-  invites   Invite[]
-  webhooks  Webhook[]
-  auditLogs AuditLog[]
+  members                Member[]
+  apiKeys                ApiKey[]
+  cases                  Case[]
+  invites                Invite[]
+  webhooks               Webhook[]
+  auditLogs              AuditLog[]
+  settlementIntegrations SettlementIntegration[]
 }
 
 enum MemberRole {
@@ -86,17 +87,17 @@ enum MemberRole {
 }
 
 model Member {
-  id           String       @id @default(cuid())
-  organization Organization @relation(fields: [organizationId], references: [id])
-  organizationId String
-  email        String       @unique
-  passwordHash String
+  id              String       @id @default(cuid())
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  email           String       @unique
+  passwordHash    String
   // The founding member (created via signup) is OWNER; everyone invited
   // afterward is MEMBER by default. OWNER-only actions: inviting/removing
   // members, managing webhooks, viewing the audit log.
-  role         MemberRole   @default(OWNER)
+  role            MemberRole   @default(OWNER)
   emailVerifiedAt DateTime?
-  createdAt    DateTime     @default(now())
+  createdAt       DateTime     @default(now())
 
   sessions           Session[]
   passwordResets     PasswordReset[]
@@ -120,15 +121,16 @@ model EmailVerification {
   @@index([memberId])
 }
 
-// A webhook subscription for one org. The secret is stored in cleartext
-// (unlike Session/ApiKey/Invite tokens) because the org needs to read it
-// back repeatedly to verify delivered signatures — same posture as
-// Stripe's webhook signing secrets.
+// A webhook subscription for one org. The secret is AES-256-GCM
+// encrypted at rest (see secretCiphertext/secretIv/secretAuthTag below)
+// — this comment previously said "stored in cleartext," which was
+// accurate before the encryption fix but stale and misleading
+// afterward; caught while touching this file for an unrelated change.
 model Webhook {
-  id             String       @id @default(cuid())
-  organization   Organization @relation(fields: [organizationId], references: [id])
-  organizationId String
-  url            String
+  id               String       @id @default(cuid())
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  organizationId   String
+  url              String
   // Real P1 fixed here (external audit finding, raised twice): the
   // signing secret used to be a single plaintext `secret` column,
   // returned in full on every GET. Now AES-256-GCM-encrypted at rest
@@ -148,9 +150,9 @@ model Webhook {
   // Event names this webhook wants, e.g. "case.status_changed",
   // "case.decided". Enforced against a fixed vocabulary in application
   // code (src/lib/webhooks.ts), not the DB schema.
-  events         String[]
-  active         Boolean      @default(true)
-  createdAt      DateTime     @default(now())
+  events           String[]
+  active           Boolean      @default(true)
+  createdAt        DateTime     @default(now())
 
   deliveries WebhookDelivery[]
 
@@ -246,13 +248,13 @@ model Invite {
 // responds the same way); the token itself is what actually gates the
 // password change.
 model PasswordReset {
-  id         String   @id @default(cuid())
-  member     Member   @relation(fields: [memberId], references: [id])
-  memberId   String
-  tokenHash  String   @unique
-  expiresAt  DateTime
-  usedAt     DateTime?
-  createdAt  DateTime @default(now())
+  id        String    @id @default(cuid())
+  member    Member    @relation(fields: [memberId], references: [id])
+  memberId  String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
 
   @@index([memberId])
 }
@@ -272,45 +274,121 @@ model Session {
 // path per the original AaaS positioning) — a raw key is shown exactly
 // once at creation; only its hash and a display prefix are stored.
 model ApiKey {
-  id             String       @id @default(cuid())
-  organization   Organization @relation(fields: [organizationId], references: [id])
-  organizationId String
-  name           String
-  keyHash        String       @unique
-  keyPrefix      String
-  createdAt      DateTime     @default(now())
-  lastUsedAt     DateTime?
-  revokedAt      DateTime?
+  id                  String       @id @default(cuid())
+  organization        Organization @relation(fields: [organizationId], references: [id])
+  organizationId      String
+  name                String
+  keyHash             String       @unique
+  keyPrefix           String
+  createdAt           DateTime     @default(now())
+  lastUsedAt          DateTime?
+  revokedAt           DateTime?
   // Real P0-adjacent gap fixed here (external audit finding): API keys
   // had no creator, no expiry, and no case restriction at all — every
   // key was permanently valid and org-wide-unrestricted the moment it
   // was minted. Nullable because keys created before this migration
   // genuinely have no recorded creator — never backfilled with a
   // guess.
-  creatorMemberId String?
+  creatorMemberId     String?
   // Nullable = never expires (an operator can still explicitly choose
   // this), but api-keys/route.ts now defaults new keys to a bounded
   // expiry rather than "forever" unless the caller opts out.
-  expiresAt       DateTime?
+  expiresAt           DateTime?
   // Empty array (the default) = unrestricted, org-wide access — the
   // original, still-supported behavior. A non-empty array restricts
   // this key to exactly these case IDs, checked in case-access.ts
   // alongside the existing CaseAccess-for-members mechanism.
-  restrictedToCaseIds String[] @default([])
+  restrictedToCaseIds String[]     @default([])
+}
+
+// Real P0 fix in progress (external audit finding, raised across every
+// pass this session): the actual gap isn't just that EVM dispatch
+// hardcoded escrowId to zero — it's that no contract implementing
+// DecisionRelay.sol's own ISettlementTarget interface has ever been
+// written or deployed. These two models are the data-model half of the
+// fix, built first because they're safe to add now (purely additive,
+// no financial risk) while the actual escrow smart contract — real
+// money-holding code that deserves careful, unhurried design and
+// Foundry test coverage, not something to rush — gets built as its own
+// focused piece of work. NOT YET WIRED into dispatch logic; that
+// requires the real contract to exist first, so validating against it
+// would be untestable before then.
+//
+// SettlementIntegration: an org's one-time declaration of "this real,
+// deployed escrow contract is one I trust for settlement on this
+// chain" — the approved-integration record the audit asked for,
+// replacing "any address the case-creation caller supplies."
+model SettlementIntegration {
+  id                    String       @id @default(cuid())
+  organization          Organization @relation(fields: [organizationId], references: [id])
+  organizationId        String
+  chain                 String // "sepolia" | "solanatestnet" — same vocabulary as Case.settlementChain
+  escrowContractAddress String
+  assetSymbol           String
+  assetDecimals         Int
+  active                Boolean      @default(true)
+  createdByMemberId     String
+  createdAt             DateTime     @default(now())
+
+  caseSettlements CaseSettlement[]
+
+  @@index([organizationId])
+}
+
+// CaseSettlement: the real, on-chain-verified per-case escrow binding —
+// created only once a real deposit is confirmed on-chain (not at case
+// creation, and not from caller-supplied claims). This is what
+// dispatchDecisionForCase will be required to read and validate against
+// before ever calling settle(), once the real contract exists — see
+// this model's own escrowId/claimantAddress/respondentAddress/
+// expectedAmountAtto fields, which mirror exactly what the future
+// on-chain adapter must confirm still matches at dispatch time.
+model CaseSettlement {
+  id                 String                @id @default(cuid())
+  case               Case                  @relation(fields: [caseId], references: [id])
+  caseId             String                @unique
+  integration        SettlementIntegration @relation(fields: [integrationId], references: [id])
+  integrationId      String
+  // The escrow contract's own identifier for this specific deposit —
+  // real, read from on-chain state at confirmation time, never
+  // caller-asserted.
+  escrowId           String
+  claimantAddress    String
+  respondentAddress  String
+  expectedAmountAtto String // atto-unit string, same discipline as lib/genlayer.ts's toAttoAmount
+  status             CaseSettlementStatus  @default(PENDING_DEPOSIT)
+  depositTxHash      String?
+  depositConfirmedAt DateTime?
+  settledTxHash      String?
+  settledAt          DateTime?
+  createdAt          DateTime              @default(now())
+
+  @@index([integrationId])
+}
+
+enum CaseSettlementStatus {
+  PENDING_DEPOSIT
+  DEPOSITED
+  SETTLED
+  // A dispatch was attempted but the on-chain escrow state no longer
+  // matched what this record expected (wrong amount, wrong parties,
+  // already settled, etc) — recorded rather than silently retried, so
+  // a mismatch is visible or in the audit log, not just a swallowed error.
+  MISMATCH_BLOCKED
 }
 
 model Case {
-  id             String       @id @default(cuid())
-  organization   Organization @relation(fields: [organizationId], references: [id])
-  organizationId String
-  status         CaseStatus   @default(OPEN)
-  claim          String
-  amount         Decimal
-  currency       String       @default("USD")
-  policyId       String
-  policyVersion  String
-  claimantRef    String
-  respondentRef  String
+  id              String       @id @default(cuid())
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  organizationId  String
+  status          CaseStatus   @default(OPEN)
+  claim           String
+  amount          Decimal
+  currency        String       @default("USD")
+  policyId        String
+  policyVersion   String
+  claimantRef     String
+  respondentRef   String
   // GenLayer contract address once deployed for this case
   contractAddress String?
 
@@ -326,8 +404,8 @@ model Case {
   // of the org's own session/API-key auth - real party-specific standing,
   // not full identity/signature verification (see docs/party-auth
   // discussion for why that's a larger, separate piece of work).
-  claimantTokenHash   String? @unique
-  respondentTokenHash String? @unique
+  claimantTokenHash        String?   @unique
+  respondentTokenHash      String?   @unique
   // Bounds how long a bearer token stays valid — a long-lived capability
   // secret that never expires is exactly the kind of thing that keeps
   // working after it leaks (browser history, referrer headers, a
@@ -369,10 +447,10 @@ model Case {
   // strings (see packages/types's privacy note) and can't double as
   // these. Required together when settlementChain is a Sealevel chain,
   // unused for "sepolia".
-  settlementChain            String?
-  settlementContract         String?
-  settlementSolanaClaimant   String?
-  settlementSolanaRespondent String?
+  settlementChain               String?
+  settlementContract            String?
+  settlementSolanaClaimant      String?
+  settlementSolanaRespondent    String?
   settlementSolanaEscrowProgram String?
   // The on-chain escrow case_id (e.g. "CASE-RELAY-..."), independent of
   // this row's own cuid `id` - decision-relay's handle() derives the
@@ -380,7 +458,7 @@ model Case {
   // message, so it must match what escrow.initialize_case() was actually
   // called with, not Anchor's internal id. Required alongside the other
   // settlementSolana* fields when settlementChain is a Sealevel chain.
-  settlementSolanaCaseId String?
+  settlementSolanaCaseId        String?
 
   // Per-case access control, on top of the org-wide role model
   // (OWNER/MEMBER/VIEWER). Defaults to false — every case is visible to
@@ -392,15 +470,16 @@ model Case {
   // have everywhere else - see requireWriteAccess()'s API-key carve-out
   // and OWNER's existing unrestricted-admin role). See lib/case-access.ts
   // for the actual enforcement.
-  restricted Boolean @default(false)
+  restricted Boolean      @default(false)
   caseAccess CaseAccess[]
 
-  evidence  Evidence[]
+  evidence   Evidence[]
   // One-to-many, not one-to-one: an appeal produces a fresh Decision
   // rather than overwriting the first, so the full history (original
   // verdict, then the appealed re-adjudication) stays queryable. The
   // dashboard/API always show the latest by createdAt.
-  decisions Decision[]
+  decisions  Decision[]
+  settlement CaseSettlement?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -428,22 +507,22 @@ model CaseAccess {
 }
 
 model Evidence {
-  id           String       @id @default(cuid())
-  caseId       String
-  case         Case         @relation(fields: [caseId], references: [id])
+  id                String                    @id @default(cuid())
+  caseId            String
+  case              Case                      @relation(fields: [caseId], references: [id])
   // Plain string, not an enum: which types are valid depends on the
   // case's policy (see src/lib/policies.ts) - enforced in application
   // code, not the DB schema, since the set of valid types now varies per
   // policy rather than being one fixed global list.
-  type         String
-  contentHash  String
+  type              String
+  contentHash       String
   // For text evidence: the content itself. For file evidence: an
   // internal Cloudinary reference (not a fetchable URL by itself) - see
   // lib/storage.ts's resolveEvidenceUri, which resolves it into a
   // freshly signed URL on demand for whoever actually needs to fetch it
   // (GenLayer at adjudication time, the org/public dashboard at read
   // time), each with its own appropriate expiry.
-  storageRef   String
+  storageRef        String
   // True only if this row was submitted with a valid Ed25519 signature
   // (see lib/party-signing.ts) verified against the submitting party's
   // stored public key - materially stronger attribution than merely
@@ -451,17 +530,17 @@ model Evidence {
   // default and still-sufficient path. False for every org-authenticated
   // submission and every party submission that didn't include a
   // signature.
-  signatureVerified Boolean @default(false)
+  signatureVerified Boolean                   @default(false)
   // Null for inline text evidence. Set for uploaded files — lets the
   // contract (and the dashboard) tell an image it can visually interpret
   // apart from a PDF/other file it can only note the existence of.
-  mimeType     String?
-  fileSizeBytes Int?
+  mimeType          String?
+  fileSizeBytes     Int?
   // Caller-claimed party role — kept for organization-authenticated
   // routes as informational (still just an assertion), and set from
   // real resolved party auth on the public routes. Never trust this
   // alone for attribution strength; see attributionSource.
-  submittedBy  PartyRole?
+  submittedBy       PartyRole?
   // Server-derived, never caller-controlled — see
   // EvidenceAttributionSource's own doc comment above. Defaults to the
   // most conservative value (organization_asserted) purely so existing
@@ -479,29 +558,29 @@ model Evidence {
   // non-PDF files (images go through the contract's own multimodal
   // path instead - see adjudicator.py's _resolve_evidence) and for
   // inline text evidence (storageRef already IS the content there).
-  extractedText String?
-  createdAt    DateTime     @default(now())
+  extractedText     String?
+  createdAt         DateTime                  @default(now())
 
   @@index([caseId])
 }
 
 model Decision {
-  id                    String   @id @default(cuid())
-  caseId                String
-  case                  Case     @relation(fields: [caseId], references: [id])
-  policyId              String
-  policyVersion         String
-  outcome               String
+  id                   String    @id @default(cuid())
+  caseId               String
+  case                 Case      @relation(fields: [caseId], references: [id])
+  policyId             String
+  policyVersion        String
+  outcome              String
   // Integer basis points (0-10000) as returned by the GenLayer contract —
   // NOT a float. See docs/decision-schema.md for why (GenVM calldata
   // encoding rejects native float). Convert to a 0-1 fraction only for
   // display/analytics, never re-derive a float and send it back to GenLayer.
-  claimantShareBps      Int?
-  respondentShareBps    Int?
-  reasonCodes           String[]
-  evidenceUsed          String[]
-  consensus             String
-  confidence            Float?
+  claimantShareBps     Int?
+  respondentShareBps   Int?
+  reasonCodes          String[]
+  evidenceUsed         String[]
+  consensus            String
+  confidence           Float?
   // sha256 of the exact evidence_json calldata the contract adjudicated
   // against (the contract's own deterministic evidence_hash - see
   // adjudicator.py). This is an EVIDENCE-binding proof, not a proof of
@@ -509,36 +588,36 @@ model Decision {
   // for those. Kept under its original name (used as the settlement
   // relay's on-chain proof field) rather than renamed, to avoid touching
   // every call site for a cosmetic rename.
-  proofHash             String?
+  proofHash            String?
   // sha256 of the exact adjudicator.py source deployed for this decision
   // (see lib/adjudication-service.ts) - the policy engine's own
   // governance record. Two decisions under the same policyId/policyVersion
   // string can still have run different actual prompt/logic if the
   // contract file changed without a version bump; this hash makes that
   // detectable instead of only trusting the version string.
-  contractCodeHash      String?
+  contractCodeHash     String?
   // The real GenLayer transaction hash of the adjudicate()/appeal() call
   // that produced this decision - proof this decision actually happened
   // on GenLayer (independently checkable via `genlayer receipt
   // <txHash>`), not just data Anchor's backend asserts. Previously
   // discarded entirely - genlayer.runAdjudication()'s return value was
   // never captured.
-  adjudicateTxHash      String?
+  adjudicateTxHash     String?
   // sha256 of the canonical (sorted) evidenceUsed array - lets a verifier
   // confirm the exact set of evidence type/contentHash pairs this
   // decision was built from without needing evidenceUsed's raw array
   // representation to match byte-for-byte.
-  evidenceManifestHash  String?
+  evidenceManifestHash String?
   // sha256 of this decision's own canonical content (case/policy ids,
   // outcome, shares, reason codes, proofHash, contractCodeHash) - a
   // single fingerprint for "this exact decision," independent of the
   // database row id, that a verifier can recompute from the decision's
   // own visible fields and compare against what a settlement relay
   // actually carried.
-  decisionHash          String?
-  explanation           String?
-  appealWindowClosesAt  DateTime?
-  createdAt             DateTime @default(now())
+  decisionHash         String?
+  explanation          String?
+  appealWindowClosesAt DateTime?
+  createdAt            DateTime  @default(now())
 
   // Set once an auto-dispatched DecisionRelay message goes out for this
   // decision (see adjudication-service.ts) - null means either the case
@@ -553,7 +632,7 @@ model Decision {
   // MAX_RELAY_ATTEMPTS - a FINALIZED decision whose relay keeps failing
   // needs a human to look at why, not an unbounded retry loop hammering
   // a permanently broken settlement target forever.
-  relayAttempts  Int      @default(0)
+  relayAttempts  Int       @default(0)
   // A short-lived claim/lease: set atomically (via updateMany's WHERE
   // guard, not read-then-write) immediately before a dispatch attempt
   // starts, so a concurrent retry sweep can't also see relayTxHash=null
@@ -615,13 +694,13 @@ model Decision {
 // referrer headers, access logs, screenshots) after the first click.
 // Same tokenHash-not-raw-token discipline as Session/ApiKey.
 model PartySession {
-  id         String   @id @default(cuid())
-  case       Case     @relation(fields: [caseId], references: [id])
-  caseId     String
-  role       String
-  tokenHash  String   @unique
-  expiresAt  DateTime
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  case      Case     @relation(fields: [caseId], references: [id])
+  caseId    String
+  role      String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
   @@index([caseId])
 }
