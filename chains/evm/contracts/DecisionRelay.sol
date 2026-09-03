@@ -93,6 +93,29 @@ contract DecisionRelay is IMessageRecipient {
     mapping(uint32 => bytes32) public trustedSender;
     mapping(uint32 => address) public settlementTarget;
 
+    // Real fix (external audit finding, the incident's own root cause):
+    // handle() used to treat an unset settlementTarget as silent
+    // notification-only, unconditionally, for every origin — including
+    // one an operator genuinely intended to move funds on. That's how a
+    // real decision got permanently marked processedDecisions=true with
+    // no settlement ever having been attempted, and no way to retry.
+    // Every origin domain now has an EXPLICIT mode, defaulting to
+    // UNCONFIGURED (the zero value) — handle() reverts outright for an
+    // UNCONFIGURED origin, before writing processedDecisions, so a
+    // misconfigured/not-yet-wired origin fails loudly and stays
+    // retryable rather than silently succeeding as a no-op. An operator
+    // must explicitly choose SETTLEMENT (requires a real, nonzero
+    // settlementTarget) or NOTIFICATION_ONLY (deliberately never calls
+    // settle(), even if a target happens to be set) — there is no more
+    // "whatever settlementTarget happens to be" implicit behavior.
+    enum SettlementMode {
+        UNCONFIGURED,
+        SETTLEMENT,
+        NOTIFICATION_ONLY
+    }
+    mapping(uint32 => SettlementMode) public settlementMode;
+    event SettlementModeChanged(uint32 indexed domain, SettlementMode oldMode, SettlementMode newMode);
+
     // Destination-side idempotency: proofHash now carries the decision's
     // own content hash (case/policy/outcome/shares/reasonCodes — see
     // adjudication-service.ts's computeDecisionHash), not just an
@@ -189,6 +212,20 @@ contract DecisionRelay is IMessageRecipient {
         settlementTarget[domain] = target;
     }
 
+    /// Explicit, separate from setSettlementTarget on purpose: an
+    /// operator can stage a settlementTarget address ahead of time
+    /// without it taking effect, then flip mode to SETTLEMENT only once
+    /// ready — and setting SETTLEMENT mode with no target configured
+    /// reverts here, at configuration time, rather than surfacing later
+    /// as a per-decision handle() revert.
+    function setSettlementMode(uint32 domain, SettlementMode mode) external onlyOwner {
+        if (mode == SettlementMode.SETTLEMENT) {
+            require(settlementTarget[domain] != address(0), "settlementTarget not set for SETTLEMENT mode");
+        }
+        emit SettlementModeChanged(domain, settlementMode[domain], mode);
+        settlementMode[domain] = mode;
+    }
+
     /// Called by the local Mailbox when a DecisionRelay message arrives from
     /// GenLayer's side. Body encoding TBD — placeholder uses abi.encode of
     /// the fields in the DECISION_RELAY schema; swap for the agreed wire
@@ -199,6 +236,18 @@ contract DecisionRelay is IMessageRecipient {
         bytes calldata _messageBody
     ) external override onlyMailbox {
         require(trustedSender[_origin] == _sender, "untrusted sender");
+
+        // Real fix here (the incident's own root cause): checked before
+        // any attestation-signature verification, both because it's the
+        // cheaper, more fundamental precondition (no point recovering
+        // and validating signatures for an origin nobody has decided
+        // the mode of yet) and because settlementMode is already a
+        // public mapping — checking it first leaks no information an
+        // attacker couldn't already read directly. An UNCONFIGURED
+        // origin reverts here, before processedDecisions is ever
+        // written, so this exact message stays retryable once the
+        // origin is properly configured.
+        require(settlementMode[_origin] != SettlementMode.UNCONFIGURED, "settlement mode not configured for this origin");
 
         (
             bytes32 caseId,
@@ -242,15 +291,29 @@ contract DecisionRelay is IMessageRecipient {
             "insufficient valid attestations"
         );
 
+        SettlementMode mode = settlementMode[_origin];
+
         require(!processedDecisions[proofHash], "decision already settled");
         processedDecisions[proofHash] = true;
 
         emit DecisionReceived(caseId, outcome, proofHash);
 
-        address target = settlementTarget[_origin];
-        if (target != address(0)) {
+        if (mode == SettlementMode.SETTLEMENT) {
+            address target = settlementTarget[_origin];
+            // Belt-and-suspenders: setSettlementMode already requires a
+            // nonzero target to enter SETTLEMENT mode, but re-checking
+            // here means even a future code path that could otherwise
+            // clear settlementTarget without also resetting mode still
+            // fails loudly instead of silently no-op-ing like the
+            // original bug.
+            require(target != address(0), "SETTLEMENT mode with no settlementTarget configured");
             ISettlementTarget(target).settle(caseId, escrowId, claimantAmount, respondentAmount, proofHash);
         }
+        // NOTIFICATION_ONLY: deliberately does nothing further —
+        // decision recorded and processedDecisions set above, no
+        // settle() call, even if settlementTarget happens to be set for
+        // this origin (mode is the explicit, authoritative signal now,
+        // not target-address presence).
     }
 
     /// M-of-N: counts DISTINCT valid attestor signatures over the same

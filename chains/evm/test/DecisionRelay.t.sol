@@ -92,6 +92,7 @@ contract DecisionRelayTest is Test {
 
         relay.setTrustedSender(ORIGIN, TRUSTED_SENDER);
         relay.setSettlementTarget(ORIGIN, address(target));
+        relay.setSettlementMode(ORIGIN, DecisionRelay.SettlementMode.SETTLEMENT);
     }
 
     /// Reproduces DecisionRelay.sol's own attestationHash computation
@@ -201,13 +202,93 @@ contract DecisionRelayTest is Test {
         assertEq(target.lastProofHash(), bytes32(uint256(0xfeed)));
     }
 
-    function test_handle_no_settlement_target_configured_does_not_revert() public {
-        relay.setSettlementTarget(ORIGIN, address(0));
+    // Real fix (external audit finding, the incident's own root cause):
+    // an origin whose mode was never explicitly configured must revert,
+    // not silently succeed as notification-only. This directly replaces
+    // the old test_handle_no_settlement_target_configured_does_not_revert
+    // (deleted — it asserted exactly the behavior that caused the real
+    // production incident this session: a decision permanently marked
+    // processed with no settlement ever attempted, no error, no retry
+    // path).
+    function test_handle_revertsForUnconfiguredOrigin() public {
+        uint32 freshOrigin = 999999;
+        relay.setTrustedSender(freshOrigin, TRUSTED_SENDER);
+        // Deliberately NOT calling setSettlementMode for freshOrigin —
+        // it stays at the zero value, UNCONFIGURED.
         vm.prank(address(mailbox));
-        relay.handle(ORIGIN, TRUSTED_SENDER, _body(bytes32(uint256(1))));
-        // No assertion beyond "didn't revert" — there's nothing to
-        // settle against, this just confirms DecisionRelay itself
-        // doesn't require one.
+        vm.expectRevert("settlement mode not configured for this origin");
+        relay.handle(freshOrigin, TRUSTED_SENDER, _body(bytes32(uint256(1))));
+    }
+
+    /// The actual guarantee the incident needed and didn't have: a
+    /// message delivered to an UNCONFIGURED origin must revert WITHOUT
+    /// writing processedDecisions, so the exact same message can be
+    /// retried successfully once the origin is properly configured —
+    /// nothing about it is permanently consumed by the failed attempt.
+    function test_handle_unconfiguredOriginLeavesProcessedFalseAndAllowsRetryAfterConfiguration() public {
+        uint32 freshOrigin = 999999;
+        relay.setTrustedSender(freshOrigin, TRUSTED_SENDER);
+        bytes32 proofHash = bytes32(uint256(0xfeed));
+
+        // _attestationHash hardcodes the ORIGIN constant, so a body
+        // built through it is never valid for a different origin —
+        // build one signed against freshOrigin directly, matching
+        // handle()'s own attestationHash computation exactly.
+        bytes32 hash = keccak256(
+            abi.encode("ANCHOR_DECISION_ATTESTATION_V2", freshOrigin, address(relay), bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), proofHash)
+        );
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _sign(attestorKey1, hash);
+        sigs[1] = _sign(attestorKey2, hash);
+        bytes memory body = abi.encode(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), proofHash, sigs);
+
+        vm.prank(address(mailbox));
+        vm.expectRevert("settlement mode not configured for this origin");
+        relay.handle(freshOrigin, TRUSTED_SENDER, body);
+        assertFalse(relay.processedDecisions(proofHash));
+
+        // Now configure it for real and retry the SAME message.
+        relay.setSettlementTarget(freshOrigin, address(target));
+        relay.setSettlementMode(freshOrigin, DecisionRelay.SettlementMode.SETTLEMENT);
+        vm.prank(address(mailbox));
+        relay.handle(freshOrigin, TRUSTED_SENDER, body);
+        assertTrue(relay.processedDecisions(proofHash));
+        assertEq(target.settleCallCount(), 1);
+    }
+
+    /// setSettlementMode itself refuses to enter SETTLEMENT mode with no
+    /// target configured — fails at configuration time, not later as a
+    /// per-decision handle() revert.
+    function test_setSettlementMode_revertsEnteringSettlementModeWithNoTarget() public {
+        uint32 freshOrigin = 999998;
+        vm.expectRevert("settlementTarget not set for SETTLEMENT mode");
+        relay.setSettlementMode(freshOrigin, DecisionRelay.SettlementMode.SETTLEMENT);
+    }
+
+    /// NOTIFICATION_ONLY is a real, distinct, explicit mode — the
+    /// decision is recorded (processedDecisions set, DecisionReceived
+    /// emitted) but settle() is deliberately never called, even if a
+    /// settlementTarget happens to be configured for that origin. This
+    /// is what a genuinely notification-only route (e.g. Solana's
+    /// ReplayGuard-style handle()) should look like, explicitly — not
+    /// an accidental side effect of an unset target.
+    function test_handle_notificationOnlyModeNeverCallsSettleEvenWithTargetConfigured() public {
+        relay.setSettlementMode(ORIGIN, DecisionRelay.SettlementMode.NOTIFICATION_ONLY);
+        // _body(proofHash) — the argument is the proofHash, not caseId
+        // (caseId is hardcoded to bytes32(uint256(1)) inside it).
+        bytes32 proofHash = bytes32(uint256(0xfeed));
+
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, _body(proofHash));
+
+        assertTrue(relay.processedDecisions(proofHash));
+        assertEq(target.settleCallCount(), 0, "NOTIFICATION_ONLY must never call settle()");
+    }
+
+    function test_setSettlementMode_emitsEvent() public {
+        vm.expectEmit(true, false, false, true);
+        emit DecisionRelay.SettlementModeChanged(ORIGIN, DecisionRelay.SettlementMode.SETTLEMENT, DecisionRelay.SettlementMode.NOTIFICATION_ONLY);
+        relay.setSettlementMode(ORIGIN, DecisionRelay.SettlementMode.NOTIFICATION_ONLY);
     }
 
     /// Exactly threshold-many (2-of-3) DISTINCT valid attestor signatures
