@@ -1487,3 +1487,64 @@ substantial, separate work:
   test files were added this pass for the new routes/fields.
 
 `SETTLEMENT_PAUSED` untouched throughout — unchanged all session.
+
+## Seventeenth addendum: Didit KYC/KYB integration built end-to-end; 24h validator gate closed with a FAIL verdict
+
+Two real, separate pieces of work landed this pass.
+
+**24h validator observation window closed — final verdict: FAIL on
+checkpoint-currency grounds.** Full writeup in
+[24H_OBSERVATION_LOG.md](../chains/hyperlane-validator/24H_OBSERVATION_LOG.md)'s
+own "## FINAL VERDICT" section. Summary: reliability/uptime criteria
+cleanly met (zero restarts/OOM/AccessDenied across the full 24 hours);
+checkpoint-currency criteria not met (the ~1370-leaf contiguous
+backfill lag was unchanged from the window's first reading to its
+last, including a confirmed multi-hour stall on validator1 — root
+cause: Infura RPC rate-limiting — that self-resolved without a
+restart). This gate item is not passed; it should be treated as a real
+blocker, not a formality, until the lag actually closes and/or
+validator1's rate-limiting is remediated.
+
+**Didit KYC/KYB integration built, real and tested, end-to-end** —
+requested directly by the operator (a free-tier partner search
+surfaced Didit: 500 verifications/month forever, KYC+KYB+sanctions/PEP
+screening; see [Sources in-session]). Workflow ("Anchor Party KYC":
+ID Verification + Liveness + Face Match, all free-tier; AML/sanctions
+screening left off, a paid add-on not enabled without an explicit
+cost decision) configured directly via the Didit Business Console
+(browser automation, operator's own logged-in session) — API key,
+workflow ID, and webhook signing secret all set as real Fly/Vercel
+secrets, never left in chat or committed to source.
+
+- `PartyVerification` model (one Didit session per case+role),
+  migration validated on a real local Postgres before commit.
+- `lib/didit.ts`: session creation, decision backfill, and
+  `verifyDiditWebhookSignature` — the exact canonical-JSON
+  HMAC-SHA256 algorithm from Didit's own docs (sorted keys, 5-minute
+  freshness window, constant-time compare), not a "close enough"
+  reimplementation.
+- `POST /api/public/cases/:id/verification` (start a session) and
+  `POST /api/webhooks/didit` (real-time result, signature-verified
+  before the body is ever parsed, correlated via `vendor_data` to
+  avoid a session-creation race).
+- `/public/cases/:id/verify` and `.../verification-complete` — the
+  party-facing pages; the callback page never trusts its own redirect
+  query params, only the webhook-confirmed DB status.
+- 13 new tests (7 unit on the signature algorithm's tamper/wrong-
+  secret/stale-timestamp/future-timestamp/key-order/malformed-body
+  rejection; 6 integration exercising the real webhook route against
+  real DB rows). Full suite: 14 files / 77 tests passing. Verified with
+  a real `next build` and a real dev server — caught and fixed one real
+  bug this way (a 5s status-poll that kept firing after an auth error).
+
+**Not yet done, explicitly**: no route currently requires or checks
+`PartyVerification` status before any action (case creation,
+settlement dispatch, evidence submission all remain unaffected) —
+this pass is the tracking/record layer only. Making verification
+mandatory before a real payout is a separate, later decision. AML/
+sanctions screening is configured in the Didit workflow builder but
+not enabled (paid add-on). Not deployed to production yet — same
+migration-then-deploy sequencing as every other schema change this
+session.
+
+`SETTLEMENT_PAUSED` untouched throughout.
