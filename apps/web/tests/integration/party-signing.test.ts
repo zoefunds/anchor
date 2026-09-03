@@ -23,6 +23,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.evidence.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.case.deleteMany({ where: { organizationId: orgId } });
+  // See party-token-access.test.ts's identical fix for why this is
+  // needed now — evidence submission writes an AuditLog row.
+  await prisma.auditLog.deleteMany({ where: { organizationId: orgId } });
   await prisma.organization.delete({ where: { id: orgId } });
   await prisma.$disconnect();
 });

@@ -25,6 +25,13 @@ afterAll(async () => {
   await prisma.partySession.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.evidence.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.case.deleteMany({ where: { organizationId: orgId } });
+  // Real regression this session's own evidence-route audit-logging fix
+  // introduced: evidence submission now writes an AuditLog row (see
+  // api/public/cases/:id/evidence/route.ts), which this cleanup didn't
+  // account for — organization.delete() failed on the FK constraint
+  // until this was added. Caught by actually running the suite against
+  // a real local Postgres, not by inspection.
+  await prisma.auditLog.deleteMany({ where: { organizationId: orgId } });
   await prisma.organization.delete({ where: { id: orgId } });
   await prisma.$disconnect();
 });
