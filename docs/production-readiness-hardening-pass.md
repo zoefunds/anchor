@@ -1411,3 +1411,79 @@ pieces of work, listed honestly rather than rushed:**
 **Verified**: `npx tsc --noEmit` clean. `SETTLEMENT_PAUSED` untouched
 throughout — remains the one action reserved exclusively for the
 operator's own explicit, per-instance authorization.
+
+## Sixteenth addendum: fourth audit — file-upload evidence audit gap, self-asserted attribution, config-write ordering fixed; "build everything" explicitly scoped down
+
+A fourth external audit correctly caught that the fifteenth addendum's
+"evidence submission is audited" claim was incomplete — only the two
+inline text-evidence routes had been fixed, not the two file-upload
+routes. It also raised new findings and, in its "what Claude should do"
+section, effectively asked for the entire remaining roadmap (real
+escrow adapter, MFA, rate limiting, transactional outbox, Solana ISM
+migration, validator3, policy governance...) in one pass. That request
+was explicitly not honored as stated — a financial adjudication system
+does not get 9 sections of real engineering rushed through in one
+sitting, and the audit's own stated method ("small reviewed commits,
+failing tests before each fix") is the opposite of that. What follows
+is what was actually built this pass, and an explicit list of what
+remains deliberately deferred.
+
+**Fixed:**
+- Both file-upload evidence routes (`api/cases/:id/evidence/upload`,
+  `api/public/cases/:id/evidence/upload`) now wrap the DB write in one
+  transaction with `logAction`, matching the pattern already applied to
+  inline evidence. Added `deleteEvidenceFile` to
+  [storage.ts](../apps/web/src/lib/storage.ts) — a real Cloudinary
+  upload is now best-effort cleaned up if the transaction fails, so a
+  failed DB write no longer leaves a silent orphaned file.
+- Added `Evidence.attributionSource` (new enum:
+  `organization_asserted` / `claimant_authenticated` /
+  `respondent_authenticated`), set server-side in all four evidence
+  routes, never from request input — addresses "organization callers
+  can self-assert party attribution" by making the attribution
+  *strength* independently recorded, without removing `submittedBy`'s
+  existing informational value. Migration validated on a real staging
+  database first (existing rows backfill safely to the conservative
+  `organization_asserted` default — confirmed by inserting a
+  pre-migration row and checking its value after `migrate deploy`);
+  **not yet applied to production**.
+- `signup` and `password-reset/request` now call `secureAppOrigin()`
+  before writing any state, not after — a misconfigured `APP_ORIGIN`
+  previously only surfaced as a swallowed log line after an
+  org/member/session or `PasswordReset` row already existed.
+- The inline org-evidence route's `submittedBy` is now validated
+  against the enum before reaching Prisma (was a raw pass-through that
+  could 500 on garbage input instead of a clean 400).
+
+**Verified**: `npx tsc --noEmit` clean. Migration validated end-to-end
+on staging (`anc-hor-db-staging`) exactly as done for the earlier
+webhook-secret migration.
+
+**Explicitly, deliberately not attempted this pass** — each is real,
+substantial, separate work:
+- The actual remaining P0: a real EVM escrow adapter
+  (`SettlementIntegration`/`CaseSettlement` models, on-chain state
+  validation before dispatch, removing the hardcoded zero `escrowId`).
+- API-key `creatorMemberId`/scopes/`expiresAt`/rotation, and the
+  operational decision to revoke/reissue keys created before the
+  OWNER-only fix.
+- Canonical decimal-string/atomic-unit money validation at the API
+  boundary (only the `toAttoAmount` conversion step was hardened, not
+  the initial `Number()` parse in case creation).
+- Redis-backed rate limiting, MFA/WebAuthn, verified-email enforcement
+  on privileged actions, CSRF protections.
+- Required signatures for settlement-relevant evidence; party
+  signing-key versioning/locking after first signed submission.
+- Transactional outbox for webhook delivery.
+- Daily reconciliation job, monitored alert channel.
+- Independent validator3 + Safe-governed EVM 2-of-3 cutover, Solana
+  multisig-ISM migration, deterministic on-chain ReplayGuard rejection
+  proof, credential rotation (still an accepted risk).
+- Policy governance, evidence provenance beyond attribution-source
+  labeling, human escalation, ledger/accounting, KYC/KYB, compliance.
+- Focused regression tests for this session's own security fixes (the
+  audit's P2 finding) — real and correct; the local `vitest`
+  integration suite still can't run without a local Postgres, and no
+  test files were added this pass for the new routes/fields.
+
+`SETTLEMENT_PAUSED` untouched throughout — unchanged all session.
