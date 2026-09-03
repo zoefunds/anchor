@@ -268,6 +268,53 @@ stalled for over 3 hours, roughly 13% of the entire window — this is
 no longer a borderline call. Absent a resumption, this gate item is on
 track to fail decisively at the 24h mark, not marginally.
 
+## Snapshot 10 — 2026-09-03 04:28 UTC (~19h08m elapsed, ~80% through the window)
+
+**Gap in monitoring, stated honestly**: the hourly check-in loop
+lapsed after Snapshot 9 (last real snapshot 2026-09-02 22:35 UTC) —
+no snapshot was captured between then and now, roughly 6 hours later.
+This snapshot cannot speak to what happened during that gap, only to
+the state now versus Snapshot 9's.
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged — no restart, so whatever broke the stall was not a restart) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same display artifact) | 0 | 0 |
+
+**Validator1's backfill has resumed — a real recovery, not just a better reading.**
+Signed index jumped `871681` → `871738` (+57), after being completely
+flat for at least 3+ hours as of Snapshot 9. Live Mailbox nonce is now
+`873108` (+36 since Snapshot 9). Lag: **`1391` → `1370`** — validator1
+is now back in exact lockstep with validator2 (both `871738`, both
+`1370` lag). Whatever caused the multi-hour stall (consistent with —
+though not re-confirmed this snapshot — the earlier-measured Infura
+rate-limiting) appears to have cleared on its own, with no restart
+involved. **Important nuance**: this is recovery from the stall, not
+closure of the original ~1370-leaf backlog itself — the lag is back to
+where the window started, not below it. The window's original question
+("does the contiguous backfill lag ever actually close") remains
+unanswered; what's now answered is "can validator1 resume after a
+multi-hour stall without a restart" (yes).
+
+**Read-only verifier**: 18 checks, 10 pass, 6 warn, 2 fail — same two
+checkpoint-currency fails (both validators still over
+`maxCheckpointLagLeaves`), but for the first time in many snapshots
+validator1 and validator2 report the exact same lag rather than
+validator1 being worse.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~4h52m
+remaining to target end (2026-09-03 09:20 UTC). Given: (a) zero
+restarts/OOM/AccessDenied across the entire ~19h so far, (b) the
+backfill lag never closing below its ~1370-leaf starting point at any
+point in the window, and (c) a real multi-hour stall on validator1
+that self-resolved without operator intervention — the honest read
+heading into the final stretch is: reliability (uptime) criteria are
+cleanly met, but the "checkpoint currency confirmed" criterion this
+gate exists to test has not been met at any point in ~19 hours. Absent
+a late change, this gate item should be called a genuine FAIL at 24h
+on that basis — not a pass with an asterisk.
+
 **Quick re-check — 2026-09-02 17:19 UTC** (~4 minutes after the root-cause
 capture above, too soon for a new checkpoint-lag reading to carry any
 signal): all three machines still `started` with unchanged `Last
