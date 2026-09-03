@@ -67,6 +67,26 @@ Recovery required a **new** dispatch referencing the same `escrowId` with a fres
 3. Validator1's Infura quota exhaustion and the relayer's earlier connection instability are real, separate infra issues worth fixing on their own merits — not re-tested after this incident's resolution since they were not the terminal blocker.
 4. No governed expiry/refund/human-review escape hatch exists for a stuck escrow generally — this incident's recovery worked because a new dispatch was possible; a future incident where the settlement target itself is somehow wrong would need a different mechanism.
 
+## Re-audit response — follow-up items 1 and 2, and the re-audit's own findings
+
+**Correction to an earlier overclaim**: a prior message in this session said "both fixes are fully live." That was imprecise for the `caseId` fix — it existed only in source, not deployed. Corrected here.
+
+**Verified, not just claimed**:
+- Deployed worker source (commit `c33108f`+) contains the zero-escrow-fallback fix — confirmed via direct `grep` against the running container's own files, not just a version number.
+- The rejection was proven through the **real worker dispatch path**, not only the mocked unit test — a live call to `dispatchDecisionForCase` on the running `anc-hor-worker` process, with a synthetic caseId that has no `CaseSettlement`, correctly threw `"case ... has no CaseSettlement — refusing to dispatch..."`.
+- **V1 escrow inventory**: exactly one `CaseSettlement` record exists in the entire database, pointing at V1 (`0x5314725C32b58d0e1CACa510d491c8492D0BE997`). Its on-chain deposit status is `SETTLED` (verified directly via `cast call`) — the DB record's `status` field was stale (`DEPOSITED`) until this pass; corrected to `SETTLED` with the real `settledTxHash`. **Zero unsettled V1 deposits exist.** This means a future V1→V2 migration has nothing to strand — the audit's stated precondition ("all V1 deposits settled/refunded... before repointing") is already met today, for whatever that's worth if new V1 deposits are made before a migration happens.
+
+**Item A implemented and tested, NOT deployed**: `DecisionRelay.sol` now has an explicit per-origin `SettlementMode` (`UNCONFIGURED`/`SETTLEMENT`/`NOTIFICATION_ONLY`), defaulting to `UNCONFIGURED`. `handle()` reverts for an unconfigured origin *before* `processedDecisions` is written — directly closing the exact failure mode that made the original incident unrecoverable. 5 new Foundry tests, including one that reproduces the incident scenario end-to-end (revert → still-false → configure → same message retried successfully) and one proving `NOTIFICATION_ONLY` never calls `settle()` even with a target configured. Full suite: 66 tests passing. This requires redeploying `DecisionRelay` itself (a bigger, riskier action than swapping `Escrow` — it holds the live attestor set and trustedSender wiring) and is explicitly **not deployed**, per the audit's own instruction not to touch `DecisionRelay`'s live configuration yet.
+
+**Items B, C, D, E, F — explicitly not attempted this pass**, real, larger scopes each:
+- B (bind app/relay/escrow to the same contract via a pre-dispatch invariant check) — real, scoped enough to be tractable next.
+- C (a real `CaseSettlement`/`SettlementIntegration` creation UI, party-authorized deposit confirmation, integration tests against a real local EVM chain) — a genuinely large feature, not a same-session fix.
+- D (a versioned settlement router or full V1 drain-before-cutover plan) — a real design decision needing operator input, not something to build speculatively.
+- E (governed, time-bounded refund/escalation with multi-party approval) — a real, large feature.
+- F (reconciliation job + real alert wiring) — already tracked as open in every prior addendum this session; still not built.
+
+`SETTLEMENT_PAUSED` remains `true`. No production dispatch, no `DecisionRelay` redeploy, no `Escrow` V2 deployment, no governance change was made in this pass beyond the DB record correction (a status-field fix, not a chain mutation).
+
 ### 2026-09-03T15:28:07Z
 - validator1 latest_index: 871811 | validator2 latest_index: 871811
 - checkpoint_873170_with_id.json: validator1=404 validator2=404
