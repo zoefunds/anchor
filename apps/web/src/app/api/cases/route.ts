@@ -5,10 +5,17 @@ import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
 import { caseVisibilityWhere } from "@/lib/case-access";
 import { generatePartyToken } from "@/lib/party-auth";
+import { parseCanonicalDecimalAmount, InvalidAmountError } from "@/lib/money";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
 // integrations). Body: { claim, amount, claimantRef, respondentRef, policyId? }
+// `amount` MUST be a JSON string (e.g. "1250.50"), not a JSON numeric
+// literal — see lib/money.ts's own header comment for why: precision is
+// already lost during JSON.parse for a numeric literal, before any
+// validation in this handler runs. Real, intentional breaking change
+// (external audit finding) — a caller sending a JSON number now gets a
+// clear 400, not silent precision loss.
 // claimantRef/respondentRef must already be pseudonymous refs — Anchor
 // never stores real party identity on the case record itself (see
 // packages/types privacy note); the mapping to a real account lives in a
@@ -46,9 +53,14 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  const amountNumber = Number(amount);
-  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-    return NextResponse.json({ error: "amount must be a positive number" }, { status: 400 });
+  let canonicalAmount: string;
+  try {
+    canonicalAmount = parseCanonicalDecimalAmount(amount);
+  } catch (err) {
+    if (err instanceof InvalidAmountError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    throw err;
   }
   const SUPPORTED_SETTLEMENT_CHAINS = ["sepolia", "solanatestnet"];
   // Both or neither — a settlement target only makes sense as a pair, and
@@ -145,7 +157,7 @@ export async function POST(req: NextRequest) {
       data: {
         organizationId: auth.organizationId,
         claim,
-        amount,
+        amount: canonicalAmount,
         claimantRef,
         respondentRef,
         policyId: policy.id,
