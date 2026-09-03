@@ -362,3 +362,18 @@ across the whole window; the checkpoint-currency criterion this gate
 exists to test has not been met at any point — the lag has never
 closed below its ~1370-leaf starting value. Final verdict due at
 09:20 UTC.
+
+## Snapshot 12 — 2026-09-03 06:22 UTC (~21h02m elapsed, ~88% through the window)
+
+Machine states unchanged across all three apps — zero restarts/OOM/
+AccessDenied for the entire window so far. Both validators still
+exactly in lockstep: signed index `871750` (both), live Mailbox nonce
+`873120`, lag `1370` for both. Recovery from Snapshot 10 continues to
+hold steady, ~2h since. Read-only verifier: 18 checks, 10 pass, 6 warn,
+2 fail — same two checkpoint-currency fails.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~2h58m
+remaining to target end. Standing conclusion unchanged: uptime/restart
+criteria cleanly met across the whole window; checkpoint-currency
+criterion not met at any point (lag never closed below its ~1370-leaf
+starting value). Final verdict due at 09:20 UTC.
