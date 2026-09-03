@@ -1355,3 +1355,59 @@ delivery monitoring is still per-message rather than a durable
 reconciliation table; the validator set is still not independent. All
 consistent with, and mostly already tracked by, the prior addenda's own
 "held pending authorization" list.
+
+## Fifteenth addendum: third audit — invite exposure, Host-header link poisoning, precision loss, missing evidence audit fixed
+
+A third external audit reviewed this session's own P0/P1 fixes plus
+new ground (auth hardening, evidence provenance, financial precision,
+operational gaps). Confirmed the P0/P1 fixes from the fourteenth
+addendum are real and live in production. Fixed four more tractable,
+real findings this pass; deliberately did not attempt the larger ones.
+
+**Fixed:**
+- `GET /api/invites` required only session auth, not `OWNER` — any
+  MEMBER/VIEWER could see pending invite emails. Now `requireOwner()`.
+- `verify-email`/`password-reset`/`signup`/`invites` routes fell back
+  to the inbound request's own Host header (`req.nextUrl.origin`)
+  whenever `APP_ORIGIN` was unset — a spoofed Host header could make
+  Anchor generate a real verification/reset/invite link pointing at an
+  attacker-controlled domain. Added `secureAppOrigin()` in
+  [app-env.ts](../apps/web/src/lib/app-env.ts): `APP_ORIGIN` is now
+  mandatory outside `development`, matching this project's existing
+  `APP_ENV` posture (no silent fallback, fails loudly).
+- `toAttoAmount` silently truncated fractional digits beyond 18 places
+  instead of rejecting them — a real, silent financial precision-loss
+  bug (a caller sending 19 fractional digits would have the last one
+  dropped with no error). Now throws.
+- Evidence submission (both the org-authenticated route and the
+  party-token route) was never audited at all — a genuine gap for a
+  dispute-relevant mutation. Both now wrap the write in one transaction
+  with `logAction`, matching case/webhook/api-key creation's pattern.
+
+**Deliberately not attempted this pass — real, substantial, separate
+pieces of work, listed honestly rather than rushed:**
+- API-key `creatorMemberId`/scopes/`expiresAt`/case restrictions, and
+  revoking/reissuing pre-fix keys — a real schema change plus an
+  operational decision affecting any live integration; needs its own
+  pass with real tests, not squeezed in alongside monitoring a closing
+  validator window.
+- The real EVM escrow adapter (`SettlementIntegration`/`CaseSettlement`
+  models, on-chain state validation before dispatch) — the audit is
+  right this is the actual remaining P0; the allowlist fix from the
+  fourteenth addendum narrows the blast radius but does not build this.
+- Rate limiting, MFA/WebAuthn, verified-email enforcement on
+  privileged actions, CSRF protections.
+- Party signing-key versioning/locking after first signed evidence.
+- Transactional outbox for webhook delivery (still enqueue-then-best-
+  effort, not commit-with-the-mutation).
+- Daily reconciliation job, monitored alert channel, validator3 +
+  Safe-governed 2-of-3 EVM ISM cutover, Solana multisig-ISM migration,
+  deterministic on-chain ReplayGuard rejection proof, credential
+  rotation (still an accepted risk, not remediated), and every
+  fintech-governance item (policy versioning, evidence provenance
+  beyond attribution-source labeling, human escalation, ledger/
+  accounting, KYC/KYB, compliance).
+
+**Verified**: `npx tsc --noEmit` clean. `SETTLEMENT_PAUSED` untouched
+throughout — remains the one action reserved exclusively for the
+operator's own explicit, per-instance authorization.
