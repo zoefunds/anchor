@@ -1,7 +1,7 @@
 import { Worker, type Job } from "bullmq";
 import IORedis from "ioredis";
 import { ADJUDICATION_QUEUE_NAME, getAdjudicationQueue } from "@/lib/queue";
-import { runAdjudicationJob, finalizeExpiredAppealWindows, retryFailedSettlements } from "@/lib/adjudication-service";
+import { runAdjudicationJob, finalizeExpiredAppealWindows, retryFailedSettlements, confirmPendingDeposits } from "@/lib/adjudication-service";
 import { deliverWebhookAttempt } from "@/lib/webhooks";
 import { anchorAuditChains } from "@/lib/audit-anchor";
 import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
@@ -16,6 +16,7 @@ import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
 const FINALIZE_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const SETTLEMENT_RETRY_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const AUDIT_ANCHOR_SWEEP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes — an external checkpoint doesn't need to be real-time, just regular
+const DEPOSIT_CONFIRMATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes — same cadence as the finalize sweep; a deposit sitting unconfirmed doesn't need faster polling than that
 
 let worker: Worker | null = null;
 
@@ -34,6 +35,14 @@ async function processJob(job: Job): Promise<void> {
     if (count > 0) {
       // eslint-disable-next-line no-console
       console.log(`worker: retried settlement for ${count} decision(s)`);
+    }
+    return;
+  }
+  if (job.name === "confirm_pending_deposits") {
+    const count = await confirmPendingDeposits();
+    if (count > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`worker: confirmed ${count} on-chain deposit(s)`);
     }
     return;
   }
@@ -116,6 +125,23 @@ async function ensureSettlementRetryScheduled(): Promise<void> {
 }
 
 /**
+ * Registers the periodic deposit-confirmation sweep (see
+ * adjudication-service.ts's confirmPendingDeposits) — automatically
+ * promotes a CaseSettlement from PENDING_DEPOSIT to DEPOSITED once
+ * both parties have set their address AND the escrow contract's own
+ * state shows a matching deposit, without needing an operator to
+ * trigger the on-demand confirm-deposit endpoint. Same upsert-is-
+ * idempotent reasoning as the other sweeps.
+ */
+async function ensureDepositConfirmationSweepScheduled(): Promise<void> {
+  await getAdjudicationQueue().upsertJobScheduler(
+    "confirm-pending-deposits-sweep",
+    { every: DEPOSIT_CONFIRMATION_SWEEP_INTERVAL_MS },
+    { name: "confirm_pending_deposits" }
+  );
+}
+
+/**
  * Registers the periodic external audit-chain anchoring sweep (see
  * lib/audit-anchor.ts) — posts each organization's current audit-log
  * chain head to a small Sepolia contract, so history can't be silently
@@ -187,6 +213,10 @@ export async function startAdjudicationWorker(): Promise<Worker> {
   ensureAuditAnchorSweepScheduled().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to schedule audit anchor sweep:", err instanceof Error ? err.message : err);
+  });
+  ensureDepositConfirmationSweepScheduled().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to schedule deposit confirmation sweep:", err instanceof Error ? err.message : err);
   });
 
   return w;

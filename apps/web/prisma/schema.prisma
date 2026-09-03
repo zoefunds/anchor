@@ -359,11 +359,20 @@ model CaseSettlement {
   integration        SettlementIntegration @relation(fields: [integrationId], references: [id])
   integrationId      String
   // The escrow contract's own identifier for this specific deposit —
-  // real, read from on-chain state at confirmation time, never
-  // caller-asserted.
+  // derived deterministically from caseId (see lib/case-settlement.ts's
+  // deriveEscrowId), never caller-chosen, so it can't be reused or
+  // guessed across cases.
   escrowId           String
-  claimantAddress    String
-  respondentAddress  String
+  // Real fix (Item C — CaseSettlement used to be created with both
+  // addresses caller-supplied, i.e. staff typing in whatever address
+  // was pasted to them, exactly the gap this closes): nullable until
+  // each party sets their OWN address via the party-token-authenticated
+  // /api/public/cases/:id/settlement-address route. A deposit is never
+  // confirmed (see checkAndConfirmDeposit) until both are set.
+  claimantAddress    String?
+  claimantAddressSetAt DateTime?
+  respondentAddress  String?
+  respondentAddressSetAt DateTime?
   expectedAmountAtto String // atto-unit string, same discipline as lib/genlayer.ts's toAttoAmount
   status             CaseSettlementStatus  @default(PENDING_DEPOSIT)
   depositTxHash      String?

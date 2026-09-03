@@ -356,6 +356,41 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
  * but nothing ever tried again. This is the durable reconciliation loop
  * that was missing.
  */
+/**
+ * Sweeps CaseSettlements sitting in PENDING_DEPOSIT with both party
+ * addresses already set, and confirms any that actually have a
+ * matching deposit on-chain — see lib/case-settlement.ts's
+ * checkAndConfirmDeposit for what "matching" means (state read
+ * directly from the escrow contract, never a caller-supplied txHash).
+ * This is what makes deposit confirmation automatic rather than
+ * requiring an operator to click "confirm-deposit" for every case —
+ * that endpoint still exists for an immediate on-demand check, this is
+ * the same logic run periodically so it self-heals without anyone
+ * watching.
+ */
+export async function confirmPendingDeposits(): Promise<number> {
+  const { checkAndConfirmDeposit } = await import("@/lib/case-settlement");
+  const pending = await prisma.caseSettlement.findMany({
+    where: {
+      status: "PENDING_DEPOSIT",
+      claimantAddress: { not: null },
+      respondentAddress: { not: null },
+    },
+    select: { id: true },
+  });
+
+  let confirmedCount = 0;
+  for (const cs of pending) {
+    try {
+      const result = await checkAndConfirmDeposit(cs.id);
+      if (result.outcome === "confirmed") confirmedCount++;
+    } catch (err) {
+      console.error(`confirmPendingDeposits: failed checking CaseSettlement ${cs.id}`, err);
+    }
+  }
+  return confirmedCount;
+}
+
 export async function retryFailedSettlements(): Promise<number> {
   const stuck = await prisma.decision.findMany({
     where: {

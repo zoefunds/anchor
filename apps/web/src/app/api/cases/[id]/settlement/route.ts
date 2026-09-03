@@ -1,0 +1,105 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { canAccessCase } from "@/lib/case-access";
+import { logAction } from "@/lib/audit";
+import { toAttoAmount } from "@/lib/genlayer";
+import { deriveEscrowId, assertEscrowBoundToDecisionRelay, SettlementIntegrationError } from "@/lib/case-settlement";
+
+// GET /api/cases/:id/settlement — current binding/deposit/settlement
+// state for this case, if any.
+export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  const auth = await resolveOrgFromRequest(req);
+  if ("error" in auth) return authErrorResponse(auth);
+
+  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: { include: { integration: true } } } });
+  if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
+    return NextResponse.json({ error: "case not found" }, { status: 404 });
+  }
+  return NextResponse.json(kase.settlement);
+}
+
+// POST /api/cases/:id/settlement — bind a case to a settlement
+// integration, creating its CaseSettlement in PENDING_DEPOSIT.
+// Deliberately does NOT accept claimant/respondent addresses in this
+// body — those only ever come from each party themselves, via
+// /api/public/cases/:id/settlement-address (see lib/party-auth.ts).
+// Staff choose WHICH integration a case settles through; they don't
+// choose whose wallet gets paid.
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const auth = await resolveOrgFromRequest(req);
+  if ("error" in auth) return authErrorResponse(auth);
+  const writeError = requireWriteAccess(auth);
+  if (writeError) return writeError;
+
+  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
+  if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
+    return NextResponse.json({ error: "case not found" }, { status: 404 });
+  }
+  if (kase.settlement) {
+    return NextResponse.json({ error: "this case already has a settlement binding" }, { status: 409 });
+  }
+  if (!kase.settlementChain || !kase.settlementContract) {
+    return NextResponse.json(
+      { error: "case has no settlementChain/settlementContract configured — set those before binding a settlement integration" },
+      { status: 400 }
+    );
+  }
+
+  const { integrationId } = await req.json();
+  if (typeof integrationId !== "string" || integrationId.length === 0) {
+    return NextResponse.json({ error: "integrationId is required" }, { status: 400 });
+  }
+  const integration = await prisma.settlementIntegration.findUnique({ where: { id: integrationId } });
+  if (!integration || integration.organizationId !== auth.organizationId) {
+    return NextResponse.json({ error: "settlement integration not found" }, { status: 404 });
+  }
+  if (!integration.active) {
+    return NextResponse.json({ error: "this settlement integration is not active" }, { status: 409 });
+  }
+  if (integration.chain !== kase.settlementChain) {
+    return NextResponse.json({ error: `integration chain (${integration.chain}) does not match case settlementChain (${kase.settlementChain})` }, { status: 400 });
+  }
+
+  try {
+    await assertEscrowBoundToDecisionRelay({
+      chain: integration.chain,
+      escrowContractAddress: integration.escrowContractAddress as `0x${string}`,
+      expectedDecisionRelayAddress: kase.settlementContract as `0x${string}`,
+    });
+  } catch (err) {
+    if (err instanceof SettlementIntegrationError) {
+      return NextResponse.json({ error: err.message }, { status: 422 });
+    }
+    return NextResponse.json({ error: `could not verify escrow contract on-chain: ${(err as Error).message}` }, { status: 502 });
+  }
+
+  const expectedAmountAtto = toAttoAmount(kase.amount.toString()).toString();
+  const escrowId = deriveEscrowId(kase.id);
+
+  const settlement = await prisma.$transaction(async (tx) => {
+    const created = await tx.caseSettlement.create({
+      data: {
+        caseId: kase.id,
+        integrationId: integration.id,
+        escrowId,
+        expectedAmountAtto,
+      },
+    });
+    await logAction(
+      {
+        organizationId: auth.organizationId,
+        memberId: auth.memberId,
+        apiKeyId: auth.apiKeyId,
+        action: "case_settlement.bound",
+        targetType: "CaseSettlement",
+        targetId: created.id,
+        metadata: { caseId: kase.id, integrationId: integration.id, escrowId, expectedAmountAtto },
+      },
+      tx
+    );
+    return created;
+  });
+
+  return NextResponse.json(settlement, { status: 201 });
+}
