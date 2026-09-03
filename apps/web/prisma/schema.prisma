@@ -327,6 +327,15 @@ model SettlementIntegration {
   assetSymbol           String
   assetDecimals         Int
   active                Boolean      @default(true)
+  // Real gate, not yet enforced anywhere until this field exists: when
+  // true, dispatchDecisionForCase refuses to settle a case under this
+  // integration unless BOTH parties have an APPROVED PartyVerification
+  // — see lib/settlement-kyc.ts. Defaults to false (no behavior change
+  // for any existing integration) since requiring KYC is a real policy
+  // decision an operator opts into per integration, not a global rule
+  // — a demo/no-real-funds integration shouldn't force parties through
+  // identity verification just to test the adjudication flow.
+  requireKycApproval    Boolean      @default(false)
   createdByMemberId     String
   createdAt             DateTime     @default(now())
 

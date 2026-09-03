@@ -91,7 +91,15 @@ export default function CasesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           claim,
-          amount: Number(amount),
+          // Real regression from the backend's own precision fix (see
+          // lib/money.ts): the API now requires amount as a JSON
+          // string, rejecting numeric literals outright since
+          // precision can already be lost by the time a JS number
+          // reaches validation. This form's `amount` state is already
+          // a string (bound directly to the input's value) — sending
+          // it as Number(amount) here was silently reintroducing
+          // exactly the bug the backend fix was meant to close.
+          amount,
           claimantRef,
           respondentRef,
           policyId,
