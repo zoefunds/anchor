@@ -306,6 +306,13 @@ async function isDecisionSettledOnSepolia(settlementContract: Address, decisionH
  * quietly never settling.
  */
 export async function dispatchDecisionForCase(params: DispatchDecisionParams): Promise<{ txHash: string; messageId: string }> {
+  // Real gate, checked before any chain interaction: see
+  // lib/settlement-kyc.ts's own header comment. No-ops unless an
+  // operator has actually opted this case's SettlementIntegration into
+  // requireKycApproval — additive, not a new universal requirement.
+  const { assertKycRequirementMet } = await import("@/lib/settlement-kyc");
+  await assertKycRequirementMet(params.caseId);
+
   const config = getRelayConfig();
 
   if (params.settlementChain === "sepolia") {
