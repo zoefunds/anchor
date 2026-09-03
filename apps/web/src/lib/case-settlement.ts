@@ -25,6 +25,17 @@ const ESCROW_ABI = [
     outputs: [{ name: "", type: "address" }],
   },
   {
+    // Real production bug fixed here: the LIVE V1 Escrow contract's
+    // Deposit struct has only these four scalar fields — caseId was
+    // only ever added to the unreleased V2 source (see Escrow.sol's
+    // own header comment). A 5-output ABI here made every real
+    // on-chain deposits() read against the live contract fail to
+    // decode ("position out of bounds"), which meant
+    // checkAndConfirmDeposit could never actually confirm a real
+    // deposit — caught only by manually running it against a real
+    // deposit, not by anything noticing on its own. escrow.ts's own
+    // deposits() ABI (used by assertEscrowDepositMatches) already had
+    // this right; this one didn't.
     type: "function",
     name: "deposits",
     stateMutability: "view",
@@ -34,7 +45,6 @@ const ESCROW_ABI = [
       { name: "claimant", type: "address" },
       { name: "respondent", type: "address" },
       { name: "amount", type: "uint256" },
-      { name: "caseId", type: "bytes32" },
     ],
   },
 ] as const;

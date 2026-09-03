@@ -36,6 +36,11 @@ const DECISION_RELAY_ABI = [
   },
 ] as const;
 
+// Real fix, matching the same bug caught in case-settlement.ts: the
+// live V1 Escrow contract's deposits() has only these four fields —
+// caseId is V2-only, unreleased source. A 5-output ABI here made
+// checkDispatchedButStale's own deposits() read fail to decode
+// against every real deposit.
 const ESCROW_ABI = [
   {
     type: "function",
@@ -47,7 +52,6 @@ const ESCROW_ABI = [
       { name: "claimant", type: "address" },
       { name: "respondent", type: "address" },
       { name: "amount", type: "uint256" },
-      { name: "caseId", type: "bytes32" },
     ],
   },
 ] as const;
