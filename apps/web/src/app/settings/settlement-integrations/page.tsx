@@ -103,8 +103,8 @@ export default function SettlementIntegrationsPage() {
         >
           ← Docket
         </Link>
-        <Link href="/settings/members" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
-          Members →
+        <Link href="/settings/cutover-readiness" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
+          Cutover readiness →
         </Link>
       </div>
 
