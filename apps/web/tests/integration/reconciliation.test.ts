@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest
 // ever sets CaseSettlement.status to SETTLED automatically.
 
 const mockReadContract = vi.fn();
-const mockSendOpsAlert = vi.fn().mockResolvedValue(undefined);
+const mockSendOpsAlert = vi.fn().mockResolvedValue(true);
 
 vi.mock("viem", async (importOriginal) => {
   const actual = await importOriginal<typeof import("viem")>();
@@ -103,6 +103,37 @@ describe("runReconciliationSweep — settlement target checks", () => {
     // Second tick, same broken state — must NOT alert again.
     await runReconciliationSweep();
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries alerting a still-open finding whose first alert never actually delivered", async () => {
+    // Real regression coverage: sendOpsAlert resolving without
+    // throwing (e.g. OPS_ALERT_WEBHOOK_URL unset, or momentarily
+    // unset mid-rollout) is not the same as an alert having gone out
+    // — a finding must not be silently left "notified" when nothing
+    // was ever delivered.
+    const integration = await makeIntegration();
+    const kase = await makeCase();
+    await prisma.caseSettlement.create({
+      data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "PENDING_DEPOSIT", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
+    });
+    mockReadContract.mockResolvedValue("0x0000000000000000000000000000000000000000");
+    mockSendOpsAlert.mockResolvedValueOnce(false); // simulates "not configured" / skipped delivery
+
+    await runReconciliationSweep();
+    let finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
+    expect(finding!.alertedAt).toBeNull();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+
+    // Same broken state, but this time delivery actually succeeds —
+    // must retry, since the finding was never actually alerted.
+    await runReconciliationSweep();
+    finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
+    expect(finding!.alertedAt).not.toBeNull();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(2);
+
+    // Now that it's genuinely alerted, a third tick must NOT alert again.
+    await runReconciliationSweep();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(2);
   });
 
   it("opens a TARGET_INTEGRATION_MISMATCH finding when settlementTarget points elsewhere", async () => {

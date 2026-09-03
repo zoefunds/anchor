@@ -64,10 +64,36 @@ function hashToBytes32(hash: string): `0x${string}` {
 }
 
 /**
+ * Delivers one alert and only marks alertedAt when sendOpsAlert
+ * proves a message actually reached Slack — a real bug this exact
+ * function fixes: sendOpsAlert resolving without throwing is NOT the
+ * same as an alert having gone out (it also resolves when
+ * OPS_ALERT_WEBHOOK_URL is unset), and a caller that stamped
+ * alertedAt on that resolution alone recorded a real finding as
+ * "notified" when nothing had actually been delivered — caught only
+ * by hand-checking the Slack channel, not by any code path noticing
+ * on its own. Leaving alertedAt null on a skip/failure is what makes
+ * raiseFinding's retry-if-never-delivered logic below actually work.
+ */
+async function tryAlert(findingId: string, alert: { severity: "info" | "warning" | "critical"; title: string; detail: string }): Promise<void> {
+  try {
+    const delivered = await sendOpsAlert(alert);
+    if (delivered) {
+      await prisma.reconciliationFinding.update({ where: { id: findingId }, data: { alertedAt: new Date() } });
+    }
+  } catch (err) {
+    console.error(`reconciliation: failed to deliver alert for finding ${findingId}`, err);
+  }
+}
+
+/**
  * Opens a ReconciliationFinding if one doesn't already exist for this
  * (type, targetId), and sends exactly one "opened" alert for it — a
  * sweep tick where the same problem is still true does NOT re-alert,
- * since the finding already exists and already has alertedAt set.
+ * UNLESS the previous attempt never actually delivered (alertedAt
+ * still null — see tryAlert above), in which case this retries the
+ * alert without touching the finding's own openedAt/detail, since the
+ * finding itself was already real and already open.
  */
 async function raiseFinding(params: {
   type:
@@ -86,7 +112,12 @@ async function raiseFinding(params: {
   const existing = await prisma.reconciliationFinding.findUnique({
     where: { type_targetId: { type: params.type, targetId: params.targetId } },
   });
-  if (existing && !existing.resolvedAt) return; // already open, already (or about to be) alerted once
+  if (existing && !existing.resolvedAt) {
+    if (!existing.alertedAt) {
+      await tryAlert(existing.id, { severity: params.severity, title: params.title, detail: params.alertDetail });
+    }
+    return;
+  }
 
   const finding = existing
     ? await prisma.reconciliationFinding.update({
@@ -97,12 +128,7 @@ async function raiseFinding(params: {
         data: { type: params.type, targetType: params.targetType, targetId: params.targetId, detail: params.detail as Prisma.InputJsonValue },
       });
 
-  try {
-    await sendOpsAlert({ severity: params.severity, title: params.title, detail: params.alertDetail });
-    await prisma.reconciliationFinding.update({ where: { id: finding.id }, data: { alertedAt: new Date() } });
-  } catch (err) {
-    console.error(`reconciliation: failed to deliver alert for finding ${finding.id}`, err);
-  }
+  await tryAlert(finding.id, { severity: params.severity, title: params.title, detail: params.alertDetail });
 }
 
 /** Resolves an open finding (if any) for this (type, targetId) and sends a "resolved" alert. No-op if nothing is open. */

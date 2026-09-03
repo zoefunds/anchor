@@ -16,11 +16,17 @@ export type AlertSeverity = "info" | "warning" | "critical";
 export class OpsAlertDeliveryError extends Error {}
 
 /**
- * Posts one alert to OPS_ALERT_WEBHOOK_URL, if configured. Never
- * throws for "not configured" — that's a valid, common deployment
- * state (e.g. local dev), not an error; the caller's own DB-persisted
- * ReconciliationFinding row remains the durable record either way.
- * DOES throw (OpsAlertDeliveryError) when a URL IS configured but the
+ * Posts one alert to OPS_ALERT_WEBHOOK_URL, if configured. Returns
+ * `true` only when a message was actually handed to Slack (a 2xx
+ * response) — `false` means "not configured," a valid, common
+ * deployment state (e.g. local dev) that callers must NOT record as a
+ * real delivery. This distinction is real, not defensive: a live run
+ * of this exact function once returned successfully (no throw) from a
+ * machine mid-rollout that hadn't yet picked up a freshly-set
+ * OPS_ALERT_WEBHOOK_URL, and the caller recorded alertedAt as if a
+ * real alert had gone out when nothing had — caught by hand-verifying
+ * the Slack channel, not by any code path noticing on its own. DOES
+ * throw (OpsAlertDeliveryError) when a URL IS configured but the
  * delivery itself fails, so a caller running this inside a retryable
  * job (see worker.ts) gets real retry/backoff instead of a silently
  * swallowed failed alert — an alerting system that can't tell you it
@@ -30,9 +36,9 @@ export async function sendOpsAlert(params: {
   severity: AlertSeverity;
   title: string;
   detail: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const url = process.env.OPS_ALERT_WEBHOOK_URL;
-  if (!url) return;
+  if (!url) return false;
 
   const owner = process.env.OPS_ALERT_OWNER ?? "(no OPS_ALERT_OWNER configured)";
   const emoji = params.severity === "critical" ? ":rotating_light:" : params.severity === "warning" ? ":warning:" : ":information_source:";
@@ -59,4 +65,5 @@ export async function sendOpsAlert(params: {
   if (!res.ok) {
     throw new OpsAlertDeliveryError(`ops alert endpoint responded ${res.status}`);
   }
+  return true;
 }
