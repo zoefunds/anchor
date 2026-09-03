@@ -377,3 +377,33 @@ remaining to target end. Standing conclusion unchanged: uptime/restart
 criteria cleanly met across the whole window; checkpoint-currency
 criterion not met at any point (lag never closed below its ~1370-leaf
 starting value). Final verdict due at 09:20 UTC.
+
+## Snapshot 13 — 2026-09-03 07:55 UTC (~22h35m elapsed, ~94% through the window)
+
+Machine states unchanged across all three apps — zero restarts/OOM/
+AccessDenied for the entire window so far.
+
+**Transient false alarm, noted honestly**: the first verifier run this
+snapshot reported `checkpoint_latest_index.json is not publicly
+reachable` for both validators (a WARN, not the usual FAIL). Direct
+`curl` investigation traced this to a local DNS resolution blip on
+this session's own machine (`curl: Could not resolve host`, while
+`nslookup` on the same hostname succeeded seconds later) — not a real
+S3 or validator problem. Confirmed by retrying moments later: both the
+known-good `metadata_latest.json` and `checkpoint_latest_index.json`
+endpoints returned clean 200s, and a fresh verifier run reported the
+normal state. Recorded here so this snapshot's own history stays
+honest about a real (if transient and local) hiccup rather than
+silently discarding it.
+
+**Real reading, confirmed**: both validators still exactly in
+lockstep — signed index `871760` (both), live Mailbox nonce `873130`,
+lag `1370` for both. No change from Snapshot 12. Read-only verifier:
+18 checks, 10 pass, 6 warn, 2 fail — same two checkpoint-currency
+fails.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~1h25m
+remaining to target end. Standing conclusion unchanged heading into
+the final stretch: reliability/uptime criteria cleanly met across the
+entire ~24h window; checkpoint-currency criteria not met at any point.
+Final verdict due shortly after 09:20 UTC.
