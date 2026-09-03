@@ -338,3 +338,27 @@ data point.
 **Read-only verifier**: 19 checks, 11 pass, 6 warn, 2 fail — same two checkpoint-currency fails as every prior snapshot.
 
 **No production action taken.** `SETTLEMENT_PAUSED` untouched. ~15h remaining to target end (2026-09-03 09:20 UTC). Per this file's own stated pass/fail criteria, a lag that shows zero real progress across four consecutive snapshots spanning ~2.5 hours should be treated as heading toward a FAILED gate outcome on the "checkpoint currency confirmed" criterion, regardless of the clean restart/OOM/AccessDenied record — that record alone was never sufficient by this file's own header.
+
+## Snapshot 11 — 2026-09-03 05:29 UTC (~20h09m elapsed, ~84% through the window)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (still the same display artifact) | 0 | 0 |
+
+**Recovery from Snapshot 10 held.** Both validators still exactly in
+lockstep: signed index `871745` (both), live Mailbox nonce `873115`,
+lag `1370` for both — no widening, no new stall since validator1
+resumed. Zero restarts/OOM/AccessDenied across the entire ~20h so far.
+
+**Read-only verifier**: 18 checks, 10 pass, 6 warn, 2 fail — same two
+checkpoint-currency fails, both validators reporting identically.
+
+**No production action taken.** `SETTLEMENT_PAUSED` untouched. ~3h51m
+remaining to target end (2026-09-03 09:20 UTC). Standing working
+conclusion unchanged: reliability/uptime criteria are cleanly met
+across the whole window; the checkpoint-currency criterion this gate
+exists to test has not been met at any point — the lag has never
+closed below its ~1370-leaf starting value. Final verdict due at
+09:20 UTC.
