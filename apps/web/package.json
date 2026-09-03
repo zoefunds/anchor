@@ -9,7 +9,8 @@
     "worker": "tsx src/worker.ts",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
-    "test:integration": "vitest run"
+    "test:integration": "vitest run",
+    "test:integration-evm": "vitest run --config vitest.evm.config.ts"
   },
   "dependencies": {
     "@anchor/hyperlane-relay": "*",

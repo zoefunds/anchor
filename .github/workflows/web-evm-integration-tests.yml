@@ -1,0 +1,66 @@
+name: web EVM integration tests (Anvil)
+
+# Priority 1 of the settlement-readiness gaps: a real Anvil-based
+# integration suite — genuine deployed V1/V2 Escrow and DecisionRelay
+# contracts, genuine viem ABI calls, no mocked contract reads anywhere.
+# Kept as its own required job (not folded into web-integration-tests.yml)
+# because it needs Foundry/anvil on PATH and compiled contract
+# artifacts, which that job's environment doesn't provide.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  evm-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: anchor
+          POSTGRES_PASSWORD: anchor
+          POSTGRES_DB: anchor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U anchor"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql://anchor:anchor@localhost:5432/anchor
+      REDIS_URL: redis://localhost:6379
+      SESSION_SECRET: ci-only-session-secret-not-a-real-secret
+      HYPERLANE_RELAY_RPC_URL: http://127.0.0.1:8555
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - run: npm ci
+
+      - name: Compile contracts (produces the artifacts the test suite deploys)
+        working-directory: chains/evm
+        run: forge build
+
+      - name: Apply migrations to the ephemeral CI database
+        run: npx prisma migrate deploy --schema apps/web/prisma/schema.prisma
+
+      - name: Run real Anvil EVM integration tests
+        run: npm --workspace @anchor/web run test:integration-evm
