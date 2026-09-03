@@ -33,6 +33,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     include: {
       evidence: { orderBy: { createdAt: "asc" } },
       decisions: { orderBy: { createdAt: "desc" } },
+      settlement: { include: { integration: true } },
     },
   });
   if (!kase) {
@@ -49,6 +50,21 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     claimantRef: kase.claimantRef,
     respondentRef: kase.respondentRef,
     createdAt: kase.createdAt,
+    // The resolving party's own role — lets the page render "set YOUR
+    // payout address" without a second round trip, and without ever
+    // exposing which role a caller resolved to anyone who didn't
+    // already prove it via their own token/session.
+    role: resolved.role,
+    settlement: kase.settlement
+      ? {
+          status: kase.settlement.status,
+          chain: kase.settlement.integration.chain,
+          assetSymbol: kase.settlement.integration.assetSymbol,
+          expectedAmountAtto: kase.settlement.expectedAmountAtto,
+          claimantAddress: kase.settlement.claimantAddress,
+          respondentAddress: kase.settlement.respondentAddress,
+        }
+      : null,
     evidence: kase.evidence.map((e) => ({
       id: e.id,
       type: e.type,

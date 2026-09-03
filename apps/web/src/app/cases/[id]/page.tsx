@@ -61,6 +61,24 @@ interface OrgMember {
   role: "OWNER" | "MEMBER" | "VIEWER";
 }
 
+interface SettlementIntegrationSummary {
+  id: string;
+  chain: string;
+  escrowContractAddress: string;
+  assetSymbol: string;
+  active: boolean;
+}
+
+interface CaseSettlementSummary {
+  id: string;
+  status: "PENDING_DEPOSIT" | "DEPOSITED" | "SETTLED" | "MISMATCH_BLOCKED";
+  escrowId: string;
+  expectedAmountAtto: string;
+  claimantAddress: string | null;
+  respondentAddress: string | null;
+  integration: SettlementIntegrationSummary;
+}
+
 export default function CaseDetailPage() {
   const params = useParams();
   const id = params.id as string;
@@ -86,6 +104,60 @@ export default function CaseDetailPage() {
   const [grantedMembers, setGrantedMembers] = useState<{ id: string; email: string }[]>([]);
   const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
   const [accessBusy, setAccessBusy] = useState(false);
+
+  const [caseSettlement, setCaseSettlement] = useState<CaseSettlementSummary | null>(null);
+  const [availableIntegrations, setAvailableIntegrations] = useState<SettlementIntegrationSummary[]>([]);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState("");
+  const [binding, setBinding] = useState(false);
+  const [confirmingDeposit, setConfirmingDeposit] = useState(false);
+  const [escrowNote, setEscrowNote] = useState<string | null>(null);
+
+  async function loadEscrow() {
+    const res = await fetch(`/api/cases/${id}/settlement`);
+    if (res.ok) {
+      const body = await res.json();
+      setCaseSettlement(body ?? null);
+    }
+  }
+
+  async function bindSettlement() {
+    if (!selectedIntegrationId) return;
+    setBinding(true);
+    setEscrowNote(null);
+    try {
+      const res = await fetch(`/api/cases/${id}/settlement`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ integrationId: selectedIntegrationId }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to bind settlement integration");
+      await loadEscrow();
+    } catch (err) {
+      setEscrowNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBinding(false);
+    }
+  }
+
+  async function checkDeposit() {
+    setConfirmingDeposit(true);
+    setEscrowNote(null);
+    try {
+      const res = await fetch(`/api/cases/${id}/settlement/confirm-deposit`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to check deposit");
+      if (body.outcome === "confirmed") setEscrowNote("Deposit confirmed on-chain.");
+      else if (body.outcome === "already_confirmed") setEscrowNote("Already confirmed.");
+      else if (body.outcome === "no_deposit_yet") setEscrowNote("No matching deposit found on-chain yet.");
+      else setEscrowNote(body.reason ?? "Not ready.");
+      await loadEscrow();
+    } catch (err) {
+      setEscrowNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirmingDeposit(false);
+    }
+  }
 
   async function load() {
     const res = await fetch(`/api/cases/${id}`);
@@ -128,6 +200,11 @@ export default function CaseDetailPage() {
     if (membersRes.ok) {
       setOrgMembers(await membersRes.json());
     }
+
+    const integrationsRes = await fetch("/api/settlement-integrations");
+    if (integrationsRes.ok) {
+      setAvailableIntegrations(await integrationsRes.json());
+    }
   }
 
   async function toggleRestricted(next: boolean) {
@@ -167,6 +244,7 @@ export default function CaseDetailPage() {
   useEffect(() => {
     load();
     loadAccess();
+    loadEscrow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -420,6 +498,22 @@ export default function CaseDetailPage() {
         </p>
       )}
 
+      {kase.settlementChain && (
+        <EscrowPanel
+          kase={kase}
+          isOwner={isOwner}
+          caseSettlement={caseSettlement}
+          availableIntegrations={availableIntegrations}
+          selectedIntegrationId={selectedIntegrationId}
+          setSelectedIntegrationId={setSelectedIntegrationId}
+          binding={binding}
+          onBind={bindSettlement}
+          confirmingDeposit={confirmingDeposit}
+          onCheckDeposit={checkDeposit}
+          escrowNote={escrowNote}
+        />
+      )}
+
       {kase.decision && (
         <section className="mt-10">
           <p className="kicker mb-4 text-seal-500 dark:text-seal-400">Verdict</p>
@@ -660,6 +754,130 @@ const SETTLEMENT_CHAIN_LABELS: Record<string, string> = {
 // once a decision exists; shows nothing extra if the case never had a
 // settlement target configured (the common case), so this doesn't add
 // noise to cases that were never meant to settle cross-chain.
+const CASE_SETTLEMENT_STATUS_LABELS: Record<string, string> = {
+  PENDING_DEPOSIT: "Awaiting deposit",
+  DEPOSITED: "Deposited — awaiting settlement",
+  SETTLED: "Settled",
+  MISMATCH_BLOCKED: "Blocked — on-chain state doesn't match what was expected",
+};
+
+// Item C's dashboard surface: binding a case to a registered escrow
+// (staff-only — see /settings/settlement-integrations), and the
+// current deposit/party-address state, which only ever gets written by
+// each party themselves via their own public case link, never by
+// staff typing addresses in here.
+function EscrowPanel({
+  kase,
+  isOwner,
+  caseSettlement,
+  availableIntegrations,
+  selectedIntegrationId,
+  setSelectedIntegrationId,
+  binding,
+  onBind,
+  confirmingDeposit,
+  onCheckDeposit,
+  escrowNote,
+}: {
+  kase: CaseDetail;
+  isOwner: boolean;
+  caseSettlement: CaseSettlementSummary | null;
+  availableIntegrations: SettlementIntegrationSummary[];
+  selectedIntegrationId: string;
+  setSelectedIntegrationId: (id: string) => void;
+  binding: boolean;
+  onBind: () => void;
+  confirmingDeposit: boolean;
+  onCheckDeposit: () => void;
+  escrowNote: string | null;
+}) {
+  const usable = availableIntegrations.filter((i) => i.active && i.chain === kase.settlementChain);
+
+  return (
+    <section className="mt-10">
+      <p className="kicker mb-4">Escrow</p>
+      <div className="dossier">
+        {!caseSettlement && isOwner && (
+          <>
+            <p className="text-sm text-muted dark:text-muted-dark">
+              No escrow bound yet. Binding does not set either party's payout address — each party
+              sets their own via their public case link once bound.
+            </p>
+            {usable.length === 0 ? (
+              <p className="mt-3 font-mono text-xs text-status-undetermined">
+                No active settlement integration for {kase.settlementChain}. Add one under{" "}
+                <code className="font-mono">Settings → Settlement</code>.
+              </p>
+            ) : (
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                <label className="flex flex-1 flex-col gap-2">
+                  <span className="field-label">Integration</span>
+                  <select className="field-input" value={selectedIntegrationId} onChange={(e) => setSelectedIntegrationId(e.target.value)}>
+                    <option value="">Select…</option>
+                    {usable.map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.escrowContractAddress} ({i.assetSymbol})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button className="btn-primary" onClick={onBind} disabled={binding || !selectedIntegrationId}>
+                  {binding ? "Binding…" : "Bind escrow"}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {!caseSettlement && !isOwner && (
+          <p className="text-sm text-muted dark:text-muted-dark">No escrow bound to this case yet.</p>
+        )}
+
+        {caseSettlement && (
+          <>
+            <div className="flex items-baseline justify-between">
+              <p className="font-mono text-sm text-ink-950 dark:text-ink">
+                {CASE_SETTLEMENT_STATUS_LABELS[caseSettlement.status] ?? caseSettlement.status}
+              </p>
+              <span className="font-mono text-[11px] text-muted dark:text-muted-dark">{caseSettlement.integration.assetSymbol}</span>
+            </div>
+            <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">
+              escrow {caseSettlement.escrowId} on {caseSettlement.integration.escrowContractAddress}
+            </p>
+
+            <ol className="mt-6 flex flex-col gap-3 border-t border-line pt-6 dark:border-line-dark">
+              <PipelineStep
+                done={Boolean(caseSettlement.claimantAddress)}
+                label="Claimant set their payout address"
+                detail={caseSettlement.claimantAddress ?? "waiting — the claimant sets this from their own case link"}
+              />
+              <PipelineStep
+                done={Boolean(caseSettlement.respondentAddress)}
+                label="Respondent set their payout address"
+                detail={caseSettlement.respondentAddress ?? "waiting — the respondent sets this from their own case link"}
+              />
+              <PipelineStep
+                done={caseSettlement.status === "DEPOSITED" || caseSettlement.status === "SETTLED"}
+                pending={caseSettlement.status === "PENDING_DEPOSIT" && Boolean(caseSettlement.claimantAddress) && Boolean(caseSettlement.respondentAddress)}
+                failed={caseSettlement.status === "MISMATCH_BLOCKED"}
+                label="Deposit confirmed on-chain"
+              />
+              <PipelineStep done={caseSettlement.status === "SETTLED"} label="Settled" />
+            </ol>
+
+            {caseSettlement.status === "PENDING_DEPOSIT" && (
+              <button className="btn-secondary mt-6" onClick={onCheckDeposit} disabled={confirmingDeposit}>
+                {confirmingDeposit ? "Checking…" : "Check for deposit"}
+              </button>
+            )}
+            {escrowNote && <p className="mt-3 text-sm text-muted dark:text-muted-dark">{escrowNote}</p>}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function SettlementPanel({ kase }: { kase: CaseDetail }) {
   if (!kase.settlementChain || !kase.settlementContract) {
     return (

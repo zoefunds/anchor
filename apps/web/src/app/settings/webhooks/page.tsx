@@ -113,8 +113,8 @@ export default function WebhooksPage() {
         >
           ← Docket
         </Link>
-        <Link href="/settings/members" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
-          Members →
+        <Link href="/settings/settlement-integrations" className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400">
+          Settlement →
         </Link>
       </div>
 

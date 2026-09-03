@@ -22,6 +22,15 @@ interface PublicDecision {
   createdAt: string;
 }
 
+interface PublicSettlement {
+  status: "PENDING_DEPOSIT" | "DEPOSITED" | "SETTLED" | "MISMATCH_BLOCKED";
+  chain: string;
+  assetSymbol: string;
+  expectedAmountAtto: string;
+  claimantAddress: string | null;
+  respondentAddress: string | null;
+}
+
 interface PublicCase {
   id: string;
   status: string;
@@ -34,6 +43,8 @@ interface PublicCase {
   createdAt: string;
   evidence: PublicEvidence[];
   decisions: PublicDecision[];
+  role: "claimant" | "respondent" | null;
+  settlement: PublicSettlement | null;
 }
 
 export default function PublicCasePage() {
@@ -43,6 +54,10 @@ export default function PublicCasePage() {
   const token = searchParams.get("token");
   const [kase, setKase] = useState<PublicCase | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [payoutAddress, setPayoutAddress] = useState("");
+  const [settingAddress, setSettingAddress] = useState(false);
+  const [addressError, setAddressError] = useState<string | null>(null);
+  const [addressSetNote, setAddressSetNote] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -100,6 +115,31 @@ export default function PublicCasePage() {
 
   const latestDecision = kase.decisions[0];
 
+  async function handleSetAddress(e: React.FormEvent) {
+    e.preventDefault();
+    setSettingAddress(true);
+    setAddressError(null);
+    try {
+      const res = await fetch(`/api/public/cases/${id}/settlement-address`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address: payoutAddress }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to set payout address");
+      setAddressSetNote(`Payout address set to ${body.address}.`);
+      const refreshed = await fetch(`/api/public/cases/${id}`);
+      if (refreshed.ok) setKase(await refreshed.json());
+    } catch (err) {
+      setAddressError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSettingAddress(false);
+    }
+  }
+
+  const myAddress = kase.role === "claimant" ? kase.settlement?.claimantAddress : kase.role === "respondent" ? kase.settlement?.respondentAddress : undefined;
+  const needsMyAddress = kase.settlement && kase.settlement.status === "PENDING_DEPOSIT" && kase.role && !myAddress;
+
   return (
     <main className="mx-auto max-w-3xl px-8 py-16">
       <p className="font-display text-lg font-semibold text-ink-950 dark:text-ink">Anchor</p>
@@ -124,6 +164,50 @@ export default function PublicCasePage() {
           <span className="font-mono text-xs">{kase.policyId}</span>
         </p>
       </header>
+
+      {kase.settlement && (
+        <section className="mt-10">
+          <p className="kicker mb-4">Escrow</p>
+          <div className="dossier">
+            <p className="text-sm text-muted dark:text-muted-dark">
+              {kase.settlement.status === "PENDING_DEPOSIT" && "Awaiting deposit."}
+              {kase.settlement.status === "DEPOSITED" && "Deposit confirmed — awaiting settlement."}
+              {kase.settlement.status === "SETTLED" && "Settled."}
+              {kase.settlement.status === "MISMATCH_BLOCKED" && "Blocked — on-chain state didn't match what was expected. Contact the organization handling this case."}
+              {" "}
+              <span className="font-mono text-xs">
+                {kase.settlement.chain} · {kase.settlement.assetSymbol}
+              </span>
+            </p>
+
+            {needsMyAddress ? (
+              <form onSubmit={handleSetAddress} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                <label className="flex flex-1 flex-col gap-2">
+                  <span className="field-label">Your payout address</span>
+                  <input
+                    className="field-input font-mono"
+                    placeholder="0x…"
+                    value={payoutAddress}
+                    onChange={(e) => setPayoutAddress(e.target.value)}
+                    required
+                  />
+                </label>
+                <button className="btn-primary" type="submit" disabled={settingAddress}>
+                  {settingAddress ? "Setting…" : "Set address"}
+                </button>
+              </form>
+            ) : (
+              myAddress && (
+                <p className="mt-4 break-all font-mono text-xs text-muted dark:text-muted-dark">
+                  Your payout address: <span className="text-ink-950 dark:text-ink">{myAddress}</span>
+                </p>
+              )
+            )}
+            {addressError && <p className="mt-2 text-sm text-status-undetermined">{addressError}</p>}
+            {addressSetNote && <p className="mt-2 text-sm text-muted dark:text-muted-dark">{addressSetNote}</p>}
+          </div>
+        </section>
+      )}
 
       {latestDecision && (
         <section className="mt-10">
