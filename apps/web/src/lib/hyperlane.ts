@@ -379,7 +379,38 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
         `case ${params.caseId} has no CaseSettlement — refusing to dispatch a real settlement with no verified on-chain escrow to bind it to`
       );
     }
-    const { assertEscrowDepositMatches } = await import("@/lib/escrow");
+    // Real fix for the re-audit's Phase 1 finding: the app used to
+    // verify a deposit against CaseSettlement.integration without ever
+    // checking those two other real facts — that the integration is
+    // still active, and that the case's own record of deposit status
+    // actually says DEPOSITED (not PENDING_DEPOSIT, already SETTLED
+    // elsewhere, or already MISMATCH_BLOCKED). Checked before any chain
+    // read, since these are cheap DB-level facts.
+    if (!caseSettlement.integration.active) {
+      throw new Error(`SettlementIntegration ${caseSettlement.integration.id} is not active — refusing to dispatch against a retired/disabled integration`);
+    }
+    if (caseSettlement.status !== "DEPOSITED") {
+      throw new Error(`CaseSettlement ${caseSettlement.id} status is ${caseSettlement.status}, not DEPOSITED — refusing to dispatch`);
+    }
+    const { assertEscrowDepositMatches, assertSettlementTargetMatchesIntegration, TargetBindingError } = await import("@/lib/escrow");
+    // The other real fix from the re-audit: prove the live
+    // DecisionRelay actually points at the SAME escrow the app is
+    // about to verify a deposit in — these were never compared before.
+    // A mismatch here is recorded as MISMATCH_BLOCKED (the schema
+    // already modeled this status, previously unused) rather than a
+    // bare thrown error the caller has to remember to persist.
+    try {
+      await assertSettlementTargetMatchesIntegration({
+        decisionRelayAddress: params.settlementContract as Address,
+        originDomain: HYPERLANE_DOMAIN.sepolia,
+        expectedEscrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
+      });
+    } catch (err) {
+      if (err instanceof TargetBindingError) {
+        await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { status: "MISMATCH_BLOCKED" } });
+      }
+      throw err;
+    }
     const escrowId = escrowIdToBytes32(caseSettlement.escrowId, "CaseSettlement.escrowId");
     await assertEscrowDepositMatches({
       escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
