@@ -19,10 +19,19 @@ function getWorkflowId(): string {
   return id;
 }
 
-function getWebhookSecret(): string {
-  const secret = process.env.DIDIT_WEBHOOK_SECRET;
-  if (!secret) throw new Error("DIDIT_WEBHOOK_SECRET is not set — see apps/web/.env.example");
-  return secret;
+// Each webhook DESTINATION gets its own signing secret (confirmed live:
+// the sandbox app's destination and the live app's destination are
+// separate secrets, even pointing at the same URL) — so a deployment
+// that receives webhooks from both a live and a sandbox Didit
+// application (as this one does, for real end-to-end testing with
+// synthetic data before ever touching a live session) needs to try
+// more than one secret. DIDIT_WEBHOOK_SECRET_SANDBOX is optional; when
+// unset, only the live secret is checked, unchanged from before this.
+function getWebhookSecrets(): string[] {
+  const live = process.env.DIDIT_WEBHOOK_SECRET;
+  if (!live) throw new Error("DIDIT_WEBHOOK_SECRET is not set — see apps/web/.env.example");
+  const sandbox = process.env.DIDIT_WEBHOOK_SECRET_SANDBOX;
+  return sandbox ? [live, sandbox] : [live];
 }
 
 export interface DiditSession {
@@ -137,11 +146,19 @@ export function verifyDiditWebhookSignature(params: { rawBody: string; signature
     throw new DiditWebhookVerificationError(`webhook body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
   const canonical = JSON.stringify(sortKeysDeep(shortenFloats(parsed)));
-  const expected = createHmac("sha256", getWebhookSecret()).update(canonical, "utf8").digest("hex");
-
-  const expectedBuf = Buffer.from(expected, "utf8");
   const actualBuf = Buffer.from(params.signatureV2, "utf8");
-  if (expectedBuf.length !== actualBuf.length || !timingSafeEqual(expectedBuf, actualBuf)) {
-    throw new DiditWebhookVerificationError("webhook signature does not match — refusing to trust this payload");
+
+  // Try every configured secret (live, and sandbox if set) — each
+  // Didit application/destination has its own, so this is the only way
+  // to accept webhooks from more than one without knowing in advance
+  // which environment sent a given request. A match against ANY
+  // configured secret is accepted; matching none is a real failure.
+  const matched = getWebhookSecrets().some((secret) => {
+    const expected = createHmac("sha256", secret).update(canonical, "utf8").digest("hex");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    return expectedBuf.length === actualBuf.length && timingSafeEqual(expectedBuf, actualBuf);
+  });
+  if (!matched) {
+    throw new DiditWebhookVerificationError("webhook signature does not match any configured secret — refusing to trust this payload");
   }
 }

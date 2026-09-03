@@ -9,14 +9,18 @@ import { verifyDiditWebhookSignature, DiditWebhookVerificationError } from "@/li
 // this implementation matches their algorithm, not just "some HMAC".
 
 const TEST_SECRET = "test-webhook-secret-not-real";
+const TEST_SANDBOX_SECRET = "test-sandbox-webhook-secret-not-real";
 const ORIGINAL_SECRET = process.env.DIDIT_WEBHOOK_SECRET;
+const ORIGINAL_SANDBOX_SECRET = process.env.DIDIT_WEBHOOK_SECRET_SANDBOX;
 
 beforeAll(() => {
   process.env.DIDIT_WEBHOOK_SECRET = TEST_SECRET;
+  delete process.env.DIDIT_WEBHOOK_SECRET_SANDBOX;
 });
 
 afterAll(() => {
   process.env.DIDIT_WEBHOOK_SECRET = ORIGINAL_SECRET;
+  if (ORIGINAL_SANDBOX_SECRET) process.env.DIDIT_WEBHOOK_SECRET_SANDBOX = ORIGINAL_SANDBOX_SECRET;
 });
 
 function sign(body: unknown, secret = TEST_SECRET): string {
@@ -100,5 +104,44 @@ describe("verifyDiditWebhookSignature", () => {
   it("rejects malformed (non-JSON) body", () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     expect(() => verifyDiditWebhookSignature({ rawBody: "not json", signatureV2: "deadbeef", timestamp })).toThrow(DiditWebhookVerificationError);
+  });
+});
+
+// Real coverage for supporting a sandbox application's webhooks
+// alongside the live application's — each Didit destination has its
+// own signing secret (confirmed against the real console: the sandbox
+// app's destination and the live app's destination are different
+// secrets, even pointing at the same URL), so a deployment that wants
+// to receive from both needs to try more than one secret.
+describe("verifyDiditWebhookSignature with DIDIT_WEBHOOK_SECRET_SANDBOX set", () => {
+  beforeAll(() => {
+    process.env.DIDIT_WEBHOOK_SECRET_SANDBOX = TEST_SANDBOX_SECRET;
+  });
+  afterAll(() => {
+    delete process.env.DIDIT_WEBHOOK_SECRET_SANDBOX;
+  });
+
+  it("accepts a payload signed with the live secret", () => {
+    const body = { session_id: "x", status: "Approved" };
+    const rawBody = JSON.stringify(body);
+    const signatureV2 = sign(body, TEST_SECRET);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    expect(() => verifyDiditWebhookSignature({ rawBody, signatureV2, timestamp })).not.toThrow();
+  });
+
+  it("accepts a payload signed with the sandbox secret", () => {
+    const body = { session_id: "x", status: "Approved" };
+    const rawBody = JSON.stringify(body);
+    const signatureV2 = sign(body, TEST_SANDBOX_SECRET);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    expect(() => verifyDiditWebhookSignature({ rawBody, signatureV2, timestamp })).not.toThrow();
+  });
+
+  it("still rejects a signature matching neither secret", () => {
+    const body = { session_id: "x", status: "Approved" };
+    const rawBody = JSON.stringify(body);
+    const signatureV2 = sign(body, "some-other-secret");
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    expect(() => verifyDiditWebhookSignature({ rawBody, signatureV2, timestamp })).toThrow(DiditWebhookVerificationError);
   });
 });
