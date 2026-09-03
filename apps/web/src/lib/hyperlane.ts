@@ -362,20 +362,32 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       where: { caseId: params.caseId },
       include: { integration: true },
     });
-    let escrowId: Hex;
-    if (caseSettlement) {
-      const { assertEscrowDepositMatches } = await import("@/lib/escrow");
-      escrowId = escrowIdToBytes32(caseSettlement.escrowId, "CaseSettlement.escrowId");
-      await assertEscrowDepositMatches({
-        escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
-        escrowIdBytes32: escrowId,
-        expectedClaimant: caseSettlement.claimantAddress as Address,
-        expectedRespondent: caseSettlement.respondentAddress as Address,
-        expectedTotalAmountWei: params.claimantAmountAtto + params.respondentAmountAtto,
-      });
-    } else {
-      escrowId = pad("0x0", { size: 32 }); // no CaseSettlement for this case — no real escrow to bind to yet, see the comment above
+    // Real fix here (audit finding, live risk once settlementTarget was
+    // actually wired via governance this session): a case with no
+    // CaseSettlement used to fall back to a hardcoded zero escrowId and
+    // dispatch anyway. While DecisionRelay had no settlementTarget
+    // configured, that was harmless (handle() never called settle() at
+    // all — see the twelfth/thirteenth addenda). Now that a real target
+    // IS configured, the exact same zero-escrowId dispatch would reach
+    // Escrow.settle() for real, either reverting (UnknownEscrow, the
+    // common case) or — if any future deposit ever legitimately used
+    // escrowId 0x0 — settling against the wrong case's funds. A
+    // real-money settlement must require a real, on-chain-verified
+    // CaseSettlement; there is no safe fallback anymore.
+    if (!caseSettlement) {
+      throw new Error(
+        `case ${params.caseId} has no CaseSettlement — refusing to dispatch a real settlement with no verified on-chain escrow to bind it to`
+      );
     }
+    const { assertEscrowDepositMatches } = await import("@/lib/escrow");
+    const escrowId = escrowIdToBytes32(caseSettlement.escrowId, "CaseSettlement.escrowId");
+    await assertEscrowDepositMatches({
+      escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
+      escrowIdBytes32: escrowId,
+      expectedClaimant: caseSettlement.claimantAddress as Address,
+      expectedRespondent: caseSettlement.respondentAddress as Address,
+      expectedTotalAmountWei: params.claimantAmountAtto + params.respondentAmountAtto,
+    });
     const attestationHash = computeDecisionAttestationHash({
       originDomain: HYPERLANE_DOMAIN.sepolia,
       recipientAddress: params.settlementContract as Address,
