@@ -145,6 +145,7 @@ export function generateApiKey(): { raw: string; prefix: string; hash: string } 
 export interface AuthedApiKey {
   organizationId: string;
   apiKeyId: string;
+  restrictedToCaseIds: string[];
 }
 
 // --- API key rate limiting ---
@@ -174,7 +175,13 @@ export async function checkApiKeyRateLimit(apiKeyId: string): Promise<{ allowed:
   return { allowed: true };
 }
 
-/** Resolves an `Authorization: Bearer <key>` header to its organization. */
+/**
+ * Resolves an `Authorization: Bearer <key>` header to its organization.
+ * Real gap fixed here (external audit finding): a key with an
+ * `expiresAt` in the past now resolves as invalid, same as a revoked
+ * one — expiry existing in the schema was never enough on its own; it
+ * had to actually be checked here to mean anything.
+ */
 export async function getApiKeyAuth(authHeader: string | null): Promise<AuthedApiKey | null> {
   if (!authHeader?.startsWith("Bearer ")) return null;
   const raw = authHeader.slice("Bearer ".length).trim();
@@ -182,15 +189,25 @@ export async function getApiKeyAuth(authHeader: string | null): Promise<AuthedAp
 
   const key = await prisma.apiKey.findUnique({ where: { keyHash: hashToken(raw) } });
   if (!key || key.revokedAt) return null;
+  if (key.expiresAt && key.expiresAt < new Date()) return null;
 
   // Fire-and-forget last-used update — not on the critical path.
   void prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
 
-  return { organizationId: key.organizationId, apiKeyId: key.id };
+  return { organizationId: key.organizationId, apiKeyId: key.id, restrictedToCaseIds: key.restrictedToCaseIds };
 }
 
 export type OrgAuthResult =
-  | { organizationId: string; memberId?: string; apiKeyId?: string; role?: "OWNER" | "MEMBER" | "VIEWER" }
+  | {
+      organizationId: string;
+      memberId?: string;
+      apiKeyId?: string;
+      role?: "OWNER" | "MEMBER" | "VIEWER";
+      // Empty = unrestricted (org-wide), matching the original API-key
+      // behavior. Only ever set for API-key callers — a session member's
+      // case scope is governed by CaseAccess instead (see case-access.ts).
+      restrictedToCaseIds?: string[];
+    }
   | { error: "unauthorized" }
   | { error: "rate_limited"; retryAfterSeconds: number };
 
@@ -211,7 +228,7 @@ export async function resolveOrgFromRequest(req: Request): Promise<OrgAuthResult
     if (!rateLimit.allowed) {
       return { error: "rate_limited", retryAfterSeconds: rateLimit.retryAfterSeconds! };
     }
-    return { organizationId: apiKeyAuth.organizationId, apiKeyId: apiKeyAuth.apiKeyId };
+    return { organizationId: apiKeyAuth.organizationId, apiKeyId: apiKeyAuth.apiKeyId, restrictedToCaseIds: apiKeyAuth.restrictedToCaseIds };
   }
 
   const member = await getSessionMember();

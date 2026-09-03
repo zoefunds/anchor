@@ -281,6 +281,22 @@ model ApiKey {
   createdAt      DateTime     @default(now())
   lastUsedAt     DateTime?
   revokedAt      DateTime?
+  // Real P0-adjacent gap fixed here (external audit finding): API keys
+  // had no creator, no expiry, and no case restriction at all — every
+  // key was permanently valid and org-wide-unrestricted the moment it
+  // was minted. Nullable because keys created before this migration
+  // genuinely have no recorded creator — never backfilled with a
+  // guess.
+  creatorMemberId String?
+  // Nullable = never expires (an operator can still explicitly choose
+  // this), but api-keys/route.ts now defaults new keys to a bounded
+  // expiry rather than "forever" unless the caller opts out.
+  expiresAt       DateTime?
+  // Empty array (the default) = unrestricted, org-wide access — the
+  // original, still-supported behavior. A non-empty array restricts
+  // this key to exactly these case IDs, checked in case-access.ts
+  // alongside the existing CaseAccess-for-members mechanism.
+  restrictedToCaseIds String[] @default([])
 }
 
 model Case {
