@@ -45,6 +45,14 @@ contract Escrow is IEscrowSettlementTarget {
         address claimant;
         address respondent;
         uint256 amount;
+        // Real fix (external audit finding): the first version of this
+        // contract only emitted caseId in the Deposited event — it was
+        // never stored, so settle() (keyed solely by escrowId) had no
+        // on-chain way to prove a given settlement's caseId actually
+        // matched the deposit's original caseId. Off-chain records
+        // (CaseSettlement) enforced that binding, but the contract
+        // itself couldn't. Now stored and checked in settle() below.
+        bytes32 caseId;
     }
 
     // The only address ever allowed to call settle() — set once at
@@ -65,6 +73,7 @@ contract Escrow is IEscrowSettlementTarget {
     error UnknownEscrow(bytes32 escrowId);
     error AlreadySettled(bytes32 escrowId);
     error AmountMismatch(uint256 expected, uint256 supplied);
+    error CaseIdMismatch(bytes32 expected, bytes32 supplied);
     error ZeroAddress();
     error ZeroAmount();
     error NotDecisionRelay();
@@ -93,7 +102,7 @@ contract Escrow is IEscrowSettlementTarget {
         if (claimant == address(0) || respondent == address(0)) revert ZeroAddress();
         if (msg.value == 0) revert ZeroAmount();
 
-        deposits[escrowId] = Deposit({ status: Status.DEPOSITED, claimant: claimant, respondent: respondent, amount: msg.value });
+        deposits[escrowId] = Deposit({ status: Status.DEPOSITED, claimant: claimant, respondent: respondent, amount: msg.value, caseId: caseId });
 
         emit Deposited(caseId, escrowId, msg.sender, claimant, respondent, msg.value);
     }
@@ -108,6 +117,7 @@ contract Escrow is IEscrowSettlementTarget {
         Deposit storage d = deposits[escrowId];
         if (d.status == Status.NONE) revert UnknownEscrow(escrowId);
         if (d.status == Status.SETTLED) revert AlreadySettled(escrowId);
+        if (caseId != d.caseId) revert CaseIdMismatch(d.caseId, caseId);
         uint256 total = claimantAmount + respondentAmount;
         if (total != d.amount) revert AmountMismatch(d.amount, total);
 

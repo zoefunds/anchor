@@ -20,11 +20,12 @@ contract EscrowTest is Test {
         vm.deal(address(this), 1 ether);
         escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
 
-        (Escrow.Status status, address c, address r, uint256 amount) = escrow.deposits(escrowId);
+        (Escrow.Status status, address c, address r, uint256 amount, bytes32 storedCaseId) = escrow.deposits(escrowId);
         assertEq(uint8(status), uint8(Escrow.Status.DEPOSITED));
         assertEq(c, claimant);
         assertEq(r, respondent);
         assertEq(amount, 1 ether);
+        assertEq(storedCaseId, caseId);
     }
 
     function test_deposit_revertsOnSecondDepositForSameEscrowId() public {
@@ -60,7 +61,7 @@ contract EscrowTest is Test {
 
         assertEq(claimant.balance, claimantBefore + 2 ether);
         assertEq(respondent.balance, respondentBefore + 1 ether);
-        (Escrow.Status status,,,) = escrow.deposits(escrowId);
+        (Escrow.Status status,,,,) = escrow.deposits(escrowId);
         assertEq(uint8(status), uint8(Escrow.Status.SETTLED));
     }
 
@@ -143,5 +144,32 @@ contract EscrowTest is Test {
     function test_constructor_revertsOnZeroDecisionRelay() public {
         vm.expectRevert(Escrow.ZeroAddress.selector);
         new Escrow(address(0));
+    }
+
+    // Real fix (external audit finding): the first version of this
+    // contract stored no caseId, so settle() had no on-chain way to
+    // prove a settlement's caseId matched the deposit's original
+    // caseId — that binding existed only in off-chain records. These
+    // tests prove the contract itself now enforces it.
+    function test_settle_revertsOnCaseIdMismatch() public {
+        _deposit(1 ether);
+        bytes32 wrongCaseId = keccak256("case-wrong");
+        vm.prank(decisionRelay);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.CaseIdMismatch.selector, caseId, wrongCaseId));
+        escrow.settle(wrongCaseId, escrowId, 1 ether, 0, keccak256("proof"));
+    }
+
+    function test_settle_succeedsWithCorrectCaseId() public {
+        _deposit(1 ether);
+        uint256 claimantBefore = claimant.balance;
+        vm.prank(decisionRelay);
+        escrow.settle(caseId, escrowId, 1 ether, 0, keccak256("proof"));
+        assertEq(claimant.balance, claimantBefore + 1 ether);
+    }
+
+    function test_deposit_storesCaseId() public {
+        _deposit(1 ether);
+        (,,,, bytes32 storedCaseId) = escrow.deposits(escrowId);
+        assertEq(storedCaseId, caseId);
     }
 }
