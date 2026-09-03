@@ -1548,3 +1548,30 @@ migration-then-deploy sequencing as every other schema change this
 session.
 
 `SETTLEMENT_PAUSED` untouched throughout.
+
+## Eighteenth addendum: Didit integration deployed and verified live, one real config bug fixed
+
+Deployed the Didit integration to production (`anc-hor-worker` v39,
+migration confirmed applied; `apps/web` redeployed to Vercel) and
+verified the real end-to-end flow live, not just via the test suite.
+
+**Real bug found and fixed**: `DIDIT_WORKFLOW_ID` was documented in
+`.env.example` but never actually set as a live secret on either Fly
+or Vercel — the first live attempt failed with a 502
+(`DIDIT_WORKFLOW_ID is not set`). Set on both, Vercel redeployed to
+pick it up (env var changes there require a rebuild, unlike Fly
+secrets which take effect on the next request).
+
+**Verified live, for real**: created a test case under a clearly-
+labeled `Didit KYC Demo (test)` organization (kept separate from any
+real org data), walked the actual flow through a real browser session
+— party token → `/verify` page → "Start verification" → a real Didit
+session was created and the hosted verification UI
+(`verify.didit.me`) loaded correctly showing ID + Face verification
+steps and a QR code. Confirmed status persists correctly as
+`IN_PROGRESS` on return, and that a second start-request reuses the
+existing session rather than creating a duplicate (the idempotency
+this pass's code was designed for).
+
+`SETTLEMENT_PAUSED` untouched — creating a test case and exercising
+KYC verification does not touch settlement dispatch.
