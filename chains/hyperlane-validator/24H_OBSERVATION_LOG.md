@@ -10,7 +10,7 @@ rate-limited shared public one.
 
 **Start time**: 2026-09-02 09:20 UTC (approximate — first snapshot below)
 **Target end time**: 2026-09-03 09:20 UTC (24h from start)
-**Status**: IN PROGRESS
+**Status**: CLOSED — see "## FINAL VERDICT" at the bottom of this file
 
 **Pass/fail criteria for this gate item, stated explicitly up front**:
 this window fails if, by the target end time, there is any unexplained
@@ -423,3 +423,79 @@ final verdict rather than fabricate one early. The real final verdict
 will be written once the window has genuinely closed.
 
 **No production action taken.** `SETTLEMENT_PAUSED` untouched.
+
+## Snapshot 15 (final) — 2026-09-03 09:23 UTC (window closed)
+
+| App | Machine state | Last restart | OOM | AccessDenied |
+|---|---|---|---|---|
+| anc-hor-validator1 | started | 2026-09-02T08:09:15Z (unchanged — never restarted across the entire window) | 0 | 0 |
+| anc-hor-validator2 | started | 2026-09-02T08:09:55Z (unchanged — never restarted across the entire window) | 0 | 0 |
+| anc-hor-relayer | started | 2026-09-02T08:10:44Z (unchanged — the one `12:25:56Z` display artifact seen mid-window was confirmed not a real restart, per Snapshot 2/3's own investigation) | 0 | 0 |
+
+**Checkpoint publication**: both validators' signed index `871770`, live Mailbox nonce `873140`, lag `1370` leaves — both exactly matching, unchanged from Snapshot 14. Read-only verifier: 18 checks, 10 pass, 6 warn, 2 fail — same two checkpoint-currency fails as every prior snapshot since the window began.
+
+## FINAL VERDICT
+
+**Window**: 2026-09-02 09:20 UTC → 2026-09-03 09:20 UTC (24h, closed).
+
+**Criterion 1 — reliability/uptime (restarts, OOM, AccessDenied): MET.**
+Across all 15 snapshots spanning the full 24 hours, all three apps
+(`anc-hor-validator1`, `anc-hor-validator2`, `anc-hor-relayer`) show
+zero unexplained restarts, zero OOM kills, and zero `AccessDenied`
+recurrences. The single ambiguous reading (a `12:25:56Z` "Last
+Updated" timestamp on the relayer, seen once mid-window) was directly
+investigated at the time and confirmed to be a Fly status-display
+artifact, not a real restart — same machine version, no boot-sequence
+log lines. No other anomaly was observed in 24 hours of direct,
+repeated `flyctl status`/`flyctl logs` checks.
+
+**Criterion 2 — checkpoint currency (contiguous backfill lag closing):
+NOT MET.**
+The contiguous backfill lag was `1370` leaves at Snapshot 2 (the
+window's first real reading) and `1370` leaves at Snapshot 15 (the
+window's last reading, 24 hours later). At no point across the entire
+window did the lag close below its starting value. The window
+included:
+- A sustained period (Snapshots 2-5, roughly the first 9 hours) where
+  the lag held flat while both validators merely kept pace with new
+  dispatches rather than closing the historical backlog.
+- A confirmed, real multi-hour stall specific to validator1
+  (Snapshots 6-9, roughly hours 10-13): its signed checkpoint index
+  made zero forward progress for over three hours while new dispatches
+  kept arriving, widening its lag to `1391` — the worst reading of the
+  entire window. Root-caused via live log capture during the window
+  itself: validator1's dedicated Infura RPC endpoint was being
+  rate-limited (67 `Too Many Requests` errors measured in one 30-second
+  capture, zero successful `eth_getLogs` calls in that window) — a
+  different limit than the block-range cap fixed earlier this project
+  ("dedicated RPC" fixed shared-endpoint rate-limiting, not this
+  per-second burst limit from concurrent internal polling).
+- A real recovery (Snapshot 10 onward, roughly the final 10 hours):
+  validator1's index jumped forward and both validators held in exact
+  lockstep at `1370` lag for the remainder of the window, with no
+  restart involved in the recovery. This proves the validator can
+  resume after a multi-hour stall without operator intervention, but
+  it is recovery from the stall, not closure of the original backlog —
+  the lag never went below `1370` at any point, including at window
+  close.
+
+**Overall gate outcome, per this file's own stated pass/fail criteria
+(see header): FAIL.**
+The header states explicitly that this gate fails if "the contiguous
+backfill lag has made no real progress at all" by the target end
+time, and that a clean restart/OOM/AccessDenied record alone is
+"necessary but not sufficient." The lag made no net progress across
+the full 24 hours (`1370` → `1370`), including a real multi-hour
+period where it actively worsened. Reliability/uptime is cleanly
+proven; checkpoint currency is not. This gate item should be recorded
+as FAILED, not passed with caveats — consistent with the working
+conclusion tracked from roughly the halfway point of this window
+onward.
+
+**What would change this verdict**: closing the actual ~1370-leaf
+backlog (not just holding it steady), and/or remediating validator1's
+Infura rate-limiting (the confirmed root cause of its stall) so the
+same failure mode can't recur. Neither has been attempted or
+authorized — this file remains a read-only observation log; no
+production action was taken as part of producing this verdict.
+`SETTLEMENT_PAUSED` remains untouched.
