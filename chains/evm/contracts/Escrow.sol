@@ -33,7 +33,19 @@ interface IEscrowSettlementTarget {
     function settle(bytes32 caseId, bytes32 escrowId, uint256 claimantAmount, uint256 respondentAmount, bytes32 proofHash) external;
 }
 
-contract Escrow is IEscrowSettlementTarget {
+// Item E — a governed, time-bounded escape hatch for a deposit that is
+// genuinely stuck: adjudication never happens (an abandoned case), or
+// it happens but delivery never completes (the exact class of failure
+// this project's own settlement-availability incident was). Both
+// settle() and emergencyRefund() are reached ONLY through DecisionRelay,
+// so both share the exact same M-of-N attestor-threshold trust boundary
+// — there is deliberately no separate, weaker "admin refund" path a
+// single key (even the contract owner) could trigger unilaterally.
+interface IEmergencyRefundTarget {
+    function emergencyRefund(bytes32 caseId, bytes32 escrowId, bytes32 proofHash) external;
+}
+
+contract Escrow is IEscrowSettlementTarget, IEmergencyRefundTarget {
     enum Status {
         NONE,
         DEPOSITED,
@@ -53,6 +65,12 @@ contract Escrow is IEscrowSettlementTarget {
         // (CaseSettlement) enforced that binding, but the contract
         // itself couldn't. Now stored and checked in settle() below.
         bytes32 caseId;
+        // Real on-chain timeout anchor for emergencyRefund() below — a
+        // deliberately different source of truth from anything the app
+        // layer tracks in Postgres, since the whole point of this
+        // escape hatch is to still work if the app/relay/DB is the
+        // thing that's actually stuck or wrong.
+        uint256 depositedAt;
     }
 
     // The only address ever allowed to call settle() — set once at
@@ -63,11 +81,21 @@ contract Escrow is IEscrowSettlementTarget {
     // one address is trusting that entire verified chain, not a single
     // private key.
     address public immutable decisionRelay;
+    // Minimum real elapsed time (from deposit, not from case creation
+    // or any app-side event) before emergencyRefund() can pay out —
+    // immutable, set once at deploy, not something even the
+    // DecisionRelay owner can shorten later. Deliberately not close to
+    // this system's normal adjudication+appeal timeline (which
+    // completes in hours to a couple of days per docs/policy-v1.md) —
+    // this exists for the genuinely-abandoned/stuck case, not as a
+    // faster alternative path for an impatient party.
+    uint256 public immutable emergencyRefundTimeoutSeconds;
 
     mapping(bytes32 => Deposit) public deposits;
 
     event Deposited(bytes32 indexed caseId, bytes32 indexed escrowId, address indexed depositor, address claimant, address respondent, uint256 amount);
     event Settled(bytes32 indexed caseId, bytes32 indexed escrowId, uint256 claimantAmount, uint256 respondentAmount, bytes32 proofHash);
+    event EmergencyRefunded(bytes32 indexed caseId, bytes32 indexed escrowId, uint256 amount, bytes32 proofHash);
 
     error AlreadyDeposited(bytes32 escrowId);
     error UnknownEscrow(bytes32 escrowId);
@@ -78,10 +106,13 @@ contract Escrow is IEscrowSettlementTarget {
     error ZeroAmount();
     error NotDecisionRelay();
     error TransferFailed(address to, uint256 amount);
+    error TimeoutNotElapsed(uint256 readyAt, uint256 currentTime);
 
-    constructor(address _decisionRelay) {
+    constructor(address _decisionRelay, uint256 _emergencyRefundTimeoutSeconds) {
         if (_decisionRelay == address(0)) revert ZeroAddress();
+        require(_emergencyRefundTimeoutSeconds > 0, "emergencyRefundTimeoutSeconds must be nonzero");
         decisionRelay = _decisionRelay;
+        emergencyRefundTimeoutSeconds = _emergencyRefundTimeoutSeconds;
     }
 
     modifier onlyDecisionRelay() {
@@ -102,7 +133,7 @@ contract Escrow is IEscrowSettlementTarget {
         if (claimant == address(0) || respondent == address(0)) revert ZeroAddress();
         if (msg.value == 0) revert ZeroAmount();
 
-        deposits[escrowId] = Deposit({ status: Status.DEPOSITED, claimant: claimant, respondent: respondent, amount: msg.value, caseId: caseId });
+        deposits[escrowId] = Deposit({ status: Status.DEPOSITED, claimant: claimant, respondent: respondent, amount: msg.value, caseId: caseId, depositedAt: block.timestamp });
 
         emit Deposited(caseId, escrowId, msg.sender, claimant, respondent, msg.value);
     }
@@ -140,5 +171,50 @@ contract Escrow is IEscrowSettlementTarget {
             (bool ok, ) = respondent.call{ value: respondentAmount }("");
             if (!ok) revert TransferFailed(respondent, respondentAmount);
         }
+    }
+
+    /// Item E: the governed escape hatch for a deposit that is stuck —
+    /// no decision ever reached, or one was reached but its delivery
+    /// never completed. Same onlyDecisionRelay boundary as settle():
+    /// DecisionRelay.emergencyRefund() independently verifies the same
+    /// M-of-N attestor threshold before ever reaching this function, so
+    /// there is no unilateral-withdrawal path here distinct from the
+    /// one settle() already has — this is not a second, weaker trust
+    /// boundary, it is the identical one. What IS distinct is the real
+    /// on-chain timeout: this can only pay out `emergencyRefundTimeoutSeconds`
+    /// after the ORIGINAL deposit (never reset by anything), so it
+    /// cannot be used as a faster alternative to normal adjudication —
+    /// only as a last resort once normal settlement has had a real,
+    /// long chance to happen and evidently hasn't.
+    ///
+    /// Always pays 100% back to the claimant (the party whose funds
+    /// these are, in this domain's existing REFUND_FULL vocabulary —
+    /// see settle()'s claimantAmount/respondentAmount split, of which
+    /// this is the maximally claimant-favoring case) — this contract
+    /// has no concept of "which amount each party originally
+    /// contributed" to refund proportionally, and a stuck-case escape
+    /// hatch returning funds to whichever party actually deposited them
+    /// (in practice, almost always the claimant funding their own
+    /// dispute) is the safe default absent an actual adjudicated
+    /// outcome.
+    function emergencyRefund(bytes32 caseId, bytes32 escrowId, bytes32 proofHash) external onlyDecisionRelay {
+        Deposit storage d = deposits[escrowId];
+        if (d.status == Status.NONE) revert UnknownEscrow(escrowId);
+        if (d.status == Status.SETTLED) revert AlreadySettled(escrowId);
+        if (caseId != d.caseId) revert CaseIdMismatch(d.caseId, caseId);
+
+        uint256 readyAt = d.depositedAt + emergencyRefundTimeoutSeconds;
+        if (block.timestamp < readyAt) revert TimeoutNotElapsed(readyAt, block.timestamp);
+
+        // Effects before interactions — same reentrancy discipline as
+        // settle() above.
+        d.status = Status.SETTLED;
+        address claimant = d.claimant;
+        uint256 amount = d.amount;
+
+        emit EmergencyRefunded(caseId, escrowId, amount, proofHash);
+
+        (bool ok, ) = claimant.call{ value: amount }("");
+        if (!ok) revert TransferFailed(claimant, amount);
     }
 }

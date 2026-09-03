@@ -41,6 +41,20 @@ contract RecordingSettlementTarget {
     }
 }
 
+contract RecordingEmergencyRefundTarget {
+    uint256 public refundCallCount;
+    bytes32 public lastCaseId;
+    bytes32 public lastEscrowId;
+    bytes32 public lastProofHash;
+
+    function emergencyRefund(bytes32 caseId, bytes32 escrowId, bytes32 proofHash) external {
+        refundCallCount++;
+        lastCaseId = caseId;
+        lastEscrowId = escrowId;
+        lastProofHash = proofHash;
+    }
+}
+
 /// A settlement target that always reverts — stands in for a real escrow
 /// rejecting a settle() call (insufficient funds, already settled by
 /// some other path, a business-logic guard, whatever). What matters for
@@ -141,6 +155,29 @@ contract DecisionRelayTest is Test {
 
     function _body(bytes32 proofHash) internal view returns (bytes memory) {
         return _bodyWithKeys(bytes32(uint256(1)), "RELEASE_FULL", uint256(1000), uint256(0), bytes32(0), proofHash, _keys2());
+    }
+
+    /// Reproduces DecisionRelay.sol's emergencyRefund() attestation hash
+    /// exactly — must stay in lockstep with that function's own.
+    function _emergencyRefundHash(address settlementTargetAddr, bytes32 caseId, bytes32 escrowId, bytes32 proofHash)
+        internal
+        view
+        returns (bytes32)
+    {
+        return keccak256(abi.encode("ANCHOR_EMERGENCY_REFUND_V1", address(relay), settlementTargetAddr, caseId, escrowId, proofHash));
+    }
+
+    function _emergencyRefundSigs(address settlementTargetAddr, bytes32 caseId, bytes32 escrowId, bytes32 proofHash, uint256[] memory signerKeys)
+        internal
+        view
+        returns (bytes[] memory)
+    {
+        bytes32 hash = _emergencyRefundHash(settlementTargetAddr, caseId, escrowId, proofHash);
+        bytes[] memory sigs = new bytes[](signerKeys.length);
+        for (uint256 i = 0; i < signerKeys.length; i++) {
+            sigs[i] = _sign(signerKeys[i], hash);
+        }
+        return sigs;
     }
 
     function test_handle_settles_once() public {
@@ -571,5 +608,181 @@ contract DecisionRelayTest is Test {
         relay.handle(ORIGIN, TRUSTED_SENDER, _body(proofHash));
         assertTrue(relay.processedDecisions(proofHash));
         assertEq(target.settleCallCount(), 1);
+    }
+
+    // --- Item E: emergencyRefund() ---
+
+    function test_emergencyRefund_succeedsWithThresholdSignatures() public {
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, _keys2());
+
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+
+        assertEq(refundTarget.refundCallCount(), 1);
+        assertEq(refundTarget.lastCaseId(), caseId);
+        assertEq(refundTarget.lastEscrowId(), escrowId);
+        assertEq(refundTarget.lastProofHash(), proofHash);
+        assertTrue(relay.processedDecisions(proofHash));
+    }
+
+    function test_emergencyRefund_worksEvenWhenSettlementModeIsUnconfigured() public {
+        // The whole point: this must still work for an origin/target
+        // whose settlementMode/settlementTarget wiring is exactly what's
+        // broken — the real incident scenario. It never even reads
+        // settlementMode/settlementTarget, and isn't routed through
+        // handle()/the Mailbox at all.
+        uint32 freshOrigin = 999;
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, _keys2());
+
+        assertEq(uint8(relay.settlementMode(freshOrigin)), uint8(DecisionRelay.SettlementMode.UNCONFIGURED));
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+        assertEq(refundTarget.refundCallCount(), 1);
+    }
+
+    function test_emergencyRefund_revertsBelowThreshold() public {
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256[] memory oneKey = new uint256[](1);
+        oneKey[0] = attestorKey1;
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, oneKey);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+        assertEq(refundTarget.refundCallCount(), 0);
+    }
+
+    function test_emergencyRefund_revertsOnUnregisteredSigner() public {
+        // Proves this is not "any 2 signatures" — they must be from
+        // real, registered attestors. A single genuinely-registered
+        // attestor signing twice, or non-attestor keys, must not
+        // substitute for real threshold consensus (no unilateral path).
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = attestorKey1;
+        keys[1] = wrongKey;
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, keys);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+    }
+
+    function test_emergencyRefund_revertsOnDuplicateSignerCountedTwice() public {
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = attestorKey1;
+        keys[1] = attestorKey1;
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, keys);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+    }
+
+    function test_emergencyRefund_revertsOnAlreadyProcessedProofHash() public {
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, _keys2());
+
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+
+        // Duplicate recovery must be rejected — same proofHash, even
+        // against a fresh target instance, must not process twice.
+        vm.expectRevert("already processed");
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+        assertEq(refundTarget.refundCallCount(), 1);
+    }
+
+    function test_emergencyRefund_sameProofHashSharedWithHandleIsAlsoRejected() public {
+        // processedDecisions is one shared namespace between handle()
+        // and emergencyRefund() — proves a proofHash already consumed
+        // by a normal settlement can't be replayed as an "emergency"
+        // refund either, and vice versa (tested the other direction is
+        // implied by symmetry of the same mapping/require).
+        bytes32 proofHash = bytes32(uint256(0xabc));
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, _body(proofHash));
+        assertTrue(relay.processedDecisions(proofHash));
+
+        RecordingEmergencyRefundTarget refundTarget = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes[] memory sigs = _emergencyRefundSigs(address(refundTarget), caseId, escrowId, proofHash, _keys2());
+
+        vm.expectRevert("already processed");
+        relay.emergencyRefund(address(refundTarget), caseId, escrowId, proofHash, sigs);
+    }
+
+    function test_emergencyRefund_revertsOnZeroTargetAddress() public {
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        bytes[] memory sigs = _emergencyRefundSigs(address(0), caseId, escrowId, proofHash, _keys2());
+
+        vm.expectRevert("zero settlement target");
+        relay.emergencyRefund(address(0), caseId, escrowId, proofHash, sigs);
+    }
+
+    function test_emergencyRefund_revertsWhenTargetCallReverts_andProcessedFlagRollsBack() public {
+        // Same reentrancy/rollback discipline as handle()'s own
+        // settlement-target-revert test: a reverting target must not
+        // leave the proofHash permanently marked processed with no
+        // refund having actually happened — that combination would be
+        // exactly this project's original incident (processedDecisions
+        // set true, but nothing ever paid out, permanently).
+        RevertingEmergencyRefundTarget badTarget = new RevertingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        bytes[] memory sigs = _emergencyRefundSigs(address(badTarget), caseId, escrowId, proofHash, _keys2());
+
+        vm.expectRevert("target rejected refund");
+        relay.emergencyRefund(address(badTarget), caseId, escrowId, proofHash, sigs);
+        assertFalse(relay.processedDecisions(proofHash));
+
+        // Retrying against a working target with the exact same
+        // proofHash must now succeed.
+        RecordingEmergencyRefundTarget goodTarget = new RecordingEmergencyRefundTarget();
+        bytes[] memory sigsForGoodTarget = _emergencyRefundSigs(address(goodTarget), caseId, escrowId, proofHash, _keys2());
+        relay.emergencyRefund(address(goodTarget), caseId, escrowId, proofHash, sigsForGoodTarget);
+        assertTrue(relay.processedDecisions(proofHash));
+        assertEq(goodTarget.refundCallCount(), 1);
+    }
+
+    function test_emergencyRefund_signatureCannotBeReplayedAgainstDifferentTarget() public {
+        // settlementTargetAddr is part of the signed content — a
+        // signature authorizing a refund THROUGH one target contract
+        // must not be replayable to redirect the call through a
+        // different one.
+        RecordingEmergencyRefundTarget targetA = new RecordingEmergencyRefundTarget();
+        RecordingEmergencyRefundTarget targetB = new RecordingEmergencyRefundTarget();
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        bytes[] memory sigsForA = _emergencyRefundSigs(address(targetA), caseId, escrowId, proofHash, _keys2());
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.emergencyRefund(address(targetB), caseId, escrowId, proofHash, sigsForA);
+    }
+}
+
+contract RevertingEmergencyRefundTarget {
+    function emergencyRefund(bytes32, bytes32, bytes32) external pure {
+        revert("target rejected refund");
     }
 }

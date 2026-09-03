@@ -11,16 +11,17 @@ contract EscrowTest is Test {
     address respondent = address(0xB0B1);
     bytes32 caseId = keccak256("case-1");
     bytes32 escrowId = keccak256("escrow-1");
+    uint256 constant TIMEOUT = 30 days;
 
     function setUp() public {
-        escrow = new Escrow(decisionRelay);
+        escrow = new Escrow(decisionRelay, TIMEOUT);
     }
 
     function test_deposit_recordsClaimantRespondentAndAmount() public {
         vm.deal(address(this), 1 ether);
         escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
 
-        (Escrow.Status status, address c, address r, uint256 amount, bytes32 storedCaseId) = escrow.deposits(escrowId);
+        (Escrow.Status status, address c, address r, uint256 amount, bytes32 storedCaseId,) = escrow.deposits(escrowId);
         assertEq(uint8(status), uint8(Escrow.Status.DEPOSITED));
         assertEq(c, claimant);
         assertEq(r, respondent);
@@ -61,7 +62,7 @@ contract EscrowTest is Test {
 
         assertEq(claimant.balance, claimantBefore + 2 ether);
         assertEq(respondent.balance, respondentBefore + 1 ether);
-        (Escrow.Status status,,,,) = escrow.deposits(escrowId);
+        (Escrow.Status status,,,,,) = escrow.deposits(escrowId);
         assertEq(uint8(status), uint8(Escrow.Status.SETTLED));
     }
 
@@ -143,7 +144,12 @@ contract EscrowTest is Test {
 
     function test_constructor_revertsOnZeroDecisionRelay() public {
         vm.expectRevert(Escrow.ZeroAddress.selector);
-        new Escrow(address(0));
+        new Escrow(address(0), TIMEOUT);
+    }
+
+    function test_constructor_revertsOnZeroTimeout() public {
+        vm.expectRevert(bytes("emergencyRefundTimeoutSeconds must be nonzero"));
+        new Escrow(decisionRelay, 0);
     }
 
     // Real fix (external audit finding): the first version of this
@@ -169,7 +175,119 @@ contract EscrowTest is Test {
 
     function test_deposit_storesCaseId() public {
         _deposit(1 ether);
-        (,,,, bytes32 storedCaseId) = escrow.deposits(escrowId);
+        (,,,, bytes32 storedCaseId,) = escrow.deposits(escrowId);
         assertEq(storedCaseId, caseId);
+    }
+
+    // --- Item E: emergencyRefund() ---
+
+    function test_emergencyRefund_revertsBeforeTimeoutElapses() public {
+        _deposit(1 ether);
+        vm.warp(block.timestamp + TIMEOUT - 1);
+        vm.prank(decisionRelay);
+        vm.expectRevert(
+            abi.encodeWithSelector(Escrow.TimeoutNotElapsed.selector, block.timestamp + 1, block.timestamp)
+        );
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+    }
+
+    function test_emergencyRefund_paysClaimantInFullAfterTimeout() public {
+        _deposit(1 ether);
+        uint256 claimantBefore = claimant.balance;
+        vm.warp(block.timestamp + TIMEOUT);
+
+        vm.prank(decisionRelay);
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+
+        assertEq(claimant.balance, claimantBefore + 1 ether);
+        assertEq(respondent.balance, 0);
+        (Escrow.Status status,,,,,) = escrow.deposits(escrowId);
+        assertEq(uint8(status), uint8(Escrow.Status.SETTLED));
+    }
+
+    function test_emergencyRefund_revertsIfNotCalledByDecisionRelay() public {
+        _deposit(1 ether);
+        vm.warp(block.timestamp + TIMEOUT);
+        vm.expectRevert(Escrow.NotDecisionRelay.selector);
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+    }
+
+    function test_emergencyRefund_revertsOnUnknownEscrow() public {
+        vm.warp(block.timestamp + TIMEOUT);
+        vm.prank(decisionRelay);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.UnknownEscrow.selector, escrowId));
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+    }
+
+    function test_emergencyRefund_revertsOnCaseIdMismatch() public {
+        _deposit(1 ether);
+        vm.warp(block.timestamp + TIMEOUT);
+        bytes32 wrongCaseId = keccak256("case-wrong");
+        vm.prank(decisionRelay);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.CaseIdMismatch.selector, caseId, wrongCaseId));
+        escrow.emergencyRefund(wrongCaseId, escrowId, keccak256("emergency-proof"));
+    }
+
+    function test_emergencyRefund_cannotBeCalledTwice() public {
+        _deposit(1 ether);
+        vm.warp(block.timestamp + TIMEOUT);
+        vm.startPrank(decisionRelay);
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+        vm.expectRevert(abi.encodeWithSelector(Escrow.AlreadySettled.selector, escrowId));
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof-2"));
+        vm.stopPrank();
+    }
+
+    function test_emergencyRefund_revertsIfAlreadySettledNormally() public {
+        // A deposit that settled normally before the timeout elapsed
+        // must never be emergency-refundable afterward, even once the
+        // timeout eventually passes — SETTLED is terminal regardless of
+        // which path reached it.
+        _deposit(1 ether);
+        vm.prank(decisionRelay);
+        escrow.settle(caseId, escrowId, 1 ether, 0, keccak256("proof"));
+
+        vm.warp(block.timestamp + TIMEOUT);
+        vm.prank(decisionRelay);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.AlreadySettled.selector, escrowId));
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+    }
+
+    function test_emergencyRefund_revertsOnFailedTransfer() public {
+        RevertingReceiver badClaimant = new RevertingReceiver();
+        vm.deal(address(this), 1 ether);
+        bytes32 badEscrowId = keccak256("escrow-bad-claimant");
+        escrow.deposit{value: 1 ether}(caseId, badEscrowId, address(badClaimant), respondent);
+        vm.warp(block.timestamp + TIMEOUT);
+
+        vm.prank(decisionRelay);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.TransferFailed.selector, address(badClaimant), 1 ether));
+        escrow.emergencyRefund(caseId, badEscrowId, keccak256("emergency-proof"));
+
+        // Reverted transfer means the whole call reverted — status must
+        // NOT have been left SETTLED with funds never actually moved.
+        (Escrow.Status status,,,,,) = escrow.deposits(badEscrowId);
+        assertEq(uint8(status), uint8(Escrow.Status.DEPOSITED));
+    }
+
+    function test_emergencyRefund_doesNotAffectOtherEscrows() public {
+        bytes32 escrowIdB = keccak256("escrow-B");
+        vm.deal(address(this), 3 ether);
+        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
+        escrow.deposit{value: 2 ether}(keccak256("case-B"), escrowIdB, claimant, respondent);
+        vm.warp(block.timestamp + TIMEOUT);
+
+        vm.prank(decisionRelay);
+        escrow.emergencyRefund(caseId, escrowId, keccak256("emergency-proof"));
+
+        (Escrow.Status statusB,,,,,) = escrow.deposits(escrowIdB);
+        assertEq(uint8(statusB), uint8(Escrow.Status.DEPOSITED), "unrelated escrow must be untouched");
+        assertEq(address(escrow).balance, 2 ether);
+    }
+}
+
+contract RevertingReceiver {
+    receive() external payable {
+        revert("nope");
     }
 }

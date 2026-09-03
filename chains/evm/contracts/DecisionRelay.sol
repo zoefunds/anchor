@@ -49,6 +49,12 @@ interface ISettlementTarget {
     ) external;
 }
 
+// Item E's escape-hatch counterpart to ISettlementTarget — whatever
+// escrow contract emergencyRefund() below targets must implement this.
+interface IEmergencyRefundTarget {
+    function emergencyRefund(bytes32 caseId, bytes32 escrowId, bytes32 proofHash) external;
+}
+
 contract DecisionRelay is IMessageRecipient {
     IMailbox public immutable mailbox;
     // Deliberately NOT hardcoded to msg.sender anymore — an owner that
@@ -130,6 +136,7 @@ contract DecisionRelay is IMessageRecipient {
 
     event DecisionReceived(bytes32 indexed caseId, string outcome, bytes32 proofHash);
     event CaseOriginated(bytes32 indexed caseId, uint32 destinationDomain, bytes32 messageId);
+    event EmergencyRefundRequested(bytes32 indexed caseId, address indexed settlementTargetAddr, bytes32 proofHash);
 
     // Governance-change events — every one of these narrows or widens who
     // can authorize a settlement, so each is its own event rather than a
@@ -314,6 +321,58 @@ contract DecisionRelay is IMessageRecipient {
         // settle() call, even if settlementTarget happens to be set for
         // this origin (mode is the explicit, authoritative signal now,
         // not target-address presence).
+    }
+
+    /// Item E — the governed escape hatch for a stuck escrow deposit.
+    /// Deliberately NOT reached through handle()/the Mailbox: the
+    /// scenarios this exists for (relayer non-delivery, an unset or
+    /// misconfigured settlementTarget — this project's own real
+    /// incident) are exactly the scenarios where depending on the same
+    /// Hyperlane message-delivery path that got stuck would make this
+    /// no escape hatch at all. Anyone may call this (no onlyMailbox,
+    /// no onlyOwner) — its ENTIRE authorization is the same M-of-N
+    /// attestor-signature threshold handle() enforces, verified
+    /// identically here, so there is no unilateral-withdrawal path and
+    /// no bypass of the attestor threshold: the caller submitting the
+    /// transaction proves nothing on their own, same as an untrusted
+    /// Hyperlane relayer proves nothing about a message's content on
+    /// its own.
+    ///
+    /// `settlementTargetAddr` is caller-supplied rather than read from
+    /// `settlementTarget[domain]` on purpose — this must still work
+    /// even when that mapping is exactly the thing that's wrong or
+    /// unset (again: this project's own incident). Safety doesn't come
+    /// from trusting the caller's claim about which contract to target;
+    /// it comes from the target contract's own emergencyRefund()
+    /// independently proving the deposit is real, matches this caseId,
+    /// and its own on-chain timeout has actually elapsed — a caller
+    /// pointing this at an arbitrary/wrong contract simply gets a
+    /// revert there, same as settle() would.
+    function emergencyRefund(
+        address settlementTargetAddr,
+        bytes32 caseId,
+        bytes32 escrowId,
+        bytes32 proofHash,
+        bytes[] calldata attestationSignatures
+    ) external {
+        require(settlementTargetAddr != address(0), "zero settlement target");
+        require(!processedDecisions[proofHash], "already processed");
+        require(attestationSignatures.length <= attestorCount, "too many signatures supplied");
+
+        require(
+            _countValidDistinctAttestations(
+                keccak256(
+                    abi.encode("ANCHOR_EMERGENCY_REFUND_V1", address(this), settlementTargetAddr, caseId, escrowId, proofHash)
+                ),
+                attestationSignatures
+            ) >= attestorThreshold,
+            "insufficient valid attestations"
+        );
+
+        processedDecisions[proofHash] = true;
+        emit EmergencyRefundRequested(caseId, settlementTargetAddr, proofHash);
+
+        IEmergencyRefundTarget(settlementTargetAddr).emergencyRefund(caseId, escrowId, proofHash);
     }
 
     /// M-of-N: counts DISTINCT valid attestor signatures over the same
