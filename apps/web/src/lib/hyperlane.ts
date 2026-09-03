@@ -6,9 +6,10 @@ import {
   type DecisionRelayPayload,
 } from "@anchor/hyperlane-relay";
 import type { Address, Hex } from "viem";
-import { pad, createPublicClient, http, recoverAddress } from "viem";
+import { pad, isHex, createPublicClient, http, recoverAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
+import { prisma } from "@/lib/prisma";
 
 const PROCESSED_DECISIONS_ABI = [
   {
@@ -240,6 +241,25 @@ function hashToBytes32(hash: string, label: string): Hex {
   return `0x${hex}` as Hex;
 }
 
+/**
+ * Formats CaseSettlement.escrowId (Escrow.sol's own caller-chosen
+ * identifier, NOT a hash — see Escrow.sol's `deposit()` doc comment)
+ * as a bytes32. Deliberately separate from hashToBytes32 above: that
+ * one validates specifically as a 64-hex-char sha256 digest shape,
+ * which would reject a shorter numeric/random escrowId with a
+ * misleading "must be a sha256 hex digest" error.
+ */
+function escrowIdToBytes32(escrowId: string, label: string): Hex {
+  if (isHex(escrowId)) {
+    const hex = escrowId.length % 2 === 0 ? escrowId : (`0x0${escrowId.slice(2)}` as Hex);
+    if (hex.length > 66) {
+      throw new Error(`${label} is longer than 32 bytes: ${escrowId}`);
+    }
+    return pad(hex, { size: 32 });
+  }
+  throw new Error(`${label} must be a 0x-prefixed hex string, got: ${escrowId}`);
+}
+
 const SEALEVEL_CHAINS = new Set(["solanatestnet"]);
 
 /** Thrown when reconciliation (see isDecisionSettledOnSepolia below) finds the destination contract already marked this exact decision settled — a prior dispatch's transaction landed even though Anchor's own record of it (relayTxHash) never got written, e.g. a crash between the on-chain call succeeding and the DB update. Distinct from a normal dispatch failure so the caller can record "already settled, no local txHash to show" instead of treating this as an error to keep retrying. */
@@ -326,7 +346,36 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       throw new DecisionAlreadySettledError(params.decisionHash);
     }
 
-    const escrowId = pad("0x0", { size: 32 }); // no real per-case escrow id modeled yet for EVM settlement — placeholder, see docs/hyperlane-integration.md open question #4
+    // Real fix for this session's core P0 finding: escrowId used to
+    // always be a hardcoded zero placeholder, because no contract
+    // existed to bind it to (see chains/evm/contracts/Escrow.sol —
+    // deployed to Sepolia this session). If this case has a real
+    // CaseSettlement, its escrowId is used instead, and — the actual
+    // fix, not just picking a different placeholder — the real deposit
+    // is read from chain and required to exactly match claimant,
+    // respondent, and total amount before dispatch is allowed to
+    // proceed at all. A case with no CaseSettlement (the common case
+    // today, since nothing yet creates one automatically) keeps the
+    // old zero-placeholder behavior — this is additive, not a new
+    // requirement for every settlement path.
+    const caseSettlement = await prisma.caseSettlement.findUnique({
+      where: { caseId: params.caseId },
+      include: { integration: true },
+    });
+    let escrowId: Hex;
+    if (caseSettlement) {
+      const { assertEscrowDepositMatches } = await import("@/lib/escrow");
+      escrowId = escrowIdToBytes32(caseSettlement.escrowId, "CaseSettlement.escrowId");
+      await assertEscrowDepositMatches({
+        escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
+        escrowIdBytes32: escrowId,
+        expectedClaimant: caseSettlement.claimantAddress as Address,
+        expectedRespondent: caseSettlement.respondentAddress as Address,
+        expectedTotalAmountWei: params.claimantAmountAtto + params.respondentAmountAtto,
+      });
+    } else {
+      escrowId = pad("0x0", { size: 32 }); // no CaseSettlement for this case — no real escrow to bind to yet, see the comment above
+    }
     const attestationHash = computeDecisionAttestationHash({
       originDomain: HYPERLANE_DOMAIN.sepolia,
       recipientAddress: params.settlementContract as Address,
