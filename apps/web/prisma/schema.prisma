@@ -480,12 +480,51 @@ model Case {
   // dashboard/API always show the latest by createdAt.
   decisions  Decision[]
   settlement CaseSettlement?
+  partyVerifications PartyVerification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([organizationId])
+}
+
+// One Didit KYC session per (case, party role) — a claimant or
+// respondent can start a real identity-verification session before
+// settlement is trusted to pay out to their address. Not yet gating
+// anything (no route checks this before allowing settlement) — this is
+// the tracking/record layer; making verification mandatory before a
+// real payout is a separate, later decision.
+model PartyVerification {
+  id           String   @id @default(cuid())
+  case         Case     @relation(fields: [caseId], references: [id])
+  caseId       String
+  role         PartyRole
+  // Didit's own session identifier — used for GET /v3/session/{id}/decision/
+  // backfill/reconciliation and to correlate inbound webhooks.
+  sessionId    String   @unique
+  status       PartyVerificationStatus @default(NOT_STARTED)
+  // Raw decision payload from Didit's webhook/API (id_verifications[],
+  // liveness_checks[], face_matches[] etc — see Didit's V3 contract).
+  // Stored as-is rather than projected into typed columns since the
+  // shape is Didit's, not ours, and the audit trail value is in having
+  // the real payload, not a lossy summary of it.
+  decision     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([caseId])
+  @@unique([caseId, role])
+}
+
+enum PartyVerificationStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  APPROVED
+  DECLINED
+  IN_REVIEW
+  ABANDONED
+  EXPIRED
 }
 
 // The allow-list for a restricted Case (see Case.restricted). A row here
