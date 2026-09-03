@@ -771,3 +771,55 @@ model DeploymentEnvironment {
   id  String @id
   env String
 }
+
+// Item F — the reconciliation sweep's own durable state (see
+// lib/reconciliation.ts). A finding is opened the first time a real
+// check detects a real problem, and resolved the first time that same
+// check no longer reproduces it — this is what makes the ops alert
+// wired to it "fire once when something's actually wrong, once again
+// when it's actually fixed," not a re-alert every 15-minute sweep tick
+// for as long as a condition persists.
+enum ReconciliationFindingType {
+  // DecisionRelay.settlementTarget(domain) reads the zero address for
+  // a domain that has at least one active SettlementIntegration — the
+  // exact class of misconfiguration this project's own real
+  // settlement-availability incident was.
+  ZERO_SETTLEMENT_TARGET
+  // DecisionRelay.settlementTarget(domain) is set, but to an address
+  // that doesn't match the active SettlementIntegration's own
+  // escrowContractAddress for that domain/case.
+  TARGET_INTEGRATION_MISMATCH
+  // A CaseSettlement has sat in PENDING_DEPOSIT, with both party
+  // addresses already set, for longer than the sweep's overdue
+  // threshold — a deposit that should have arrived hasn't.
+  OVERDUE_DEPOSIT
+  // DecisionRelay.processedDecisions(proofHash) reads true on-chain
+  // for a dispatched Decision, but the linked CaseSettlement's own
+  // status hasn't caught up to DEPOSITED/SETTLED — the DB has drifted
+  // from chain state (this exact drift was found and hand-corrected
+  // once already this session — see the incident log's "re-audit
+  // response" section). The sweep both raises this finding AND
+  // self-heals the DB record, same as a human operator did manually.
+  DISPATCHED_BUT_DB_STALE
+  // Organization.lastAnchoredAt is null or older than expected given
+  // the audit-anchor sweep's own interval — the external anchoring
+  // job appears to have stopped running silently.
+  AUDIT_ANCHOR_STALE
+}
+
+model ReconciliationFinding {
+  id         String                     @id @default(cuid())
+  type       ReconciliationFindingType
+  targetType String
+  targetId   String
+  detail     Json
+  openedAt   DateTime                   @default(now())
+  resolvedAt DateTime?
+  // Set when the "finding opened" alert was actually sent — lets the
+  // sweep tell "never alerted yet" apart from "alerted, still open,
+  // don't re-alert every tick" without needing a separate table.
+  alertedAt  DateTime?
+
+  @@unique([type, targetId])
+  @@index([resolvedAt])
+}

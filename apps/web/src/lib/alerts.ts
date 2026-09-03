@@ -1,0 +1,62 @@
+import { safeFetch, assertSafeToFetch } from "@/lib/ssrf-guard";
+
+// Item F's "real alert delivery" half. Deliberately separate from
+// lib/webhooks.ts's per-organization customer webhooks: this is a
+// single, operator-configured destination for ANCHOR'S OWN ops team
+// (a Slack incoming webhook URL is the expected shape, hence the
+// Slack-compatible `{ text }` body — but anything that accepts a POST
+// with a text field works), not something orgs configure or see. A
+// finding with nowhere to send never vanishes silently — see
+// lib/reconciliation.ts, which persists every finding to
+// ReconciliationFinding regardless of whether this function's HTTP
+// delivery succeeds, is configured at all, or throws.
+
+export type AlertSeverity = "info" | "warning" | "critical";
+
+export class OpsAlertDeliveryError extends Error {}
+
+/**
+ * Posts one alert to OPS_ALERT_WEBHOOK_URL, if configured. Never
+ * throws for "not configured" — that's a valid, common deployment
+ * state (e.g. local dev), not an error; the caller's own DB-persisted
+ * ReconciliationFinding row remains the durable record either way.
+ * DOES throw (OpsAlertDeliveryError) when a URL IS configured but the
+ * delivery itself fails, so a caller running this inside a retryable
+ * job (see worker.ts) gets real retry/backoff instead of a silently
+ * swallowed failed alert — an alerting system that can't tell you it
+ * failed to alert you isn't one you can trust.
+ */
+export async function sendOpsAlert(params: {
+  severity: AlertSeverity;
+  title: string;
+  detail: string;
+}): Promise<void> {
+  const url = process.env.OPS_ALERT_WEBHOOK_URL;
+  if (!url) return;
+
+  const owner = process.env.OPS_ALERT_OWNER ?? "(no OPS_ALERT_OWNER configured)";
+  const emoji = params.severity === "critical" ? ":rotating_light:" : params.severity === "warning" ? ":warning:" : ":information_source:";
+  const text = `${emoji} *[Anchor ${params.severity.toUpperCase()}]* ${params.title}\n${params.detail}\nAccountable owner: ${owner}`;
+
+  try {
+    await assertSafeToFetch(url);
+  } catch (err) {
+    throw new OpsAlertDeliveryError(`OPS_ALERT_WEBHOOK_URL is not safe to fetch: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    throw new OpsAlertDeliveryError(`failed to deliver ops alert: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) {
+    throw new OpsAlertDeliveryError(`ops alert endpoint responded ${res.status}`);
+  }
+}

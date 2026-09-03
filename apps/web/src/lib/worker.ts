@@ -4,6 +4,7 @@ import { ADJUDICATION_QUEUE_NAME, getAdjudicationQueue } from "@/lib/queue";
 import { runAdjudicationJob, finalizeExpiredAppealWindows, retryFailedSettlements, confirmPendingDeposits } from "@/lib/adjudication-service";
 import { deliverWebhookAttempt } from "@/lib/webhooks";
 import { anchorAuditChains } from "@/lib/audit-anchor";
+import { runReconciliationSweep } from "@/lib/reconciliation";
 import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
 
 // The actual BullMQ job processor — separate from src/worker.ts (the
@@ -17,6 +18,7 @@ const FINALIZE_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const SETTLEMENT_RETRY_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const AUDIT_ANCHOR_SWEEP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes — an external checkpoint doesn't need to be real-time, just regular
 const DEPOSIT_CONFIRMATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes — same cadence as the finalize sweep; a deposit sitting unconfirmed doesn't need faster polling than that
+const RECONCILIATION_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes — several real on-chain reads per tick, doesn't need finalize-sweep speed
 
 let worker: Worker | null = null;
 
@@ -44,6 +46,12 @@ async function processJob(job: Job): Promise<void> {
       // eslint-disable-next-line no-console
       console.log(`worker: confirmed ${count} on-chain deposit(s)`);
     }
+    return;
+  }
+  if (job.name === "run_reconciliation_sweep") {
+    const { openFindings } = await runReconciliationSweep();
+    // eslint-disable-next-line no-console
+    console.log(`worker: reconciliation sweep complete, ${openFindings} open finding(s)`);
     return;
   }
   if (job.name === "anchor_audit_chains") {
@@ -142,6 +150,22 @@ async function ensureDepositConfirmationSweepScheduled(): Promise<void> {
 }
 
 /**
+ * Registers the periodic reconciliation sweep (see
+ * lib/reconciliation.ts's runReconciliationSweep) — the real
+ * decision -> attestation -> dispatch -> delivery -> processed ->
+ * settled -> payout -> audit-anchored chain, checked against live
+ * on-chain state, not just DB-internal consistency. Same
+ * upsert-is-idempotent reasoning as the other sweeps.
+ */
+async function ensureReconciliationSweepScheduled(): Promise<void> {
+  await getAdjudicationQueue().upsertJobScheduler(
+    "reconciliation-sweep",
+    { every: RECONCILIATION_SWEEP_INTERVAL_MS },
+    { name: "run_reconciliation_sweep" }
+  );
+}
+
+/**
  * Registers the periodic external audit-chain anchoring sweep (see
  * lib/audit-anchor.ts) — posts each organization's current audit-log
  * chain head to a small Sepolia contract, so history can't be silently
@@ -217,6 +241,10 @@ export async function startAdjudicationWorker(): Promise<Worker> {
   ensureDepositConfirmationSweepScheduled().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to schedule deposit confirmation sweep:", err instanceof Error ? err.message : err);
+  });
+  ensureReconciliationSweepScheduled().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to schedule reconciliation sweep:", err instanceof Error ? err.message : err);
   });
 
   return w;
