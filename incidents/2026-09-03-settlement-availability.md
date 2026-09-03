@@ -44,6 +44,29 @@ This requires both Safe owner signatures per `docs/multisig-attestor-setup.md`'s
 
 **Important scope note for future settlements**: even once this target is wired, the *current* `Escrow` contract does not store `caseId` in its `Deposit` struct (only emits it in the `Deposited` event) — settlement is keyed solely by `escrowId`. This means the contract itself cannot prove a given settlement's `caseId` matches the original deposit's `caseId`; that binding currently exists only in application-layer records (`CaseSettlement`), not on-chain. Flagged, not yet fixed — a real follow-up for any future `Escrow` deployment, not blocking recovery of *this* specific incident.
 
+## RESOLVED — 2026-09-03 (all times UTC, verified on-chain)
+
+**Governance fix**: Safe tx `0x708011f5c2de12686604114211877163767d6381a10232bc01c9c17331fc7136` (nonce 3, both real 2-of-2 owner signatures verified via `cast wallet verify` before submission) called `setSettlementTarget(11155111, 0x5314725C32b58d0e1CACa510d491c8492D0BE997)`. Verified post-tx: `settlementTarget(11155111)` reads the correct `Escrow` address.
+
+**Recovery**: the original message (decision `cmtlhlb1a00016e1rbm77s8gq`, decisionHash `0x7d1e5e63...`) could not be replayed — `DecisionRelay.processedDecisions` was already `true` for that hash, and `handle()`'s guard (`require(!processedDecisions[proofHash])`) makes that permanent; there is no owner override and `Escrow.settle()` is `onlyDecisionRelay`-gated, so no direct bypass existed either.
+
+Recovery required a **new** dispatch referencing the same `escrowId` with a fresh, explicitly-labeled proof hash (`sha256("recovery-of:0x7d1e5e63...")` = `0xee415b89804f7ea1b68df902df35380316790e02617db5ed3be294837b034720`), reusing the real, unchanged outcome/shares/evidence. A fresh 2-of-2 attestation was collected (both signatures verified via `cast wallet verify` before use) and `SETTLEMENT_PAUSED` was lifted for this one dispatch only, per explicit operator authorization, then re-enabled immediately after dispatch.
+
+**Recovery dispatch tx**: `0x9e3c288b2cf95de7a0dd6a27744697d5c4b4994696c5e12e6216561943c258a4` — status success, both signatures embedded and correct.
+
+**Settlement, verified independently on-chain, not inferred**:
+- `Escrow.deposits(escrowId).status` → `2` (SETTLED)
+- Claimant balance: `38796879670500` → `1038796879670500` wei — an increase of exactly `1000000000000000` wei (0.001 ETH), matching the deposit and the `REFUND_FULL` (100% claimant / 0% respondent) decision exactly.
+- `DecisionRelay.processedDecisions(recovery hash)` → `true`
+
+**Final state**: `SETTLEMENT_PAUSED = true` on `anc-hor-worker`. No funds remain locked. No unauthorized movement occurred at any point — the entire incident was availability (a missing governance wiring step, not a security or custody failure).
+
+**Open follow-ups, not part of this incident's resolution**:
+1. `Escrow` doesn't store `caseId` on-chain (only emits it) — real hardening gap for future deployments.
+2. Case creation can still fall back to a zero `escrowId` when no `CaseSettlement` exists — should require a real `CaseSettlement` for any real-money settlement path.
+3. Validator1's Infura quota exhaustion and the relayer's earlier connection instability are real, separate infra issues worth fixing on their own merits — not re-tested after this incident's resolution since they were not the terminal blocker.
+4. No governed expiry/refund/human-review escape hatch exists for a stuck escrow generally — this incident's recovery worked because a new dispatch was possible; a future incident where the settlement target itself is somehow wrong would need a different mechanism.
+
 ### 2026-09-03T15:28:07Z
 - validator1 latest_index: 871811 | validator2 latest_index: 871811
 - checkpoint_873170_with_id.json: validator1=404 validator2=404
