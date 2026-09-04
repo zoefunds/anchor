@@ -281,3 +281,93 @@ describe("runReconciliationSweep — audit anchor staleness", () => {
     expect(finding).not.toBeNull();
   });
 });
+
+describe("runReconciliationSweep — auto-escalation of unacknowledged critical findings", () => {
+  it("does not escalate a critical finding before the threshold has elapsed", async () => {
+    const finding = await prisma.reconciliationFinding.create({
+      data: {
+        type: "ZERO_SETTLEMENT_TARGET",
+        targetType: "DecisionRelay",
+        targetId: "escalation-test-recent",
+        detail: {},
+        alertedAt: new Date(), // just now — well within the 30-minute default threshold
+      },
+    });
+    mockReadContract.mockResolvedValue(ESCROW); // no real drift for the other checks
+
+    const result = await runReconciliationSweep();
+    expect(result.escalated).toBe(0);
+    const updated = await prisma.reconciliationFinding.findUniqueOrThrow({ where: { id: finding.id } });
+    expect(updated.lastEscalatedAt).toBeNull();
+  });
+
+  it("escalates a critical finding alerted long ago and still unacknowledged, then respects the repeat interval", async () => {
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000); // 1h ago — past the 30-min default threshold
+    const finding = await prisma.reconciliationFinding.create({
+      data: {
+        type: "ZERO_SETTLEMENT_TARGET",
+        targetType: "DecisionRelay",
+        targetId: "escalation-test-overdue",
+        detail: {},
+        alertedAt: longAgo,
+      },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+
+    const result = await runReconciliationSweep();
+    expect(result.escalated).toBe(1);
+    const escalationCall = mockSendOpsAlert.mock.calls.find((c) => (c[0].title as string).includes("[ESCALATION]") && (c[0].detail as string).includes(finding.id));
+    expect(escalationCall).toBeDefined();
+    expect(escalationCall![0].severity).toBe("critical");
+
+    const updated = await prisma.reconciliationFinding.findUniqueOrThrow({ where: { id: finding.id } });
+    expect(updated.lastEscalatedAt).not.toBeNull();
+
+    // A second sweep tick immediately after must NOT escalate again —
+    // real repeat-interval discipline, not "once per sweep tick."
+    mockSendOpsAlert.mockClear();
+    await runReconciliationSweep();
+    const noRepeatCall = mockSendOpsAlert.mock.calls.find((c) => (c[0].detail as string).includes(finding.id));
+    expect(noRepeatCall).toBeUndefined();
+  });
+
+  it("never escalates a finding once it's been acknowledged", async () => {
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const finding = await prisma.reconciliationFinding.create({
+      data: {
+        type: "TARGET_INTEGRATION_MISMATCH",
+        targetType: "DecisionRelay",
+        targetId: "escalation-test-acknowledged",
+        detail: {},
+        alertedAt: longAgo,
+        acknowledgedAt: new Date(),
+        acknowledgedByMemberId: "test-member",
+      },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+
+    const result = await runReconciliationSweep();
+    expect(result.escalated).toBe(0);
+    const call = mockSendOpsAlert.mock.calls.find((c) => (c[0].detail as string).includes(finding.id));
+    expect(call).toBeUndefined();
+  });
+
+  it("never escalates a warning-severity finding, only critical", async () => {
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const finding = await prisma.reconciliationFinding.create({
+      data: {
+        type: "OVERDUE_DEPOSIT", // warning severity per FINDING_SEVERITY
+        targetType: "CaseSettlement",
+        targetId: "escalation-test-warning",
+        detail: {},
+        alertedAt: longAgo,
+      },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+
+    const result = await runReconciliationSweep();
+    const call = mockSendOpsAlert.mock.calls.find((c) => (c[0].detail as string).includes(finding.id));
+    expect(call).toBeUndefined();
+    expect(result.escalated).toBe(0);
+  });
+});

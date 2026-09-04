@@ -31,13 +31,42 @@ single-operator deployment can set just that one.
 4. Further remediation notes can be added to the same finding as work
    continues, producing a real, queryable history.
 
+## Auto-escalation (now built)
+
+A **critical** finding that's been alerted but sits unacknowledged
+past `RECONCILIATION_ESCALATION_THRESHOLD_MS` (default 30 minutes)
+gets a distinctly-labeled `[ESCALATION]` alert, repeated every
+`RECONCILIATION_ESCALATION_REPEAT_INTERVAL_MS` (default 30 minutes)
+while it remains unacknowledged. This still posts to the same
+`OPS_ALERT_WEBHOOK_URL` — there is no separate escalation channel or
+paging integration yet (see below). Acknowledging the finding (via
+`/settings/reconciliation-findings`) stops further escalation
+immediately.
+
 ## What is NOT yet built
 
-- No paging/on-call integration (PagerDuty, Opsgenie, etc.) — Slack only.
-- No automatic escalation if a critical finding goes unacknowledged for
-  N minutes.
+- No paging/on-call integration (PagerDuty, Opsgenie, etc.) — Slack
+  only, including for escalations.
 - `PLATFORM_ADMIN_EMAILS` is a flat allowlist, not a role hierarchy —
   anyone on it sees every finding across every organization.
+
+## Adding a real paging integration (free tier available)
+
+If you want escalations to actually page someone (not just post another
+Slack message), the lowest-effort real option is **PagerDuty's free
+plan** (up to 5 users, unlimited alerts) or **Opsgenie's free tier**
+(now part of Jira Service Management, 3 agents). Either works the same
+way from this codebase's side:
+
+1. Sign up, create a service/integration of type "Events API v2"
+   (PagerDuty) or "API Integration" (Opsgenie).
+2. Copy the generated integration/routing key — **not a password**, a
+   scoped API credential safe to hand over and store as an env var.
+3. Give that key here and ask to wire it in — `lib/alerts.ts` would
+   gain a second delivery path alongside Slack (real HTTP POST to the
+   provider's Events API, same real-delivery-confirmation discipline
+   `sendOpsAlert` already has for Slack), triggered specifically for
+   the escalation path above, not every info-level alert.
 
 ## Filling in real names
 

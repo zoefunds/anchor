@@ -857,6 +857,13 @@ model ReconciliationFinding {
   // real person has taken ownership.
   acknowledgedAt         DateTime?
   acknowledgedByMemberId String?
+  // Real auto-escalation (settlement-readiness gaps status report,
+  // "no auto-escalation" gap): a critical finding that's been alerted
+  // but sits unacknowledged past a threshold gets a repeated,
+  // distinctly-labeled escalation alert on its own cadence — separate
+  // from alertedAt, which only ever fires once per opened finding.
+  // Null means never escalated yet.
+  lastEscalatedAt DateTime?
 
   events ReconciliationFindingEvent[]
 

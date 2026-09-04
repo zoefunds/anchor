@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, ReconciliationFindingType } from "@prisma/client";
 import { type Address, createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
@@ -337,13 +337,62 @@ async function checkAuditAnchorStaleness(): Promise<void> {
   }
 }
 
+// Real auto-escalation: a critical finding that's real, alerted, and
+// still sitting unacknowledged past a threshold gets a repeated,
+// distinctly-labeled escalation alert on its own cadence — separate
+// from the one-time "opened" alert. Only critical findings escalate;
+// a warning left unacknowledged for an hour isn't the same class of
+// problem as funds genuinely at risk. Both durations are real,
+// documented operational knobs (see docs/ops-alert-escalation.md),
+// not hardcoded assumptions about anyone's actual response time.
+const ESCALATION_THRESHOLD_MS = Number(process.env.RECONCILIATION_ESCALATION_THRESHOLD_MS ?? 30 * 60 * 1000); // 30 min default
+const ESCALATION_REPEAT_INTERVAL_MS = Number(process.env.RECONCILIATION_ESCALATION_REPEAT_INTERVAL_MS ?? 30 * 60 * 1000); // repeat every 30 min while still unacknowledged
+
+async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
+  const now = Date.now();
+  const critical = Object.entries(FINDING_SEVERITY)
+    .filter(([, severity]) => severity === "critical")
+    .map(([type]) => type);
+
+  const candidates = await prisma.reconciliationFinding.findMany({
+    where: {
+      resolvedAt: null,
+      acknowledgedAt: null,
+      type: { in: critical as ReconciliationFindingType[] },
+      alertedAt: { not: null, lt: new Date(now - ESCALATION_THRESHOLD_MS) },
+    },
+  });
+
+  let escalatedCount = 0;
+  for (const finding of candidates) {
+    if (finding.lastEscalatedAt && now - finding.lastEscalatedAt.getTime() < ESCALATION_REPEAT_INTERVAL_MS) continue;
+
+    const minutesOpen = Math.round((now - finding.openedAt.getTime()) / 60_000);
+    try {
+      const delivered = await sendOpsAlert({
+        severity: "critical",
+        title: `[ESCALATION] Unacknowledged for ${minutesOpen} minutes: ${finding.type}`,
+        detail: `Finding ${finding.id} (${finding.targetType} ${finding.targetId}) was alerted but nobody has acknowledged it yet. See /settings/reconciliation-findings.`,
+      });
+      if (delivered) {
+        await prisma.reconciliationFinding.update({ where: { id: finding.id }, data: { lastEscalatedAt: new Date() } });
+        escalatedCount++;
+      }
+    } catch (err) {
+      console.error(`reconciliation: failed to deliver escalation alert for finding ${finding.id}`, err);
+    }
+  }
+  return escalatedCount;
+}
+
 /** Runs every real check and returns how many findings are currently open, for the worker's own log line. */
-export async function runReconciliationSweep(): Promise<{ openFindings: number }> {
+export async function runReconciliationSweep(): Promise<{ openFindings: number; escalated: number }> {
   await checkSettlementTargets();
   await checkOverdueDeposits();
   await checkDispatchedButStale();
   await checkAuditAnchorStaleness();
+  const escalated = await escalateUnacknowledgedCriticalFindings();
 
   const openFindings = await prisma.reconciliationFinding.count({ where: { resolvedAt: null } });
-  return { openFindings };
+  return { openFindings, escalated };
 }

@@ -49,9 +49,9 @@ async function processJob(job: Job): Promise<void> {
     return;
   }
   if (job.name === "run_reconciliation_sweep") {
-    const { openFindings } = await runReconciliationSweep();
+    const { openFindings, escalated } = await runReconciliationSweep();
     // eslint-disable-next-line no-console
-    console.log(`worker: reconciliation sweep complete, ${openFindings} open finding(s)`);
+    console.log(`worker: reconciliation sweep complete, ${openFindings} open finding(s), ${escalated} escalation alert(s) sent`);
     return;
   }
   if (job.name === "anchor_audit_chains") {
