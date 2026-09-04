@@ -153,10 +153,20 @@ export default function CasesPage() {
     <main className="mx-auto max-w-5xl px-8 py-16">
       <EmailVerificationBanner />
       <header className="mb-12 border-b border-line pb-8 pt-10 dark:border-line-dark">
-        <p className="kicker text-seal-500 dark:text-seal-400">The Docket</p>
-        <h1 className="font-display text-4xl font-semibold tracking-tight text-ink-950 dark:text-ink">
-          Cases
-        </h1>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="kicker text-seal-500 dark:text-seal-400">The Docket</p>
+            <h1 className="font-display text-4xl font-semibold tracking-tight text-ink-950 dark:text-ink">
+              Cases
+            </h1>
+          </div>
+          <Link
+            href="/settings/settlement-integrations"
+            className="mt-2 inline-flex items-center gap-1 font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
+          >
+            Settings →
+          </Link>
+        </div>
       </header>
 
       {newPartyTokens && (

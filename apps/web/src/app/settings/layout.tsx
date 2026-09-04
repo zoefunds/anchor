@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMember } from "@/lib/auth";
+import { SettingsNav } from "@/components/SettingsNav";
 
 export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
   const member = await getSessionMember();
@@ -9,5 +10,10 @@ export default async function SettingsLayout({ children }: { children: React.Rea
   if (!member.emailVerified) {
     redirect("/verify-required");
   }
-  return <>{children}</>;
+  return (
+    <>
+      <SettingsNav />
+      {children}
+    </>
+  );
 }
