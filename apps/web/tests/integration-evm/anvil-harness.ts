@@ -40,9 +40,17 @@ export const DEV_PRIVATE_KEYS: Hex[] = Array.from({ length: 10 }, (_, i) => {
   return `0x${Buffer.from(privateKeyBytes).toString("hex")}` as Hex;
 });
 
-function loadArtifact(pathFromOut: string): { abi: unknown[]; bytecode: Hex } {
+function loadArtifact(pathFromOut: string): { abi: unknown[]; bytecode: Hex; deployedBytecode: Hex } {
   const json = JSON.parse(readFileSync(join(EVM_DIR, "out", pathFromOut), "utf8"));
-  return { abi: json.abi, bytecode: json.bytecode.object as Hex };
+  // bytecode = CREATE-time bytecode (constructor + init logic) — only
+  // valid as the `data` of a deployment transaction. deployedBytecode =
+  // the real RUNTIME code that ends up living at the contract's
+  // address. A real bug found writing the worker-queue Anvil test:
+  // using `bytecode` with anvil's setCode (to plant a contract at a
+  // fixed address without a real deploy tx) silently "worked" — the
+  // call didn't revert — but returned garbage from every function,
+  // since CREATE-time bytecode is not runtime-executable code at all.
+  return { abi: json.abi, bytecode: json.bytecode.object as Hex, deployedBytecode: json.deployedBytecode.object as Hex };
 }
 
 export const ARTIFACTS = {
