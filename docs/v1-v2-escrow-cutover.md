@@ -37,9 +37,33 @@ Every step here is designed to be forced into the right order by the tooling, no
 5. **Repoint governance.** The 2-of-2 Safe calls `DecisionRelay.setSettlementTarget(11155111, <V2 address>)` — same real governance procedure already used once this session (`docs/multisig-attestor-setup.md`), with `cast wallet verify` checked against both signatures before submission, same as before. `SETTLEMENT_PAUSED` stays exactly as it currently is throughout — this plan does not change that gate's own discipline (lift only for an explicitly authorized single action, re-arm immediately).
 6. **Re-verify.** `cast call <DecisionRelay> "settlementTarget(uint32)(address)" 11155111` reads back V2. Bind one real (or rehearsal — see below) case to a fresh V2 `SettlementIntegration` and confirm the full path end to end before considering the cutover complete.
 
-## Rehearsal (not yet performed — requires explicit authorization)
+## Rehearsal — DONE (2026-09-04), real, end-to-end, passed
 
-A "no customer funds" rehearsal means: deploy a *second*, throwaway `Escrow` V2 instance to Sepolia, register it as its own `SettlementIntegration`, bind a synthetic case created solely for this purpose (never a real org's case), deposit a trivial test amount, run it through `confirm-deposit` (Item C), and dispatch a real settlement — proving `settle()`'s new `caseId` enforcement actually works end to end — all without touching the live V1 contract, its one settled deposit, or `DecisionRelay`'s real `settlementTarget`. This is a genuine contract deployment and needs the same private-key handling discipline as every other deployment this session: **not attempted here — requires the user to run the deploy themselves, on explicit go-ahead**, exactly as `Escrow` V1's own deployment worked.
+A "no customer funds" rehearsal, exactly as originally scoped below, was actually run and succeeded. Real addresses (Sepolia, both now abandoned/unused — no funds beyond the one rehearsal deposit ever touched them, nothing points to them anymore):
+
+- Rehearsal `DecisionRelay`: `0xf19027e7EA05165A44336F5A2c53f7A09B26a0F3` (own governance owner = the operator's own deploy wallet, not the real Safe; reused the real 2-of-2 attestor set and the real production multisig ISM, since both only verify signatures/checkpoints and carry no fund custody of their own).
+- Rehearsal `Escrow` V2: `0x5b15a8b6c7BD8C3fB104332A61dA2a5912290794`, `decisionRelay` pointed at the rehearsal relay above — never the production one.
+
+What was actually proven, step by step, all real transactions on Sepolia:
+
+1. **Deposit**: 0.0001 ETH deposited into the rehearsal Escrow for a synthetic case created solely for this rehearsal (never a real org's case) — tx `0xffc454599d60e68888966dfb690d393b06daf10e4d5bfc1e86c9160f2a0f7a04`. On-chain `deposits()` read back confirmed the V2-only `caseId` field stored correctly.
+2. **App-level confirm-deposit**: the real Item C `checkAndConfirmDeposit` flow, on-chain-authoritative, exactly as production uses it.
+3. **Real 2-of-2 attestation**: a real Decision row, real backend attestor signature, real offline-attestor co-signature collected via the same `/api/internal/pending-attestations` flow documented in `docs/multisig-attestor-setup.md` — same governance boundary as production, not bypassed.
+4. **Real dispatch**: the actual production `dispatchSettlementForDecision` function sent a real Hyperlane message — tx `0x1ead2404c292240fe077058843100f8bb050df5f47cfde7be23ed1d2fd7f26d4`. This required a brief, explicitly authorized lift of `SETTLEMENT_PAUSED` (immediately re-armed right after — confirmed back to `true`).
+5. **Real relayer delivery + settle()**: the self-hosted relayer (temporarily whitelisted for the rehearsal `DecisionRelay`'s domain/address, reverted after) delivered the message; `handle()` called `settle()` on the rehearsal Escrow — tx `0xb6c8eea3aca5c264f90aa9fdb1eff7ea9b851f3a0ac663f465cb5984ca97d27d`, `claimantAmount = 0.0001 ETH`, `respondentAmount = 0`, matching the deposit exactly. `deposits()` status flipped `DEPOSITED (1)` → `SETTLED (2)`.
+
+**Result: `settle()`'s new `caseId` enforcement — the actual thing V2 changes — works correctly end to end, through the real app dispatch code path, not a shortcut.**
+
+Cleanup performed immediately after: the rehearsal DB rows (a dedicated throwaway Organization/Case/Decision, never a real org's data) were deleted; the relayer's whitelist entry for the rehearsal `DecisionRelay` was reverted and redeployed. The rehearsal contracts themselves are simply abandoned on Sepolia — no cleanup possible for a deployed contract, but they hold no funds and nothing in this codebase points to them anymore.
+
+This result does not itself authorize the real cutover below — it's evidence the mechanism works, not the separate go/no-go decision the real cutover still requires (see "What this plan deliberately does not cover").
+
+<details>
+<summary>Original rehearsal scope (for reference — superseded by the real run above)</summary>
+
+A "no customer funds" rehearsal means: deploy a *second*, throwaway `Escrow` V2 instance to Sepolia, register it as its own `SettlementIntegration`, bind a synthetic case created solely for this purpose (never a real org's case), deposit a trivial test amount, run it through `confirm-deposit` (Item C), and dispatch a real settlement — proving `settle()`'s new `caseId` enforcement actually works end to end — all without touching the live V1 contract, its one settled deposit, or `DecisionRelay`'s real `settlementTarget`.
+
+</details>
 
 ## Rollback
 
