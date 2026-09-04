@@ -2,6 +2,7 @@ import { type Address, type Hex, encodeFunctionData } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
+import { verifyEscrowCodeIdentity, EscrowCodeIdentityError } from "@/lib/escrow-code-identity";
 
 // Priority 2 (settlement-readiness gaps): explicit, verified
 // contract-version detection — never an assumption from "which address
@@ -73,10 +74,31 @@ function versionForReturnLength(byteLength: number): "V1" | "V2" {
   );
 }
 
-/** Called once, at registration time (POST /api/settlement-integrations) — establishes the real, verified version a new integration is recorded against. Throws UnknownEscrowVersionError (never silently defaults) for anything that doesn't match a known shape. */
+/**
+ * Called once, at registration time (POST /api/settlement-integrations)
+ * — establishes the real, verified version a new integration is
+ * recorded against. Throws UnknownEscrowVersionError (never silently
+ * defaults) for anything that doesn't match a known shape.
+ *
+ * Security-audit fix (finding #4): shape alone (this function's
+ * original scope) proves nothing about actual contract behavior — a
+ * proxy or hand-crafted contract can trivially return the right-shaped
+ * deposits() tuple while doing anything it wants in deposit()/settle().
+ * For V2, this now ALSO verifies real code identity against Anchor's
+ * own compiled Escrow.sol (see escrow-code-identity.ts) — a contract
+ * that passes the shape check but isn't byte-identical (modulo
+ * immutables/metadata) real Escrow.sol code is rejected outright, not
+ * registered with an assumed-safe ABI. V1 has no such reference (it's
+ * legacy/frozen — no new V1 integrations are expected) and is
+ * unaffected.
+ */
 export async function detectEscrowVersion(escrowContractAddress: Address): Promise<"V1" | "V2"> {
   const byteLength = await probeDepositsReturnLength(escrowContractAddress);
-  return versionForReturnLength(byteLength);
+  const version = versionForReturnLength(byteLength);
+  if (version === "V2") {
+    await verifyEscrowCodeIdentity(escrowContractAddress);
+  }
+  return version;
 }
 
 /**
@@ -89,6 +111,14 @@ export async function detectEscrowVersion(escrowContractAddress: Address): Promi
  * ESCROW_VERSION_MISMATCH finding, the same fail-closed discipline
  * Phase 1's target-binding invariant established for
  * settlementTarget/integration mismatches.
+ *
+ * Security-audit fix (finding #4): the shape check alone can't catch a
+ * proxy whose implementation was upgraded AFTER registration — the
+ * proxy's own deposits() shape doesn't change just because what it
+ * delegates to did. For V2, this now re-verifies real code identity on
+ * every call too (see escrow-code-identity.ts), which a proxy fails
+ * unconditionally regardless of its current implementation, since a
+ * proxy's own bytecode is never byte-identical to real Escrow logic.
  */
 export async function verifyEscrowVersionUnchanged(params: { integrationId: string; escrowContractAddress: Address; expectedVersion: "V1" | "V2" }): Promise<void> {
   const byteLength = await probeDepositsReturnLength(params.escrowContractAddress);
@@ -104,6 +134,16 @@ export async function verifyEscrowVersionUnchanged(params: { integrationId: stri
     throw new EscrowVersionMismatchError(
       `escrow ${params.escrowContractAddress} now behaves like ${liveVersion}, but SettlementIntegration ${params.integrationId} was registered as ${params.expectedVersion} — refusing to decode with a possibly-wrong ABI. This usually means the contract at this address was redeployed after registration.`
     );
+  }
+  if (liveVersion === "V2") {
+    try {
+      await verifyEscrowCodeIdentity(params.escrowContractAddress);
+    } catch (err) {
+      if (err instanceof EscrowCodeIdentityError) {
+        await recordVersionMismatch(params.integrationId, params.escrowContractAddress, "V2 (shape matches, but code identity does not — possible proxy or malicious replacement)", params.expectedVersion);
+      }
+      throw err;
+    }
   }
 }
 

@@ -4,6 +4,7 @@ import { requireOwner } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 import { normalizeEvmAddress, SettlementIntegrationError } from "@/lib/case-settlement";
 import { detectEscrowVersion, UnknownEscrowVersionError } from "@/lib/escrow-version";
+import { EscrowCodeIdentityError } from "@/lib/escrow-code-identity";
 
 const SUPPORTED_CHAINS = ["sepolia"] as const;
 
@@ -85,7 +86,7 @@ export async function POST(req: NextRequest) {
   try {
     escrowVersion = await detectEscrowVersion(escrowContractAddress);
   } catch (err) {
-    if (err instanceof UnknownEscrowVersionError) {
+    if (err instanceof UnknownEscrowVersionError || err instanceof EscrowCodeIdentityError) {
       return NextResponse.json({ error: err.message }, { status: 422 });
     }
     return NextResponse.json({ error: `could not detect escrow contract version: ${(err as Error).message}` }, { status: 502 });

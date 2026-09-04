@@ -743,6 +743,30 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
   });
 
   describe("Security-audit fix (finding #2): authorizeDepositOnChain", () => {
+    const FIXTURE_ORG_NAMES = ["authorize-deposit-test-org", "authorize-deposit-not-ready-org"];
+
+    // Real test-pollution fix: these tests create real Organization/
+    // Case/CaseSettlement rows in the shared local Postgres, which
+    // reconciliation.test.ts's runReconciliationSweep (a different test
+    // file, same DB) queries GLOBALLY across every organization — an
+    // uncleaned row here was silently inflating that suite's alert-count
+    // assertions (1 expected call became 16). Cleanup here, not there:
+    // this file is the one creating the rows.
+    afterEach(async () => {
+      const { prisma } = await import("@/lib/prisma");
+      const orgs = await prisma.organization.findMany({ where: { name: { in: FIXTURE_ORG_NAMES } } });
+      for (const org of orgs) {
+        const cases = await prisma.case.findMany({ where: { organizationId: org.id } });
+        for (const kase of cases) {
+          await prisma.caseSettlement.deleteMany({ where: { caseId: kase.id } });
+        }
+        await prisma.case.deleteMany({ where: { organizationId: org.id } });
+        await prisma.settlementIntegration.deleteMany({ where: { organizationId: org.id } });
+        await prisma.auditLog.deleteMany({ where: { organizationId: org.id } });
+        await prisma.organization.delete({ where: { id: org.id } });
+      }
+    });
+
     async function makeCaseSettlement(escrowV2: Address, escrowVersion: "V1" | "V2" = "V2", escrowAddress?: Address) {
       const { prisma } = await import("@/lib/prisma");
       const { deriveEscrowId } = await import("@/lib/case-settlement");
@@ -884,6 +908,50 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
       const { authorizeDepositOnChain } = await import("@/lib/case-settlement");
       await expect(authorizeDepositOnChain(settlement.id)).resolves.toMatchObject({ outcome: "authorized" });
       await expect(authorizeDepositOnChain(settlement.id)).resolves.toEqual({ outcome: "already_authorized" });
+    });
+  });
+
+  describe("Security-audit fix (finding #4): real code-identity verification", () => {
+    it("a genuine Anvil-deployed V2 escrow (same compiled artifact as the reference) passes", async () => {
+      const { escrowV2 } = await deploySystem();
+      const { verifyEscrowCodeIdentity } = await import("@/lib/escrow-code-identity");
+      await expect(verifyEscrowCodeIdentity(escrowV2)).resolves.toBeUndefined();
+    });
+
+    it("a different real contract at the checked address (DecisionRelay, not Escrow) is rejected, not shape-matched away", async () => {
+      const { decisionRelay } = await deploySystem();
+      const { verifyEscrowCodeIdentity, EscrowCodeIdentityError } = await import("@/lib/escrow-code-identity");
+      await expect(verifyEscrowCodeIdentity(decisionRelay)).rejects.toBeInstanceOf(EscrowCodeIdentityError);
+    });
+
+    it("an address with no code at all is rejected", async () => {
+      const { verifyEscrowCodeIdentity, EscrowCodeIdentityError } = await import("@/lib/escrow-code-identity");
+      const emptyAddress = privateKeyToAccount(DEV_PRIVATE_KEYS[9]).address; // a real, validly-checksummed address; never deployed to
+      await expect(verifyEscrowCodeIdentity(emptyAddress)).rejects.toBeInstanceOf(EscrowCodeIdentityError);
+    });
+
+    it("two real V2 escrows deployed with DIFFERENT immutable constructor args (decisionRelay, depositAuthorizer) both still pass — proves the immutable-byte masking works, not just a lucky match", async () => {
+      const { decisionRelay: relayA } = await deploySystem();
+      const { decisionRelay: relayB } = await deploySystem(); // a second, independent deployment — different addresses throughout
+      const deployerAddress = privateKeyToAccount(DEPLOYER).address;
+      const THIRTY_DAYS = 30n * 24n * 60n * 60n;
+      const escrowA = await deploy(DEPLOYER, ARTIFACTS.escrowV2, [relayA, deployerAddress, THIRTY_DAYS]);
+      const escrowB = await deploy(DEPLOYER, ARTIFACTS.escrowV2, [relayB, deployerAddress, THIRTY_DAYS]);
+      expect(escrowA).not.toBe(escrowB);
+
+      const { verifyEscrowCodeIdentity } = await import("@/lib/escrow-code-identity");
+      await expect(verifyEscrowCodeIdentity(escrowA)).resolves.toBeUndefined();
+      await expect(verifyEscrowCodeIdentity(escrowB)).resolves.toBeUndefined();
+    });
+
+    it("detectEscrowVersion rejects a V2-shaped-but-not-real-Escrow contract at registration time, not just at re-verification", async () => {
+      // The FakeMailbox has no deposits() function at all, so this
+      // exercises the shape check's own existing rejection — a
+      // regression guard confirming the new code-identity check didn't
+      // accidentally loosen or bypass that earlier check.
+      const { mailbox } = await deploySystem();
+      const { detectEscrowVersion, UnknownEscrowVersionError } = await import("@/lib/escrow-version");
+      await expect(detectEscrowVersion(mailbox)).rejects.toBeInstanceOf(UnknownEscrowVersionError);
     });
   });
 });
