@@ -394,6 +394,27 @@ async function checkAuditAnchorStaleness(): Promise<void> {
       await resolveFinding("AUDIT_ANCHOR_STALE", org.id, `lastAnchoredAt is now ${org.lastAnchoredAt!.toISOString()}`);
     }
   }
+
+  // Real gap this closes: an org can be deleted (e.g. a throwaway
+  // rehearsal/test org — see docs/v1-v2-escrow-cutover.md) while it has
+  // an open AUDIT_ANCHOR_STALE finding. The loop above only visits
+  // orgs that still exist, so a finding for a deleted org would
+  // otherwise never resolve — findings have no delete API by design
+  // (see api/reconciliation-findings), only real state-driven
+  // resolution, so this is the only path back to a clean state.
+  const openOrgFindings = await prisma.reconciliationFinding.findMany({
+    where: { type: "AUDIT_ANCHOR_STALE", resolvedAt: null },
+    select: { targetId: true },
+  });
+  const openTargetIds = [...new Set(openOrgFindings.map((f) => f.targetId))];
+  if (openTargetIds.length > 0) {
+    const existingOrgIds = new Set((await prisma.organization.findMany({ where: { id: { in: openTargetIds } }, select: { id: true } })).map((o) => o.id));
+    for (const targetId of openTargetIds) {
+      if (!existingOrgIds.has(targetId)) {
+        await resolveFinding("AUDIT_ANCHOR_STALE", targetId, "target organization no longer exists");
+      }
+    }
+  }
 }
 
 // Real auto-escalation: a critical finding that's real, alerted, and
