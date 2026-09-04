@@ -93,3 +93,31 @@ Recovery required a **new** dispatch referencing the same `escrowId` with a fres
 - Escrow deposit status (1=DEPOSITED,2=SETTLED): 1
 - Mailbox.delivered(messageId): true
 - DecisionRelay.processedDecisions(decisionHash): true
+
+## Phase 0 — pre-cutover evidence (re-audit request), completed 2026-09-03
+
+**1. V1 unsettled deposits, reconfirmed at this moment**: `deposits(0x4d0659d5...)` → status `2` (SETTLED). Same result as the prior check — **zero unsettled V1 deposits**, reconfirmed, not stale.
+
+**2. Deployment parity, reconfirmed**: `anc-hor-worker` v52 contains the fix (direct file grep, not just version number). Vercel responding 200, deployed after the same commit. Both on `c33108f` or later.
+
+**3. Machine-readable inventory** (`SettlementIntegration` × `CaseSettlement` × dispatched `Decision`s with a `relayTxHash`):
+
+```json
+{
+  "settlementIntegrations": [
+    { "id": "cmtlfw1f6000111gz42rvc3vo", "chain": "sepolia", "escrowContractAddress": "0x5314725C32b58d0e1CACa510d491c8492D0BE997", "active": true, "requireKycApproval": true }
+  ],
+  "caseSettlements": [
+    { "id": "cmtlha0lw0001b6dy8oqghss5", "caseId": "cmtlcqv640002ls2w47k9sxtz", "escrowId": "0x4d0659d574bf2fc71ab4cdab58307df787007a45d084282e267b8475cf44ed17", "status": "SETTLED", "integrationAddress": "0x5314725C32b58d0e1CACa510d491c8492D0BE997" }
+  ],
+  "dispatchedDecisionsAllTime": [
+    { "id": "cmtgytpe30005v585z2o6icxc", "outcome": "RELEASE_FULL", "relayTxHash": "0xc9d3bc4023f8061baa6f62adbd6f70d870c66d730f647bc846c55ee2b8bac7b5", "note": "EVM, predates Escrow.sol -- no CaseSettlement, hardcoded zero escrowId era" },
+    { "id": "cmti8vq1a0009s3th454c6r6z", "outcome": "REFUND_FULL", "relayTxHash": "(Solana tx signature, base58)", "note": "Solana settlement path, unrelated to EVM Escrow" },
+    { "id": "cmti8vry8000bs3th5io66xku", "outcome": "REFUND_FULL", "relayTxHash": "0xef3234ea442c91bb93ffb668658a1d060aad9ae160c2fe1693bdb25f46cd440a", "note": "EVM, predates Escrow.sol -- no CaseSettlement, hardcoded zero escrowId era" },
+    { "id": "cmtlhlb1a00016e1rbm77s8gq", "outcome": "REFUND_FULL", "relayTxHash": "0xa5f78db9d2e0e7ed8f63606d3c91c05efb581cb8fa1c200c26c10de341ae702d", "note": "THIS incident's original, unrecoverable message" },
+    { "id": "cmtlph3f10001b8rl9g1hkvza", "outcome": "REFUND_FULL", "relayTxHash": "0x9e3c288b2cf95de7a0dd6a27744697d5c4b4994696c5e12e6216561943c258a4", "note": "THIS incident's real recovery dispatch -- settled" }
+  ]
+}
+```
+
+**Conclusion**: exactly one `SettlementIntegration`, exactly one `CaseSettlement`, both pointing at V1, both fully accounted for (settled). No stranding risk exists today. This must be re-run immediately before any actual V2 cutover, since new deposits could exist by then.
