@@ -13,6 +13,7 @@
     "test:integration-evm": "vitest run --config vitest.evm.config.ts"
   },
   "dependencies": {
+    "@anchor/genlayer-sdk": "*",
     "@anchor/hyperlane-relay": "*",
     "@prisma/client": "^5.20.0",
     "@solana/web3.js": "^1.98.4",
