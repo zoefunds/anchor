@@ -1,9 +1,11 @@
 import { createHash } from "crypto";
-import { type Address, type Hex, createPublicClient, http, isAddress, getAddress } from "viem";
+import { type Address, type Hex, createPublicClient, createWalletClient, http, isAddress, getAddress } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
 import { verifyEscrowVersionUnchanged, depositsAbiForVersion } from "@/lib/escrow-version";
+import { caseIdToBytes32 } from "@/lib/emergency-refund";
 
 // Item C (re-audit): the real CaseSettlement/SettlementIntegration
 // creation workflow. Everything this session built before now
@@ -63,6 +65,96 @@ function getPublicClient(chain: string) {
  */
 export function deriveEscrowId(caseId: string): Hex {
   return `0x${createHash("sha256").update(caseId).digest("hex")}` as Hex;
+}
+
+const AUTHORIZE_DEPOSIT_ABI = [
+  {
+    type: "function",
+    name: "authorizeDeposit",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "caseId", type: "bytes32" },
+      { name: "escrowId", type: "bytes32" },
+      { name: "claimant", type: "address" },
+      { name: "respondent", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/**
+ * Security-audit fix (finding #2, 2026-09-04): the real on-chain
+ * pre-authorization Escrow.deposit() now requires before it will
+ * accept anything for a given escrowId — see Escrow.sol's own header
+ * for why (deterministic, publicly-computable escrowIds were otherwise
+ * front-runnable/griefable). Called once both parties have set their
+ * settlement address (see the settlement-address route), using the
+ * same HYPERLANE_RELAY_PRIVATE_KEY-controlled wallet already trusted
+ * as DecisionRelay's trustedSender and as this escrow's own
+ * depositAuthorizer (set at deploy time — see DeployEscrow.s.sol).
+ *
+ * V1-only integrations have no authorizeDeposit() function at all
+ * (it's a V2 addition) — this is a genuine no-op for those, not a
+ * silently-skipped step, since V1's deposit() never gained the
+ * authorization requirement in the first place.
+ */
+export async function authorizeDepositOnChain(caseSettlementId: string): Promise<
+  { outcome: "authorized"; txHash: string } | { outcome: "not_applicable_v1" } | { outcome: "already_authorized" } | { outcome: "not_ready"; reason: string }
+> {
+  const cs = await prisma.caseSettlement.findUniqueOrThrow({
+    where: { id: caseSettlementId },
+    include: { integration: true, case: true },
+  });
+
+  if (cs.integration.escrowVersion === "V1") {
+    return { outcome: "not_applicable_v1" };
+  }
+  if (cs.depositAuthorizedAt) {
+    return { outcome: "already_authorized" };
+  }
+  if (!cs.claimantAddress || !cs.respondentAddress) {
+    return { outcome: "not_ready", reason: "both parties must set their settlement address before authorization" };
+  }
+  if (cs.integration.chain !== "sepolia") {
+    throw new SettlementIntegrationError(`unsupported chain for on-chain deposit authorization: ${cs.integration.chain}`);
+  }
+
+  const privateKey = process.env.HYPERLANE_RELAY_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new SettlementIntegrationError("HYPERLANE_RELAY_PRIVATE_KEY is not set — see apps/web/.env.example");
+  }
+  const account = privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
+  const walletClient = createWalletClient({ account, chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
+
+  const escrowIdBytes32 = deriveEscrowId(cs.caseId);
+  const caseIdBytes32 = caseIdToBytes32(cs.caseId);
+
+  const txHash = await walletClient.writeContract({
+    address: cs.integration.escrowContractAddress as Address,
+    abi: AUTHORIZE_DEPOSIT_ABI,
+    functionName: "authorizeDeposit",
+    args: [caseIdBytes32, escrowIdBytes32, cs.claimantAddress as Address, cs.respondentAddress as Address, BigInt(cs.expectedAmountAtto)],
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.caseSettlement.update({
+      where: { id: cs.id },
+      data: { depositAuthorizedAt: new Date(), depositAuthorizeTxHash: txHash },
+    });
+    await logAction(
+      {
+        organizationId: cs.case.organizationId,
+        action: "case_settlement.deposit_authorized",
+        targetType: "CaseSettlement",
+        targetId: cs.id,
+        metadata: { caseId: cs.caseId, escrowId: escrowIdBytes32, txHash, expectedAmountAtto: cs.expectedAmountAtto },
+      },
+      tx
+    );
+  });
+
+  return { outcome: "authorized", txHash };
 }
 
 /**

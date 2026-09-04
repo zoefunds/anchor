@@ -24,6 +24,12 @@ import {
 // actual bytecode.
 
 process.env.HYPERLANE_RELAY_RPC_URL = ANVIL_RPC_URL;
+// authorizeDepositOnChain (security-audit finding #2) signs with this
+// key — must match deploySystem()'s depositAuthorizerAddress, which is
+// DEPLOYER's own address (see below), same as production's real
+// HYPERLANE_RELAY_PRIVATE_KEY-controlled wallet doubling as the
+// escrow's depositAuthorizer.
+process.env.HYPERLANE_RELAY_PRIVATE_KEY = DEV_PRIVATE_KEYS[0];
 
 const DEPLOYER = DEV_PRIVATE_KEYS[0];
 const OWNER = DEV_PRIVATE_KEYS[1];
@@ -733,6 +739,151 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
       await expect(
         verifyEscrowVersionUnchanged({ integrationId: "irrelevant-on-match-path", escrowContractAddress: escrowV1, expectedVersion: "V1" })
       ).resolves.toBeUndefined();
+    });
+  });
+
+  describe("Security-audit fix (finding #2): authorizeDepositOnChain", () => {
+    async function makeCaseSettlement(escrowV2: Address, escrowVersion: "V1" | "V2" = "V2", escrowAddress?: Address) {
+      const { prisma } = await import("@/lib/prisma");
+      const { deriveEscrowId } = await import("@/lib/case-settlement");
+      const org = await prisma.organization.create({ data: { name: "authorize-deposit-test-org" } });
+      const integration = await prisma.settlementIntegration.create({
+        data: {
+          organizationId: org.id,
+          chain: "sepolia",
+          escrowContractAddress: escrowAddress ?? escrowV2,
+          assetSymbol: "ETH",
+          assetDecimals: 18,
+          escrowVersion,
+          createdByMemberId: "m",
+        },
+      });
+      const kase = await prisma.case.create({
+        data: {
+          organizationId: org.id,
+          claim: "authorize-deposit test",
+          amount: "1",
+          claimantRef: "c",
+          respondentRef: "r",
+          policyId: "p",
+          policyVersion: "v1",
+        },
+      });
+      const settlement = await prisma.caseSettlement.create({
+        data: {
+          caseId: kase.id,
+          integrationId: integration.id,
+          escrowId: deriveEscrowId(kase.id),
+          claimantAddress: CLAIMANT,
+          claimantAddressSetAt: new Date(),
+          respondentAddress: RESPONDENT,
+          respondentAddressSetAt: new Date(),
+          expectedAmountAtto: parseEther("1").toString(),
+        },
+      });
+      return { org, kase, integration, settlement };
+    }
+
+    it("really authorizes on-chain, and the escrow's own authorization record matches exactly", async () => {
+      const { escrowV2 } = await deploySystem();
+      const { settlement, kase } = await makeCaseSettlement(escrowV2);
+      const { authorizeDepositOnChain, deriveEscrowId } = await import("@/lib/case-settlement");
+
+      const result = await authorizeDepositOnChain(settlement.id);
+      expect(result.outcome).toBe("authorized");
+
+      const publicClient = getPublicClient();
+      const escrowId = deriveEscrowId(kase.id);
+      const auth = await publicClient.readContract({
+        address: escrowV2,
+        abi: ARTIFACTS.escrowV2.abi as never,
+        functionName: "depositAuthorizations",
+        args: [escrowId],
+      });
+      const [, storedClaimant, storedRespondent, storedAmount, exists] = auth as [string, string, string, bigint, boolean];
+      expect(exists).toBe(true);
+      expect(storedClaimant).toBe(CLAIMANT);
+      expect(storedRespondent).toBe(RESPONDENT);
+      expect(storedAmount).toBe(parseEther("1"));
+
+      const { prisma } = await import("@/lib/prisma");
+      const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: settlement.id } });
+      expect(updated.depositAuthorizedAt).not.toBeNull();
+      expect(updated.depositAuthorizeTxHash).not.toBeNull();
+    });
+
+    it("a real deposit succeeds after authorization, and would have reverted before it (finding #2's actual fix, proven end to end)", async () => {
+      const { escrowV2 } = await deploySystem();
+      const { settlement, kase } = await makeCaseSettlement(escrowV2);
+      const { authorizeDepositOnChain, deriveEscrowId } = await import("@/lib/case-settlement");
+      const escrowId = deriveEscrowId(kase.id);
+      const caseId = caseIdBytes32(kase.id);
+
+      // Before authorization: even the real claimant, with the exact
+      // right addresses, cannot deposit — this is finding #2's fix.
+      await expect(
+        getWalletClient(CLAIMANT_KEY).writeContract({
+          address: escrowV2,
+          abi: ARTIFACTS.escrowV2.abi as never,
+          functionName: "deposit",
+          args: [caseId, escrowId, CLAIMANT, RESPONDENT],
+          value: parseEther("1"),
+        })
+      ).rejects.toThrow();
+
+      await authorizeDepositOnChain(settlement.id);
+
+      const hash = await getWalletClient(CLAIMANT_KEY).writeContract({
+        address: escrowV2,
+        abi: ARTIFACTS.escrowV2.abi as never,
+        functionName: "deposit",
+        args: [caseId, escrowId, CLAIMANT, RESPONDENT],
+        value: parseEther("1"),
+      });
+      const publicClient = getPublicClient();
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      expect(receipt.status).toBe("success");
+    });
+
+    it("is a real no-op for a V1 integration, which has no authorizeDeposit() function", async () => {
+      const { escrowV1 } = await deploySystem();
+      const { settlement } = await makeCaseSettlement(escrowV1, "V1", escrowV1);
+      const { authorizeDepositOnChain } = await import("@/lib/case-settlement");
+      await expect(authorizeDepositOnChain(settlement.id)).resolves.toEqual({ outcome: "not_applicable_v1" });
+    });
+
+    it("reports not_ready when a party hasn't set their address yet", async () => {
+      const { escrowV2 } = await deploySystem();
+      const { prisma } = await import("@/lib/prisma");
+      const { deriveEscrowId, authorizeDepositOnChain } = await import("@/lib/case-settlement");
+      const org = await prisma.organization.create({ data: { name: "authorize-deposit-not-ready-org" } });
+      const integration = await prisma.settlementIntegration.create({
+        data: { organizationId: org.id, chain: "sepolia", escrowContractAddress: escrowV2, assetSymbol: "ETH", assetDecimals: 18, escrowVersion: "V2", createdByMemberId: "m" },
+      });
+      const kase = await prisma.case.create({
+        data: { organizationId: org.id, claim: "c", amount: "1", claimantRef: "c", respondentRef: "r", policyId: "p", policyVersion: "v1" },
+      });
+      const settlement = await prisma.caseSettlement.create({
+        data: {
+          caseId: kase.id,
+          integrationId: integration.id,
+          escrowId: deriveEscrowId(kase.id),
+          claimantAddress: CLAIMANT, // respondentAddress deliberately left unset
+          claimantAddressSetAt: new Date(),
+          expectedAmountAtto: parseEther("1").toString(),
+        },
+      });
+
+      const result = await authorizeDepositOnChain(settlement.id);
+      expect(result).toEqual({ outcome: "not_ready", reason: "both parties must set their settlement address before authorization" });
+    });
+
+    it("is idempotent — calling it twice does not attempt a second (reverting) on-chain authorization", async () => {
+      const { escrowV2 } = await deploySystem();
+      const { settlement } = await makeCaseSettlement(escrowV2);
+      const { authorizeDepositOnChain } = await import("@/lib/case-settlement");
+      await expect(authorizeDepositOnChain(settlement.id)).resolves.toMatchObject({ outcome: "authorized" });
+      await expect(authorizeDepositOnChain(settlement.id)).resolves.toEqual({ outcome: "already_authorized" });
     });
   });
 });

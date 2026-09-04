@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
-import { normalizeEvmAddress } from "@/lib/case-settlement";
+import { normalizeEvmAddress, authorizeDepositOnChain } from "@/lib/case-settlement";
 import { logAction } from "@/lib/audit";
 
 // POST /api/public/cases/:id/settlement-address — a party setting
@@ -41,6 +41,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (settlement.status !== "PENDING_DEPOSIT") {
     return NextResponse.json({ error: `settlement is already ${settlement.status} — the address can no longer be changed` }, { status: 409 });
   }
+  // Security-audit fix (finding #2): once both addresses are set, the
+  // real on-chain authorizeDeposit() call below locks them in
+  // permanently (Escrow.sol's authorization is one-shot per escrowId —
+  // it cannot be re-authorized with different values). Allowing a
+  // further address change past that point would silently desync the
+  // app's record from what the chain will actually ever pay out to.
+  if (settlement.claimantAddress && settlement.respondentAddress) {
+    return NextResponse.json({ error: "both settlement addresses are already set and locked in — this can no longer be changed" }, { status: 409 });
+  }
 
   const field = resolved.role === "claimant" ? "claimantAddress" : "respondentAddress";
   const setAtField = resolved.role === "claimant" ? "claimantAddressSetAt" : "respondentAddressSetAt";
@@ -62,6 +71,24 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     );
     return result;
   });
+
+  // Fire the real on-chain authorization once both addresses are now
+  // set — best-effort here (logged, not thrown back to the party): a
+  // failure leaves depositAuthorizedAt null, which checkAndConfirmDeposit
+  // and the reconciliation sweep can both surface/retry rather than
+  // this route silently swallowing it with no trace.
+  if (updated.claimantAddress && updated.respondentAddress) {
+    try {
+      const authResult = await authorizeDepositOnChain(settlement.id);
+      if (authResult.outcome === "not_ready") {
+        // eslint-disable-next-line no-console
+        console.error(`authorizeDepositOnChain: CaseSettlement ${settlement.id} not ready despite both addresses appearing set: ${authResult.reason}`);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`authorizeDepositOnChain failed for CaseSettlement ${settlement.id} — deposit will be blocked until this is retried`, err);
+    }
+  }
 
   return NextResponse.json({ role: resolved.role, address: normalized, settlement: updated });
 }

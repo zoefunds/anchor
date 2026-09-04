@@ -385,6 +385,13 @@ model CaseSettlement {
   respondentAddress  String?
   respondentAddressSetAt DateTime?
   expectedAmountAtto String // atto-unit string, same discipline as lib/genlayer.ts's toAttoAmount
+  // Security-audit fix (finding #2, 2026-09-04): the real on-chain
+  // authorizeDeposit() call that must happen before Escrow.deposit()
+  // will accept anything for this escrowId at all — see
+  // lib/case-settlement.ts's authorizeDepositOnChain. V2 escrows only;
+  // stays null for a V1 integration, which has no such function.
+  depositAuthorizedAt     DateTime?
+  depositAuthorizeTxHash  String?
   status             CaseSettlementStatus  @default(PENDING_DEPOSIT)
   depositTxHash      String?
   depositConfirmedAt DateTime?
