@@ -1,5 +1,19 @@
 # V1 → V2 Escrow cutover plan (Item D)
 
+## Status: DONE (2026-09-04) — real cutover executed and verified
+
+The real production cutover described below was actually carried out, in order, exactly as planned:
+
+1. **Freeze**: the live V1 `SettlementIntegration` (`cmtlfw1f6000111gz42rvc3vo`, org: Admin, escrow `0x5314725C32b58d0e1CACa510d491c8492D0BE997`) was deactivated via the real `/settings/settlement-integrations` UI.
+2. **Drain / Confirm**: `scripts/cutover-readiness-check.sh` confirmed 0 unsettled V1 deposits (of 2 ever made, both `SETTLED`) immediately before proceeding.
+3. **Deploy V2**: a real production `Escrow` V2 was deployed to Sepolia — `0x76f0eaABbe379A0fBd56516D76C0201272ab5Ad5`, trusting the real `DecisionRelay` (`0x94f3FF552CC879a36B19b829af3325Ea72cbC71C`) as its sole `settle()`/`emergencyRefund()` caller. Registered as a new `SettlementIntegration` (`cmtn0uimm0002ycn6dpiiaq2r`) via the real app UI — auto-detected as V2 by the real on-chain byte-length check (`lib/escrow-version.ts`). **No separate ABI-switch deploy was needed** — Priority 2's dynamic per-integration version detection (built earlier this session) already handles V1 and V2 simultaneously, which simplifies this step relative to the original plan below.
+4. **Repoint governance**: the real 2-of-2 Safe (`0xc200534F7DEbF2816C085C5A156aBd686fA19f4C`) executed `setSettlementTarget(11155111, 0x76f0eaABbe379A0fBd56516D76C0201272ab5Ad5)` — tx `0x8fb03a9716730e48edd798326fffc2a1f83ef155252e780bc51be9c256f1e965`, real `SettlementTargetChanged` event confirmed on-chain (old: V1, new: V2).
+5. **Re-verify**: a dedicated throwaway synthetic case was bound to the new production V2 integration, deposited into for real (tx `0x1cc132180c6219eb5d7950638f11547eefecccfa846df319d932b745105fbd49`), confirmed via the real Item C flow, and dispatched through the real `DecisionRelay` with a real 2-of-2 attestor signature (backend + offline co-signer) — real `settle()` execution, tx `0x9f62adcba27187e24cdd44dbdccf61fbf7dae4e0f913a21b8ec76aec07583d79`. `deposits()` status confirmed `SETTLED (2)` with the correct `caseId` intact. `SETTLEMENT_PAUSED` was briefly, explicitly lifted for that one dispatch and immediately re-armed (confirmed `true` afterward). The throwaway org/case/decision were deleted immediately after.
+
+`DecisionRelay.settlementTarget(11155111)` now reads `0x76f0eaABbe379A0fBd56516D76C0201272ab5Ad5` in production. V1 remains deployed and functional (untouched, per the rollback section below) but no longer receives new dispatches.
+
+The rest of this document (below) is the original plan, kept for reference — it describes exactly what was executed above.
+
 ## Why this exists
 
 `Escrow` V2 source (`chains/evm/contracts/Escrow.sol`, already committed — adds `caseId` to the `Deposit` struct and enforces it in `settle()`) has existed since earlier this session but has never been deployed. The re-audit's own instruction was explicit: **do not deploy it or repoint `DecisionRelay.settlementTarget` without a real migration plan first.** This is that plan.
