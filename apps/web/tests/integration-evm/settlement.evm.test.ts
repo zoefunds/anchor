@@ -30,8 +30,41 @@ const OWNER = DEV_PRIVATE_KEYS[1];
 const ATTESTOR_1_KEY = DEV_PRIVATE_KEYS[2];
 const ATTESTOR_2_KEY = DEV_PRIVATE_KEYS[3];
 const STRANGER_KEY = DEV_PRIVATE_KEYS[4];
-const CLAIMANT = privateKeyToAccount(DEV_PRIVATE_KEYS[5]).address;
+const CLAIMANT_KEY = DEV_PRIVATE_KEYS[5];
+const CLAIMANT = privateKeyToAccount(CLAIMANT_KEY).address;
 const RESPONDENT = privateKeyToAccount(DEV_PRIVATE_KEYS[6]).address;
+
+// Real audit fix (finding #2): every V2 escrow deposit in this file
+// now needs a prior authorizeDeposit() call (from DEPLOYER, the fixture's
+// depositAuthorizer — see deploySystem()) before deposit() will accept
+// anything for that escrowId, and the deposit call itself must come
+// from the CLAIMANT wallet (finding #3's msg.sender == claimant check),
+// never DEPLOYER directly as this file used to do throughout.
+async function authorizeAndDeposit(params: {
+  escrowV2: Address;
+  caseId: Hex;
+  escrowId: Hex;
+  claimant?: Address;
+  respondent?: Address;
+  value: bigint;
+}) {
+  const claimant = params.claimant ?? CLAIMANT;
+  const respondent = params.respondent ?? RESPONDENT;
+  await getWalletClient(DEPLOYER).writeContract({
+    address: params.escrowV2,
+    abi: ARTIFACTS.escrowV2.abi as never,
+    functionName: "authorizeDeposit",
+    args: [params.caseId, params.escrowId, claimant, respondent, params.value],
+  });
+  const hash = await getWalletClient(CLAIMANT_KEY).writeContract({
+    address: params.escrowV2,
+    abi: ARTIFACTS.escrowV2.abi as never,
+    functionName: "deposit",
+    args: [params.caseId, params.escrowId, claimant, respondent],
+    value: params.value,
+  });
+  return hash;
+}
 
 const ORIGIN_DOMAIN = 11155111; // matches HYPERLANE_DOMAIN.sepolia used throughout the app
 
@@ -59,7 +92,11 @@ async function deploySystem() {
   ]);
   const escrowV1 = await deploy(DEPLOYER, ARTIFACTS.escrowV1, [decisionRelay]);
   const THIRTY_DAYS = 30n * 24n * 60n * 60n;
-  const escrowV2 = await deploy(DEPLOYER, ARTIFACTS.escrowV2, [decisionRelay, THIRTY_DAYS]);
+  // depositAuthorizer: real audit fix (finding #2) — DEPLOYER doubles
+  // as the trusted authorizer here, same as it already deploys and
+  // configures everything else in this test's fixture.
+  const depositAuthorizerAddress = privateKeyToAccount(DEPLOYER).address;
+  const escrowV2 = await deploy(DEPLOYER, ARTIFACTS.escrowV2, [decisionRelay, depositAuthorizerAddress, THIRTY_DAYS]);
 
   const ownerWallet = getWalletClient(OWNER);
   await ownerWallet.writeContract({ address: decisionRelay, abi: ARTIFACTS.decisionRelay.abi as never, functionName: "setTrustedSender", args: [ORIGIN_DOMAIN, pad(mailbox, { size: 32 })] });
@@ -216,14 +253,7 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
     const escrowId = keccak256(toHex("escrow-v2-decode-test"));
     const caseId = caseIdBytes32("case-2");
 
-    const walletClient = getWalletClient(DEPLOYER);
-    const hash = await walletClient.writeContract({
-      address: escrowV2,
-      abi: ARTIFACTS.escrowV2.abi as never,
-      functionName: "deposit",
-      args: [caseId, escrowId, CLAIMANT, RESPONDENT],
-      value: parseEther("2"),
-    });
+    const hash = await authorizeAndDeposit({ escrowV2, caseId, escrowId, value: parseEther("2") });
     await publicClient.waitForTransactionReceipt({ hash });
 
     const result = await publicClient.readContract({
@@ -520,13 +550,7 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
     const escrowId = keccak256(toHex("escrow-emergency-refund"));
     const caseId = caseIdBytes32("case-emergency-refund");
 
-    await getWalletClient(DEPLOYER).writeContract({
-      address: escrowV2,
-      abi: ARTIFACTS.escrowV2.abi as never,
-      functionName: "deposit",
-      args: [caseId, escrowId, CLAIMANT, RESPONDENT],
-      value: parseEther("1"),
-    });
+    await authorizeAndDeposit({ escrowV2, caseId, escrowId, value: parseEther("1") });
 
     const testClient = getTestClient();
     await testClient.increaseTime({ seconds: 30 * 24 * 60 * 60 + 1 });
@@ -560,13 +584,7 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
     const escrowId = keccak256(toHex("escrow-refund-too-early"));
     const caseId = caseIdBytes32("case-refund-too-early");
 
-    await getWalletClient(DEPLOYER).writeContract({
-      address: escrowV2,
-      abi: ARTIFACTS.escrowV2.abi as never,
-      functionName: "deposit",
-      args: [caseId, escrowId, CLAIMANT, RESPONDENT],
-      value: parseEther("1"),
-    });
+    await authorizeAndDeposit({ escrowV2, caseId, escrowId, value: parseEther("1") });
 
     const proofHash = keccak256(toHex("proof-refund-too-early"));
     const hash = emergencyRefundHash({ decisionRelay, target: escrowV2, caseId, escrowId, proofHash });
@@ -587,13 +605,7 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
     const { decisionRelay, escrowV2 } = await deploySystem();
     const escrowId = keccak256(toHex("escrow-refund-invalid-sig"));
     const caseId = caseIdBytes32("case-refund-invalid-sig");
-    await getWalletClient(DEPLOYER).writeContract({
-      address: escrowV2,
-      abi: ARTIFACTS.escrowV2.abi as never,
-      functionName: "deposit",
-      args: [caseId, escrowId, CLAIMANT, RESPONDENT],
-      value: parseEther("1"),
-    });
+    await authorizeAndDeposit({ escrowV2, caseId, escrowId, value: parseEther("1") });
     const testClient = getTestClient();
     await testClient.increaseTime({ seconds: 30 * 24 * 60 * 60 + 1 });
     await testClient.mine({ blocks: 1 });
@@ -617,13 +629,7 @@ describe("Real Anvil settlement integration (Priority 1)", () => {
     const { decisionRelay, escrowV2 } = await deploySystem();
     const escrowId = keccak256(toHex("escrow-refund-dup"));
     const caseId = caseIdBytes32("case-refund-dup");
-    await getWalletClient(DEPLOYER).writeContract({
-      address: escrowV2,
-      abi: ARTIFACTS.escrowV2.abi as never,
-      functionName: "deposit",
-      args: [caseId, escrowId, CLAIMANT, RESPONDENT],
-      value: parseEther("1"),
-    });
+    await authorizeAndDeposit({ escrowV2, caseId, escrowId, value: parseEther("1") });
     const testClient = getTestClient();
     await testClient.increaseTime({ seconds: 30 * 24 * 60 * 60 + 1 });
     await testClient.mine({ blocks: 1 });

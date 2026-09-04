@@ -7,6 +7,7 @@ import {Escrow} from "../contracts/Escrow.sol";
 contract EscrowTest is Test {
     Escrow escrow;
     address decisionRelay = address(0xDEC1);
+    address depositAuthorizer = address(0xA07E);
     address claimant = address(0xC1A1);
     address respondent = address(0xB0B1);
     bytes32 caseId = keccak256("case-1");
@@ -14,12 +15,145 @@ contract EscrowTest is Test {
     uint256 constant TIMEOUT = 30 days;
 
     function setUp() public {
-        escrow = new Escrow(decisionRelay, TIMEOUT);
+        escrow = new Escrow(decisionRelay, depositAuthorizer, TIMEOUT);
     }
 
-    function test_deposit_recordsClaimantRespondentAndAmount() public {
+    // Real audit fix (finding #2): authorizeDeposit() + deposit(),
+    // pranked as claimant (finding #3's msg.sender == claimant check),
+    // replaces every bare `escrow.deposit(...)` call this file used to
+    // make from the test contract's own address.
+    function _authorize(bytes32 forCaseId, bytes32 forEscrowId, uint256 amount) internal {
+        vm.prank(depositAuthorizer);
+        escrow.authorizeDeposit(forCaseId, forEscrowId, claimant, respondent, amount);
+    }
+
+    function _deposit(uint256 amount) internal {
+        _authorize(caseId, escrowId, amount);
+        vm.deal(claimant, amount);
+        vm.prank(claimant);
+        escrow.deposit{value: amount}(caseId, escrowId, claimant, respondent);
+    }
+
+    // --- authorizeDeposit() ---
+
+    function test_authorizeDeposit_recordsAuthorization() public {
+        vm.prank(depositAuthorizer);
+        escrow.authorizeDeposit(caseId, escrowId, claimant, respondent, 1 ether);
+
+        (bytes32 storedCaseId, address c, address r, uint256 amount, bool exists) = escrow.depositAuthorizations(escrowId);
+        assertTrue(exists);
+        assertEq(storedCaseId, caseId);
+        assertEq(c, claimant);
+        assertEq(r, respondent);
+        assertEq(amount, 1 ether);
+    }
+
+    function test_authorizeDeposit_revertsIfNotCalledByDepositAuthorizer() public {
+        vm.expectRevert(Escrow.NotDepositAuthorizer.selector);
+        escrow.authorizeDeposit(caseId, escrowId, claimant, respondent, 1 ether);
+    }
+
+    function test_authorizeDeposit_revertsOnSecondAuthorizationForSameEscrowId() public {
+        _authorize(caseId, escrowId, 1 ether);
+        vm.prank(depositAuthorizer);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.AlreadyAuthorized.selector, escrowId));
+        escrow.authorizeDeposit(caseId, escrowId, claimant, respondent, 2 ether);
+    }
+
+    function test_authorizeDeposit_revertsIfEscrowAlreadyHasARealDeposit() public {
+        // Confirms AlreadyAuthorized fires (not a separate check) for
+        // an escrowId that's already been deposited into — deposit()
+        // can never leave an escrowId in a "deposited but not
+        // authorized" state, so this is the only error path reachable.
+        _deposit(1 ether);
+        vm.prank(depositAuthorizer);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.AlreadyAuthorized.selector, escrowId));
+        escrow.authorizeDeposit(caseId, escrowId, claimant, respondent, 1 ether);
+    }
+
+    function test_authorizeDeposit_revertsOnZeroAddress() public {
+        vm.prank(depositAuthorizer);
+        vm.expectRevert(Escrow.ZeroAddress.selector);
+        escrow.authorizeDeposit(caseId, escrowId, address(0), respondent, 1 ether);
+    }
+
+    function test_authorizeDeposit_revertsOnZeroAmount() public {
+        vm.prank(depositAuthorizer);
+        vm.expectRevert(Escrow.ZeroAmount.selector);
+        escrow.authorizeDeposit(caseId, escrowId, claimant, respondent, 0);
+    }
+
+    // --- deposit(): the front-running fix (finding #2) ---
+
+    function test_deposit_revertsWithNoPriorAuthorization() public {
+        // The core of finding #2: an attacker (or anyone) with no
+        // authorizeDeposit() call for this escrowId cannot deposit
+        // anything at all, regardless of what addresses/amount they
+        // pass — this is what actually stops escrowId-slot squatting,
+        // not just requiring msg.sender == claimant (which an attacker
+        // could trivially satisfy by naming themselves claimant).
         vm.deal(address(this), 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.NotAuthorized.selector, escrowId));
         escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
+    }
+
+    function test_deposit_revertsIfAttackerSelfAuthorizesWithDifferentClaimant() public {
+        // Confirms the fix holds even for an attacker who *is* able to
+        // get themselves authorized (e.g. impersonating a case they
+        // don't own) with themselves as claimant: they still cannot
+        // then deposit using the REAL claimant/respondent addresses,
+        // because the authorization for this escrowId now permanently
+        // pins a different claimant than the real one.
+        address attacker = address(0xBAD1);
+        vm.prank(depositAuthorizer);
+        escrow.authorizeDeposit(caseId, escrowId, attacker, respondent, 1 ether);
+
+        vm.deal(claimant, 1 ether);
+        vm.prank(claimant);
+        vm.expectRevert(Escrow.AuthorizationMismatch.selector);
+        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
+    }
+
+    function test_deposit_revertsOnCaseIdMismatchAgainstAuthorization() public {
+        _authorize(caseId, escrowId, 1 ether);
+        bytes32 wrongCaseId = keccak256("case-wrong");
+        vm.deal(claimant, 1 ether);
+        vm.prank(claimant);
+        vm.expectRevert(Escrow.AuthorizationMismatch.selector);
+        escrow.deposit{value: 1 ether}(wrongCaseId, escrowId, claimant, respondent);
+    }
+
+    function test_deposit_revertsOnAmountMismatchAgainstAuthorization() public {
+        _authorize(caseId, escrowId, 1 ether);
+        vm.deal(claimant, 2 ether);
+        vm.prank(claimant);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.AmountMismatch.selector, 1 ether, 2 ether));
+        escrow.deposit{value: 2 ether}(caseId, escrowId, claimant, respondent);
+    }
+
+    // --- deposit(): claimant-only depositor (finding #3) ---
+
+    function test_deposit_revertsIfCallerIsNotClaimant() public {
+        _authorize(caseId, escrowId, 1 ether);
+        vm.deal(respondent, 1 ether);
+        vm.prank(respondent); // the respondent trying to fund it themselves
+        vm.expectRevert(abi.encodeWithSelector(Escrow.OnlyClaimantMayDeposit.selector, respondent, claimant));
+        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
+    }
+
+    function test_deposit_revertsIfCallerIsUnrelatedThirdParty() public {
+        _authorize(caseId, escrowId, 1 ether);
+        address thirdParty = address(0xF00D);
+        vm.deal(thirdParty, 1 ether);
+        vm.prank(thirdParty);
+        vm.expectRevert(abi.encodeWithSelector(Escrow.OnlyClaimantMayDeposit.selector, thirdParty, claimant));
+        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
+    }
+
+    // --- deposit(): the original, still-real behavior ---
+
+    function test_deposit_recordsClaimantRespondentAndAmount() public {
+        _deposit(1 ether);
 
         (Escrow.Status status, address c, address r, uint256 amount, bytes32 storedCaseId,) = escrow.deposits(escrowId);
         assertEq(uint8(status), uint8(Escrow.Status.DEPOSITED));
@@ -30,26 +164,11 @@ contract EscrowTest is Test {
     }
 
     function test_deposit_revertsOnSecondDepositForSameEscrowId() public {
-        vm.deal(address(this), 2 ether);
-        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
+        _deposit(1 ether);
+        vm.deal(claimant, 1 ether);
+        vm.prank(claimant);
         vm.expectRevert(abi.encodeWithSelector(Escrow.AlreadyDeposited.selector, escrowId));
         escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
-    }
-
-    function test_deposit_revertsOnZeroAddress() public {
-        vm.deal(address(this), 1 ether);
-        vm.expectRevert(Escrow.ZeroAddress.selector);
-        escrow.deposit{value: 1 ether}(caseId, escrowId, address(0), respondent);
-    }
-
-    function test_deposit_revertsOnZeroAmount() public {
-        vm.expectRevert(Escrow.ZeroAmount.selector);
-        escrow.deposit{value: 0}(caseId, escrowId, claimant, respondent);
-    }
-
-    function _deposit(uint256 amount) internal {
-        vm.deal(address(this), amount);
-        escrow.deposit{value: amount}(caseId, escrowId, claimant, respondent);
     }
 
     function test_settle_paysOutExactSplitAndMarksSettled() public {
@@ -117,9 +236,12 @@ contract EscrowTest is Test {
         // able to cross-contaminate — settling one must not be able to
         // reach into the other's funds.
         bytes32 escrowIdB = keccak256("escrow-B");
-        vm.deal(address(this), 3 ether);
-        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
-        escrow.deposit{value: 2 ether}(keccak256("case-B"), escrowIdB, claimant, respondent);
+        bytes32 caseIdB = keccak256("case-B");
+        _deposit(1 ether);
+        _authorize(caseIdB, escrowIdB, 2 ether);
+        vm.deal(claimant, 2 ether);
+        vm.prank(claimant);
+        escrow.deposit{value: 2 ether}(caseIdB, escrowIdB, claimant, respondent);
 
         vm.startPrank(decisionRelay);
         // Attempting to settle escrowId (which only holds 1 ether) for
@@ -137,19 +259,25 @@ contract EscrowTest is Test {
         vm.prank(decisionRelay);
         escrow.settle(caseId, escrowId, 1 ether, 0, keccak256("proof"));
 
-        vm.deal(address(this), 1 ether);
+        vm.deal(claimant, 1 ether);
+        vm.prank(claimant);
         vm.expectRevert(abi.encodeWithSelector(Escrow.AlreadyDeposited.selector, escrowId));
         escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
     }
 
     function test_constructor_revertsOnZeroDecisionRelay() public {
         vm.expectRevert(Escrow.ZeroAddress.selector);
-        new Escrow(address(0), TIMEOUT);
+        new Escrow(address(0), depositAuthorizer, TIMEOUT);
+    }
+
+    function test_constructor_revertsOnZeroDepositAuthorizer() public {
+        vm.expectRevert(Escrow.ZeroAddress.selector);
+        new Escrow(decisionRelay, address(0), TIMEOUT);
     }
 
     function test_constructor_revertsOnZeroTimeout() public {
         vm.expectRevert(bytes("emergencyRefundTimeoutSeconds must be nonzero"));
-        new Escrow(decisionRelay, 0);
+        new Escrow(decisionRelay, depositAuthorizer, 0);
     }
 
     // Real fix (external audit finding): the first version of this
@@ -255,8 +383,11 @@ contract EscrowTest is Test {
 
     function test_emergencyRefund_revertsOnFailedTransfer() public {
         RevertingReceiver badClaimant = new RevertingReceiver();
-        vm.deal(address(this), 1 ether);
         bytes32 badEscrowId = keccak256("escrow-bad-claimant");
+        vm.prank(depositAuthorizer);
+        escrow.authorizeDeposit(caseId, badEscrowId, address(badClaimant), respondent, 1 ether);
+        vm.deal(address(badClaimant), 1 ether);
+        vm.prank(address(badClaimant));
         escrow.deposit{value: 1 ether}(caseId, badEscrowId, address(badClaimant), respondent);
         vm.warp(block.timestamp + TIMEOUT);
 
@@ -272,9 +403,12 @@ contract EscrowTest is Test {
 
     function test_emergencyRefund_doesNotAffectOtherEscrows() public {
         bytes32 escrowIdB = keccak256("escrow-B");
-        vm.deal(address(this), 3 ether);
-        escrow.deposit{value: 1 ether}(caseId, escrowId, claimant, respondent);
-        escrow.deposit{value: 2 ether}(keccak256("case-B"), escrowIdB, claimant, respondent);
+        bytes32 caseIdB = keccak256("case-B");
+        _deposit(1 ether);
+        _authorize(caseIdB, escrowIdB, 2 ether);
+        vm.deal(claimant, 2 ether);
+        vm.prank(claimant);
+        escrow.deposit{value: 2 ether}(caseIdB, escrowIdB, claimant, respondent);
         vm.warp(block.timestamp + TIMEOUT);
 
         vm.prank(decisionRelay);

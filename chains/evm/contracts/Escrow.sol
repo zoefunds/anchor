@@ -14,12 +14,31 @@ pragma solidity ^0.8.24;
 // path is proven, not added speculatively here.
 //
 // Scope, stated explicitly:
-//   1. A depositor (either party, or a neutral third party — this
-//      contract doesn't care who funds it, only that the amount and
-//      addresses match at settlement time) locks ETH against a specific
-//      (caseId, escrowId) pair, naming the claimant/respondent
-//      addresses up front.
-//   2. Only the configured DecisionRelay address may call settle() —
+//   1. Real security-audit fix (findings #2/#3, 2026-09-04): escrowId
+//      used to be sha256(caseId) alone — deterministic and, since
+//      caseId is exposed to both parties via their case links before
+//      any deposit happens, publicly computable. Anyone who knew a
+//      caseId (in practice: either party, motivated to grief the
+//      other) could call deposit() first with that escrowId, garbage
+//      addresses, and 1 wei, and the real deposit would then revert
+//      with AlreadyDeposited — a live denial-of-service, not a
+//      theoretical one. Fixed by requiring a real pre-authorization
+//      (see authorizeDeposit below) written by a trusted party BEFORE
+//      any deposit is accepted at all, and by requiring the caller to
+//      actually be the claimant (see finding #3 below) — an attacker
+//      with no authorization for that escrowId, or who isn't the
+//      claimant's own key holder, simply cannot call deposit()
+//      successfully, regardless of what addresses/amount they supply.
+//   2. Claimant-only depositor (finding #3): this product's actual
+//      flow has only the claimant ever fund a case's deposit — not
+//      "either party, or a neutral third party" as an earlier version
+//      of this contract assumed. That assumption made emergencyRefund
+//      always paying the claimant unsafe in the general case (a
+//      respondent- or third-party-funded deposit would misdirect
+//      funds on refund). Enforcing msg.sender == claimant at deposit()
+//      time closes that gap at its source instead of redesigning
+//      refund payout logic to track per-contributor allocations.
+//   3. Only the configured DecisionRelay address may call settle() —
 //      the same real trust boundary DecisionRelay itself enforces
 //      (M-of-N attestor signatures) is what authorizes a payout here;
 //      this contract does not re-verify attestations itself, it trusts
@@ -81,6 +100,18 @@ contract Escrow is IEscrowSettlementTarget, IEmergencyRefundTarget {
     // one address is trusting that entire verified chain, not a single
     // private key.
     address public immutable decisionRelay;
+    // Real audit fix (finding #2) — the only address allowed to
+    // pre-register a deposit's expected (caseId, claimant, respondent,
+    // amount) before deposit() will accept anything for a given
+    // escrowId at all. Deliberately separate from decisionRelay/the
+    // M-of-N attestor threshold: authorizing a deposit slot doesn't
+    // move funds and doesn't need cross-chain consensus — it's Anchor's
+    // own backend recording what it already knows the moment a
+    // CaseSettlement row is created, the same trust level as the
+    // existing HYPERLANE_RELAY_PRIVATE_KEY-controlled dispatch wallet
+    // already has over which cases get a real settlement dispatch at
+    // all. Immutable, same reasoning as decisionRelay above.
+    address public immutable depositAuthorizer;
     // Minimum real elapsed time (from deposit, not from case creation
     // or any app-side event) before emergencyRefund() can pay out —
     // immutable, set once at deploy, not something even the
@@ -91,13 +122,32 @@ contract Escrow is IEscrowSettlementTarget, IEmergencyRefundTarget {
     // faster alternative path for an impatient party.
     uint256 public immutable emergencyRefundTimeoutSeconds;
 
-    mapping(bytes32 => Deposit) public deposits;
+    // Real audit fix (finding #2) — what deposit() must match before
+    // it will accept anything for a given escrowId. `exists` (rather
+    // than checking amount != 0) distinguishes "never authorized" from
+    // a would-be zero-amount authorization, which authorizeDeposit
+    // itself already rejects.
+    struct DepositAuthorization {
+        bytes32 caseId;
+        address claimant;
+        address respondent;
+        uint256 amount;
+        bool exists;
+    }
 
+    mapping(bytes32 => Deposit) public deposits;
+    mapping(bytes32 => DepositAuthorization) public depositAuthorizations;
+
+    event DepositAuthorized(bytes32 indexed caseId, bytes32 indexed escrowId, address claimant, address respondent, uint256 amount);
     event Deposited(bytes32 indexed caseId, bytes32 indexed escrowId, address indexed depositor, address claimant, address respondent, uint256 amount);
     event Settled(bytes32 indexed caseId, bytes32 indexed escrowId, uint256 claimantAmount, uint256 respondentAmount, bytes32 proofHash);
     event EmergencyRefunded(bytes32 indexed caseId, bytes32 indexed escrowId, uint256 amount, bytes32 proofHash);
 
     error AlreadyDeposited(bytes32 escrowId);
+    error AlreadyAuthorized(bytes32 escrowId);
+    error NotAuthorized(bytes32 escrowId);
+    error AuthorizationMismatch();
+    error OnlyClaimantMayDeposit(address sender, address claimant);
     error UnknownEscrow(bytes32 escrowId);
     error AlreadySettled(bytes32 escrowId);
     error AmountMismatch(uint256 expected, uint256 supplied);
@@ -105,13 +155,15 @@ contract Escrow is IEscrowSettlementTarget, IEmergencyRefundTarget {
     error ZeroAddress();
     error ZeroAmount();
     error NotDecisionRelay();
+    error NotDepositAuthorizer();
     error TransferFailed(address to, uint256 amount);
     error TimeoutNotElapsed(uint256 readyAt, uint256 currentTime);
 
-    constructor(address _decisionRelay, uint256 _emergencyRefundTimeoutSeconds) {
-        if (_decisionRelay == address(0)) revert ZeroAddress();
+    constructor(address _decisionRelay, address _depositAuthorizer, uint256 _emergencyRefundTimeoutSeconds) {
+        if (_decisionRelay == address(0) || _depositAuthorizer == address(0)) revert ZeroAddress();
         require(_emergencyRefundTimeoutSeconds > 0, "emergencyRefundTimeoutSeconds must be nonzero");
         decisionRelay = _decisionRelay;
+        depositAuthorizer = _depositAuthorizer;
         emergencyRefundTimeoutSeconds = _emergencyRefundTimeoutSeconds;
     }
 
@@ -120,18 +172,46 @@ contract Escrow is IEscrowSettlementTarget, IEmergencyRefundTarget {
         _;
     }
 
-    /// Locks msg.value against (caseId, escrowId), naming the two
-    /// parties this specific escrow can ever pay out to. escrowId is
-    /// caller-chosen (expected to be a fresh id per case, generated by
-    /// the depositor/backend) — this contract's own guard is simply
-    /// "an escrowId can only ever be deposited into once," which is
-    /// sufficient to prevent a deposit being silently overwritten or
-    /// mixed with an unrelated case, regardless of how escrowId was
-    /// chosen upstream.
-    function deposit(bytes32 caseId, bytes32 escrowId, address claimant, address respondent) external payable {
-        if (deposits[escrowId].status != Status.NONE) revert AlreadyDeposited(escrowId);
+    modifier onlyDepositAuthorizer() {
+        if (msg.sender != depositAuthorizer) revert NotDepositAuthorizer();
+        _;
+    }
+
+    /// Real audit fix (finding #2) — must be called, by the trusted
+    /// depositAuthorizer, before deposit() will accept anything for
+    /// this escrowId. One-shot: an existing authorization can never be
+    /// overwritten (a backend bug re-authorizing with different values
+    /// after a case is already set up would otherwise silently change
+    /// who a pending deposit could pay out to).
+    function authorizeDeposit(bytes32 caseId, bytes32 escrowId, address claimant, address respondent, uint256 amount) external onlyDepositAuthorizer {
+        // No separate "already deposited" check needed here: deposit()
+        // requires an authorization to already exist for its escrowId,
+        // so AlreadyAuthorized above always fires first for any
+        // escrowId that could possibly have a real deposit against it.
+        if (depositAuthorizations[escrowId].exists) revert AlreadyAuthorized(escrowId);
         if (claimant == address(0) || respondent == address(0)) revert ZeroAddress();
-        if (msg.value == 0) revert ZeroAmount();
+        if (amount == 0) revert ZeroAmount();
+
+        depositAuthorizations[escrowId] = DepositAuthorization({ caseId: caseId, claimant: claimant, respondent: respondent, amount: amount, exists: true });
+
+        emit DepositAuthorized(caseId, escrowId, claimant, respondent, amount);
+    }
+
+    /// Locks msg.value against (caseId, escrowId), naming the two
+    /// parties this specific escrow can ever pay out to. Real audit fix
+    /// (findings #2/#3): must exactly match a pre-existing
+    /// authorizeDeposit() call for this escrowId (caseId, claimant,
+    /// respondent, amount all checked), and the caller must be the
+    /// claimant themselves — an attacker with no authorization, or who
+    /// isn't the claimant's own key holder, cannot call this
+    /// successfully no matter what addresses/amount they supply.
+    function deposit(bytes32 caseId, bytes32 escrowId, address claimant, address respondent) external payable {
+        DepositAuthorization memory auth = depositAuthorizations[escrowId];
+        if (!auth.exists) revert NotAuthorized(escrowId);
+        if (deposits[escrowId].status != Status.NONE) revert AlreadyDeposited(escrowId);
+        if (auth.caseId != caseId || auth.claimant != claimant || auth.respondent != respondent) revert AuthorizationMismatch();
+        if (msg.value != auth.amount) revert AmountMismatch(auth.amount, msg.value);
+        if (msg.sender != claimant) revert OnlyClaimantMayDeposit(msg.sender, claimant);
 
         deposits[escrowId] = Deposit({ status: Status.DEPOSITED, claimant: claimant, respondent: respondent, amount: msg.value, caseId: caseId, depositedAt: block.timestamp });
 
@@ -190,13 +270,11 @@ contract Escrow is IEscrowSettlementTarget, IEmergencyRefundTarget {
     /// Always pays 100% back to the claimant (the party whose funds
     /// these are, in this domain's existing REFUND_FULL vocabulary —
     /// see settle()'s claimantAmount/respondentAmount split, of which
-    /// this is the maximally claimant-favoring case) — this contract
-    /// has no concept of "which amount each party originally
-    /// contributed" to refund proportionally, and a stuck-case escape
-    /// hatch returning funds to whichever party actually deposited them
-    /// (in practice, almost always the claimant funding their own
-    /// dispute) is the safe default absent an actual adjudicated
-    /// outcome.
+    /// this is the maximally claimant-favoring case). Safe by
+    /// construction, not just in practice: deposit() now requires
+    /// msg.sender == claimant (finding #3), so the depositor and the
+    /// claimant are always the same address — there is no
+    /// respondent-or-third-party-funded case this could misdirect.
     function emergencyRefund(bytes32 caseId, bytes32 escrowId, bytes32 proofHash) external onlyDecisionRelay {
         Deposit storage d = deposits[escrowId];
         if (d.status == Status.NONE) revert UnknownEscrow(escrowId);

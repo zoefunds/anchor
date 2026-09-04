@@ -17,6 +17,15 @@ import {Escrow} from "../contracts/Escrow.sol";
 // comment for why this must be that contract's address, not an EOA or
 // attestor key).
 //
+// Requires DEPOSIT_AUTHORIZER_ADDRESS (security-audit fix, finding #2)
+// — the address trusted to call authorizeDeposit() before deposit()
+// will accept anything for a given escrowId. This is Anchor's own
+// backend dispatch wallet (the same address already trusted as
+// DecisionRelay's trustedSender), NOT the DecisionRelay contract or the
+// Safe — see Escrow.sol's `depositAuthorizer` doc comment for why this
+// is deliberately a separate, lower-ceremony trust boundary than
+// settle()/emergencyRefund()'s M-of-N attestor threshold.
+//
 // Optional EMERGENCY_REFUND_TIMEOUT_SECONDS (see Escrow.sol's Item E
 // emergencyRefund()) — defaults to 30 days if unset. Deliberately far
 // longer than this system's normal adjudication+appeal timeline (hours
@@ -27,14 +36,16 @@ contract DeployEscrow is Script {
 
     function run() external returns (address) {
         address decisionRelay = vm.envAddress("DECISION_RELAY_ADDRESS");
+        address depositAuthorizer = vm.envAddress("DEPOSIT_AUTHORIZER_ADDRESS");
         uint256 emergencyRefundTimeoutSeconds = vm.envOr("EMERGENCY_REFUND_TIMEOUT_SECONDS", DEFAULT_EMERGENCY_REFUND_TIMEOUT_SECONDS);
 
         vm.startBroadcast();
-        Escrow escrow = new Escrow(decisionRelay, emergencyRefundTimeoutSeconds);
+        Escrow escrow = new Escrow(decisionRelay, depositAuthorizer, emergencyRefundTimeoutSeconds);
         vm.stopBroadcast();
 
         console.log("Escrow deployed at:", address(escrow));
         console.log("DecisionRelay (sole settle()/emergencyRefund() caller):", decisionRelay);
+        console.log("depositAuthorizer (sole authorizeDeposit() caller):", depositAuthorizer);
         console.log("emergencyRefundTimeoutSeconds:", emergencyRefundTimeoutSeconds);
         return address(escrow);
     }
