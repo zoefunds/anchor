@@ -30,3 +30,9 @@ chains/hyperlane-relayer/db/
 *-keypair.json
 solana-attestor*.json
 *.private-key.json
+
+# Scratch build output (e.g. a generated PDF export and its build
+# script/intermediate page images) — not source, regenerable, never
+# meant to be committed.
+/output/
+/tmp/
