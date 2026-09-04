@@ -2,7 +2,7 @@ import type { Prisma, ReconciliationFindingType } from "@prisma/client";
 import { type Address, createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
-import { sendOpsAlert } from "@/lib/alerts";
+import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 import { depositsAbiForVersion } from "@/lib/escrow-version";
 import { logAction } from "@/lib/audit";
 
@@ -427,18 +427,27 @@ async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
     if (finding.lastEscalatedAt && now - finding.lastEscalatedAt.getTime() < ESCALATION_REPEAT_INTERVAL_MS) continue;
 
     const minutesOpen = Math.round((now - finding.openedAt.getTime()) / 60_000);
-    try {
-      const delivered = await sendOpsAlert({
-        severity: "critical",
-        title: `[ESCALATION] Unacknowledged for ${minutesOpen} minutes: ${finding.type}`,
-        detail: `Finding ${finding.id} (${finding.targetType} ${finding.targetId}) was alerted but nobody has acknowledged it yet. See /settings/reconciliation-findings.`,
-      });
-      if (delivered) {
-        await prisma.reconciliationFinding.update({ where: { id: finding.id }, data: { lastEscalatedAt: new Date() } });
-        escalatedCount++;
-      }
-    } catch (err) {
-      console.error(`reconciliation: failed to deliver escalation alert for finding ${finding.id}`, err);
+    const title = `[ESCALATION] Unacknowledged for ${minutesOpen} minutes: ${finding.type}`;
+    const detail = `Finding ${finding.id} (${finding.targetType} ${finding.targetId}) was alerted but nobody has acknowledged it yet. See /settings/reconciliation-findings.`;
+    // Two independent channels for escalation specifically (not every
+    // alert) — Slack (primary) and ntfy (a real phone push, no
+    // signup/credential on ntfy's side). allSettled (not all): a real
+    // failure in one channel must not hide a real success in the
+    // other — using Promise.all here in an earlier draft meant one
+    // channel throwing (not just returning false) would reject the
+    // whole pair, losing visibility into whether the OTHER channel
+    // actually delivered.
+    const [slackResult, ntfyResult] = await Promise.allSettled([
+      sendOpsAlert({ severity: "critical", title, detail }),
+      sendNtfyAlert({ title, detail, priority: "urgent" }),
+    ]);
+    if (slackResult.status === "rejected") console.error(`reconciliation: Slack escalation alert failed for finding ${finding.id}`, slackResult.reason);
+    if (ntfyResult.status === "rejected") console.error(`reconciliation: ntfy escalation alert failed for finding ${finding.id}`, ntfyResult.reason);
+
+    const delivered = (slackResult.status === "fulfilled" && slackResult.value) || (ntfyResult.status === "fulfilled" && ntfyResult.value);
+    if (delivered) {
+      await prisma.reconciliationFinding.update({ where: { id: finding.id }, data: { lastEscalatedAt: new Date() } });
+      escalatedCount++;
     }
   }
   return escalatedCount;

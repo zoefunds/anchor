@@ -85,3 +85,51 @@ export async function sendOpsAlert(params: {
   }
   return true;
 }
+
+export class NtfyAlertDeliveryError extends Error {}
+
+/**
+ * A second, independent delivery channel — a real ntfy.sh (or
+ * self-hosted ntfy) topic, which becomes a real phone push
+ * notification for anyone subscribed, with no signup or credential of
+ * any kind on ntfy's side (the topic name itself is the only
+ * "secret," so NTFY_TOPIC_URL should be a hard-to-guess topic — see
+ * docs/ops-alert-escalation.md). Used specifically for the
+ * auto-escalation path (lib/reconciliation.ts's
+ * escalateUnacknowledgedCriticalFindings), not every routine alert —
+ * Slack remains the primary channel for that. Same real-delivery-
+ * confirmation discipline as sendOpsAlert: returns `false` only when
+ * unconfigured, throws NtfyAlertDeliveryError on any real failure,
+ * never silently swallows one.
+ */
+export async function sendNtfyAlert(params: { title: string; detail: string; priority?: "default" | "high" | "urgent" }): Promise<boolean> {
+  const url = process.env.NTFY_TOPIC_URL;
+  if (!url) return false;
+
+  try {
+    await assertSafeToFetch(url);
+  } catch (err) {
+    throw new NtfyAlertDeliveryError(`NTFY_TOPIC_URL is not safe to fetch: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      method: "POST",
+      headers: {
+        Title: params.title,
+        Priority: params.priority ?? "urgent",
+        Tags: "rotating_light",
+      },
+      body: params.detail,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    throw new NtfyAlertDeliveryError(`failed to deliver ntfy alert: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!res.ok) {
+    throw new NtfyAlertDeliveryError(`ntfy endpoint responded ${res.status}`);
+  }
+  return true;
+}

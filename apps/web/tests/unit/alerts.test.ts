@@ -22,11 +22,13 @@ vi.mock("@/lib/ssrf-guard", () => ({
   safeFetch: (url: string, init: RequestInit) => fetch(url, init),
 }));
 
-const { sendOpsAlert, OpsAlertDeliveryError } = await import("@/lib/alerts");
+const { sendOpsAlert, OpsAlertDeliveryError, sendNtfyAlert, NtfyAlertDeliveryError } = await import("@/lib/alerts");
 
 let server: Server;
 let serverUrl: string;
 let lastRequestBody: unknown = null;
+let lastRequestHeaders: Record<string, string | string[] | undefined> = {};
+let lastRequestRawBody = "";
 let responseBehavior: "ok" | "server_error" | "hang" | "malformed" = "ok";
 
 beforeAll(async () => {
@@ -34,7 +36,12 @@ beforeAll(async () => {
     let raw = "";
     req.on("data", (chunk) => (raw += chunk));
     req.on("end", () => {
-      lastRequestBody = raw ? JSON.parse(raw) : null;
+      lastRequestRawBody = raw;
+      lastRequestHeaders = req.headers;
+      // sendOpsAlert posts JSON; sendNtfyAlert posts a raw text body — only
+      // try to parse as JSON when it looks like it, so ntfy tests don't
+      // choke on plain text.
+      lastRequestBody = raw && raw.trim().startsWith("{") ? JSON.parse(raw) : null;
       if (responseBehavior === "ok") {
         res.writeHead(200, { "Content-Type": "application/json" }).end("ok");
       } else if (responseBehavior === "server_error") {
@@ -56,9 +63,12 @@ afterAll(() => {
 
 beforeEach(() => {
   lastRequestBody = null;
+  lastRequestHeaders = {};
+  lastRequestRawBody = "";
   responseBehavior = "ok";
   delete process.env.OPS_ALERT_WEBHOOK_URL;
   delete process.env.OPS_ALERT_OWNER;
+  delete process.env.NTFY_TOPIC_URL;
 });
 
 describe("sendOpsAlert — real HTTP delivery", () => {
@@ -102,5 +112,46 @@ describe("sendOpsAlert — real HTTP delivery", () => {
   it("throws OpsAlertDeliveryError when the endpoint is unreachable (real connection refused, no server listening)", async () => {
     process.env.OPS_ALERT_WEBHOOK_URL = "http://127.0.0.1:1"; // real, guaranteed-closed port
     await expect(sendOpsAlert({ severity: "warning", title: "t", detail: "d" })).rejects.toBeInstanceOf(OpsAlertDeliveryError);
+  });
+});
+
+describe("sendNtfyAlert — real HTTP delivery", () => {
+  it("returns false and makes no request when NTFY_TOPIC_URL is unset", async () => {
+    const delivered = await sendNtfyAlert({ title: "test", detail: "detail" });
+    expect(delivered).toBe(false);
+    expect(lastRequestRawBody).toBe("");
+  });
+
+  it("delivers a real request and returns true on a genuine 2xx response, with the title/priority/detail in the real request", async () => {
+    process.env.NTFY_TOPIC_URL = serverUrl;
+    const delivered = await sendNtfyAlert({ title: "Something is wrong", detail: "real detail text", priority: "urgent" });
+    expect(delivered).toBe(true);
+    expect(lastRequestHeaders["title"]).toBe("Something is wrong");
+    expect(lastRequestHeaders["priority"]).toBe("urgent");
+    expect(lastRequestRawBody).toBe("real detail text");
+  });
+
+  it("defaults priority to urgent when not specified", async () => {
+    process.env.NTFY_TOPIC_URL = serverUrl;
+    await sendNtfyAlert({ title: "t", detail: "d" });
+    expect(lastRequestHeaders["priority"]).toBe("urgent");
+  });
+
+  it("throws NtfyAlertDeliveryError on a real 500 response — never silently swallowed", async () => {
+    process.env.NTFY_TOPIC_URL = serverUrl;
+    responseBehavior = "server_error";
+    await expect(sendNtfyAlert({ title: "t", detail: "d" })).rejects.toBeInstanceOf(NtfyAlertDeliveryError);
+  });
+
+  it("still returns true on a genuine 2xx with an empty body", async () => {
+    process.env.NTFY_TOPIC_URL = serverUrl;
+    responseBehavior = "malformed";
+    const delivered = await sendNtfyAlert({ title: "t", detail: "d" });
+    expect(delivered).toBe(true);
+  });
+
+  it("throws NtfyAlertDeliveryError when the endpoint is unreachable (real connection refused, no server listening)", async () => {
+    process.env.NTFY_TOPIC_URL = "http://127.0.0.1:1"; // real, guaranteed-closed port
+    await expect(sendNtfyAlert({ title: "t", detail: "d" })).rejects.toBeInstanceOf(NtfyAlertDeliveryError);
   });
 });

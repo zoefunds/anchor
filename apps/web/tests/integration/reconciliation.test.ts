@@ -9,6 +9,10 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest
 
 const mockReadContract = vi.fn();
 const mockSendOpsAlert = vi.fn().mockResolvedValue(true);
+// Escalation's second channel (ntfy) — not configured in these tests, so it
+// mirrors sendNtfyAlert's own real "unconfigured" behavior (resolves false,
+// never throws) rather than pretending it delivered.
+const mockSendNtfyAlert = vi.fn().mockResolvedValue(false);
 
 vi.mock("viem", async (importOriginal) => {
   const actual = await importOriginal<typeof import("viem")>();
@@ -20,6 +24,7 @@ vi.mock("viem", async (importOriginal) => {
 
 vi.mock("@/lib/alerts", () => ({
   sendOpsAlert: mockSendOpsAlert,
+  sendNtfyAlert: mockSendNtfyAlert,
 }));
 
 process.env.HYPERLANE_RELAY_RPC_URL = "https://example.invalid";
