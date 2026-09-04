@@ -4,6 +4,7 @@ import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
 import { sendOpsAlert } from "@/lib/alerts";
 import { depositsAbiForVersion } from "@/lib/escrow-version";
+import { logAction } from "@/lib/audit";
 
 // Item F's reconciliation half — the real chain: decision -> attestation
 // -> dispatch -> delivery -> processed -> settled -> payout ->
@@ -314,6 +315,64 @@ async function checkDispatchedButStale(): Promise<void> {
   }
 }
 
+/**
+ * Priority 3, item 9 (respondent notification) + a real gap this
+ * closes along the way: an emergency refund (Item E) happens entirely
+ * OUTSIDE the normal decision/dispatch flow — no Decision row is ever
+ * created for it, so checkDispatchedButStale above (which is keyed off
+ * Decision.relayTxHash) can never notice one completed. Without this,
+ * a real emergency refund would settle on-chain and CaseSettlement
+ * would sit at DEPOSITED forever, with no notification sent. Scoped
+ * to CaseSettlements with NO Decision at all bearing a relayTxHash, so
+ * this and checkDispatchedButStale never both claim the same case.
+ */
+async function checkEmergencyRefundsSettled(): Promise<void> {
+  const client = getClient();
+  const candidates = await prisma.caseSettlement.findMany({
+    where: { status: "DEPOSITED", case: { decisions: { none: { relayTxHash: { not: null } } } } },
+    include: { case: true, integration: true },
+  });
+
+  for (const cs of candidates) {
+    if (cs.integration.escrowVersion !== "V2" || cs.integration.chain !== "sepolia") continue; // emergencyRefund() only exists on V2 Escrow — see Item E
+    let escrowStatus: number;
+    try {
+      const result = (await client.readContract({
+        address: cs.integration.escrowContractAddress as Address,
+        abi: depositsAbiForVersion("V2"),
+        functionName: "deposits",
+        args: [hashToBytes32(cs.escrowId)],
+      })) as readonly [number, ...unknown[]];
+      escrowStatus = result[0];
+    } catch (err) {
+      console.error(`reconciliation: failed to read deposits() for CaseSettlement ${cs.id} (emergency-refund check)`, err);
+      continue;
+    }
+    if (escrowStatus !== 2 /* SETTLED */) continue; // no Decision.relayTxHash and not SETTLED — genuinely still awaiting normal settlement, not an emergency refund
+
+    await prisma.$transaction(async (tx) => {
+      await tx.caseSettlement.update({ where: { id: cs.id }, data: { status: "SETTLED", settledAt: new Date() } });
+      await logAction(
+        {
+          organizationId: cs.case.organizationId,
+          action: "case_settlement.emergency_refund_settled",
+          targetType: "CaseSettlement",
+          targetId: cs.id,
+          metadata: { caseId: cs.caseId, escrowId: cs.escrowId },
+        },
+        tx
+      );
+    });
+
+    const { dispatchWebhookEvent } = await import("@/lib/webhooks");
+    dispatchWebhookEvent({
+      organizationId: cs.case.organizationId,
+      event: "case.emergency_refund_settled",
+      data: { caseId: cs.caseId, caseSettlementId: cs.id, escrowId: cs.escrowId },
+    });
+  }
+}
+
 /** The audit-anchoring sweep (worker.ts's anchorAuditChains) appears to have stopped running for an organization with real audit-log activity. */
 async function checkAuditAnchorStaleness(): Promise<void> {
   const orgs = await prisma.organization.findMany({ where: { auditLogs: { some: {} } } });
@@ -390,6 +449,7 @@ export async function runReconciliationSweep(): Promise<{ openFindings: number; 
   await checkSettlementTargets();
   await checkOverdueDeposits();
   await checkDispatchedButStale();
+  await checkEmergencyRefundsSettled();
   await checkAuditAnchorStaleness();
   const escalated = await escalateUnacknowledgedCriticalFindings();
 

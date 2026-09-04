@@ -3,7 +3,20 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-const ALL_EVENTS = ["case.status_changed", "case.decided", "case.appealed"] as const;
+// Kept in sync with lib/webhooks.ts's real WEBHOOK_EVENTS by hand
+// (not imported directly — that module also exports the
+// server-only/crypto-dependent encrypt/decrypt functions, which
+// shouldn't end up in a client bundle). "case.relay_dispatched" was
+// already missing from this list before the two emergency-refund
+// events below were added — fixed here rather than compounding it.
+const ALL_EVENTS = [
+  "case.status_changed",
+  "case.decided",
+  "case.appealed",
+  "case.relay_dispatched",
+  "case.emergency_refund_requested",
+  "case.emergency_refund_settled",
+] as const;
 
 interface WebhookSummary {
   id: string;

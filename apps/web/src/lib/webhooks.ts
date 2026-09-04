@@ -63,6 +63,18 @@ export const WEBHOOK_EVENTS = [
   "case.decided",
   "case.appealed",
   "case.relay_dispatched",
+  // Priority 3 (settlement-readiness gaps, item 9 — respondent
+  // notification): Anchor doesn't hold party email addresses (only
+  // opaque claimantRef/respondentRef strings and EVM payout
+  // addresses), so a real per-party email notification isn't
+  // buildable with what this system actually stores. What IS real
+  // and already wired: notifying the ORGANIZATION'S OWN registered
+  // webhook subscribers, who are expected to relay this to their
+  // respondent however they already contact parties. See
+  // api/cases/[id]/emergency-refund/prepare/route.ts (requested) and
+  // lib/reconciliation.ts's checkEmergencyRefundsSettled (settled).
+  "case.emergency_refund_requested",
+  "case.emergency_refund_settled",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

@@ -8,6 +8,7 @@ import { getEvmPublicClient } from "@/lib/hyperlane";
 import { depositsAbiForVersion, verifyEscrowVersionUnchanged, EscrowVersionMismatchError } from "@/lib/escrow-version";
 import { emergencyRefundAttestationHash, caseIdToBytes32 } from "@/lib/emergency-refund";
 import { logAction } from "@/lib/audit";
+import { dispatchWebhookEvent } from "@/lib/webhooks";
 
 const DECISION_RELAY_EMERGENCY_ABI = [
   { type: "function", name: "attestorThreshold", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
@@ -133,6 +134,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     targetType: "CaseSettlement",
     targetId: cs.id,
     metadata: { caseId: kase.id, escrowId: cs.escrowId, proofHash, eligible, reason },
+  });
+
+  // Priority 3, item 9 (respondent notification): the org's own
+  // registered webhook subscribers, not a direct email to the
+  // respondent — Anchor doesn't hold party email addresses. Fires on
+  // every prepare call, not just eligible ones, so an org can see a
+  // refund attempt was even considered.
+  dispatchWebhookEvent({
+    organizationId: auth.organizationId,
+    event: "case.emergency_refund_requested",
+    data: { caseId: kase.id, caseSettlementId: cs.id, escrowId: cs.escrowId, proofHash, eligible, reason, readyAt },
   });
 
   return NextResponse.json({

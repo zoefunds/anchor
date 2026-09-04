@@ -57,9 +57,9 @@ afterAll(async () => {
   await prisma.organization.delete({ where: { id: orgId } });
 });
 
-async function makeIntegration() {
+async function makeIntegration(overrides: Record<string, unknown> = {}) {
   const integration = await prisma.settlementIntegration.create({
-    data: { organizationId: orgId, chain: "sepolia", escrowContractAddress: ESCROW, assetSymbol: "ETH", assetDecimals: 18, createdByMemberId: "test-member" },
+    data: { organizationId: orgId, chain: "sepolia", escrowContractAddress: ESCROW, assetSymbol: "ETH", assetDecimals: 18, createdByMemberId: "test-member", ...overrides },
   });
   integrationIds.push(integration.id);
   return integration;
@@ -259,6 +259,64 @@ describe("runReconciliationSweep — dispatched-but-stale self-healing", () => {
     });
     mockReadContract.mockImplementation(async (args: { functionName: string }) => {
       if (args.functionName === "processedDecisions") return false;
+      if (args.functionName === "settlementTarget") return ESCROW;
+      throw new Error(`unexpected functionName ${args.functionName}`);
+    });
+
+    await runReconciliationSweep();
+    const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
+    expect(updated.status).toBe("DEPOSITED");
+  });
+});
+
+describe("runReconciliationSweep — emergency refund settlement detection", () => {
+  it("self-heals a CaseSettlement to SETTLED when a V2 escrow shows SETTLED with no Decision.relayTxHash at all (a real emergency refund, not a normal dispatch)", async () => {
+    const integration = await makeIntegration({ escrowVersion: "V2" });
+    const kase = await makeCase();
+    const cs = await prisma.caseSettlement.create({
+      data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "DEPOSITED", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
+    });
+    // Deliberately NO Decision row at all — an emergency refund never
+    // creates one, unlike a normal dispatch.
+    mockReadContract.mockImplementation(async (args: { functionName: string }) => {
+      if (args.functionName === "deposits") return [2, CLAIMANT, RESPONDENT, 1n, "0x00", 0n]; // SETTLED, V2 6-field shape
+      if (args.functionName === "settlementTarget") return ESCROW;
+      throw new Error(`unexpected functionName ${args.functionName}`);
+    });
+
+    await runReconciliationSweep();
+    const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
+    expect(updated.status).toBe("SETTLED");
+    expect(updated.settledAt).not.toBeNull();
+
+    const audit = await prisma.auditLog.findFirst({ where: { targetId: cs.id, action: "case_settlement.emergency_refund_settled" } });
+    expect(audit).not.toBeNull();
+  });
+
+  it("does not touch a V1 escrow's CaseSettlement — emergencyRefund() only exists on V2", async () => {
+    const integration = await makeIntegration({ escrowVersion: "V1" });
+    const kase = await makeCase();
+    const cs = await prisma.caseSettlement.create({
+      data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "DEPOSITED", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
+    });
+    mockReadContract.mockImplementation(async (args: { functionName: string }) => {
+      if (args.functionName === "settlementTarget") return ESCROW;
+      throw new Error(`unexpected functionName ${args.functionName} — deposits() should never be called for a V1 integration by this check`);
+    });
+
+    await runReconciliationSweep();
+    const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
+    expect(updated.status).toBe("DEPOSITED");
+  });
+
+  it("leaves a still-DEPOSITED (not yet refunded) V2 escrow alone", async () => {
+    const integration = await makeIntegration({ escrowVersion: "V2" });
+    const kase = await makeCase();
+    const cs = await prisma.caseSettlement.create({
+      data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "DEPOSITED", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
+    });
+    mockReadContract.mockImplementation(async (args: { functionName: string }) => {
+      if (args.functionName === "deposits") return [1, CLAIMANT, RESPONDENT, 1n, "0x00", 0n]; // still DEPOSITED, not SETTLED
       if (args.functionName === "settlementTarget") return ESCROW;
       throw new Error(`unexpected functionName ${args.functionName}`);
     });
