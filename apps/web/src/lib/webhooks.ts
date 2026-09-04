@@ -71,9 +71,18 @@ export const WEBHOOK_EVENTS = [
   // and already wired: notifying the ORGANIZATION'S OWN registered
   // webhook subscribers, who are expected to relay this to their
   // respondent however they already contact parties. See
-  // api/cases/[id]/emergency-refund/prepare/route.ts (requested) and
+  // api/cases/[id]/emergency-refund/prepare/route.ts (prepared) and
   // lib/reconciliation.ts's checkEmergencyRefundsSettled (settled).
-  "case.emergency_refund_requested",
+  //
+  // Security-audit fix: this was named "requested", but it fires on
+  // EVERY prepare call, including ineligible ones (no deposit found,
+  // timeout not elapsed) — "requested" overstates real intent to a
+  // webhook subscriber. There's no real submission event to fire a
+  // true "requested" on instead: the actual attestation-signing and
+  // broadcast happens entirely outside this app (manual multisig
+  // process, not an API call this app observes) — so "prepared" is
+  // the honest name for the only real, app-observable moment here.
+  "case.emergency_refund_prepared",
   "case.emergency_refund_settled",
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];

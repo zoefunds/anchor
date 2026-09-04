@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { normalizeEvmAddress, authorizeDepositOnChain } from "@/lib/case-settlement";
+import { verifyPartySignature, settlementAddressSigningMessage } from "@/lib/party-signing";
 import { logAction } from "@/lib/audit";
 
 // POST /api/public/cases/:id/settlement-address — a party setting
@@ -10,9 +11,20 @@ import { logAction } from "@/lib/audit";
 // lib/party-auth.ts), never a form field staff fills in on their
 // behalf. This is the real fix for how CaseSettlement.claimantAddress/
 // respondentAddress used to get set this session: by hand, from
-// whatever address a human pasted into chat. Body: { token?, address }.
+// whatever address a human pasted into chat. Body: { token?, address, signature? }.
+//
+// Security-audit fix: a bearer token alone proves "possesses the
+// secret Anchor handed out," not "controls the wallet being named" —
+// a leaked/forwarded token could otherwise redirect a real payout
+// address. Once a party has registered a signing key (write-once —
+// see signing-key/route.ts), `signature` becomes REQUIRED here and is
+// verified against it; a party who never registered a key can still
+// use the bearer-token-only path (lib/party-signing.ts's own
+// "additive, not a replacement" design), but once a key exists, token
+// possession alone is no longer sufficient for this specific,
+// fund-directing action.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const { token, address } = await req.json();
+  const { token, address, signature } = await req.json();
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
   const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
@@ -28,6 +40,21 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
   if (!kase) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
+  }
+
+  const publicKeyField = resolved.role === "claimant" ? "claimantPublicKey" : "respondentPublicKey";
+  const registeredPublicKey = kase[publicKeyField];
+  if (registeredPublicKey) {
+    if (typeof signature !== "string" || signature.length === 0) {
+      return NextResponse.json(
+        { error: `a signing key is registered for ${resolved.role} on this case — a valid signature is required to set the settlement address, a bearer token alone is no longer sufficient` },
+        { status: 401 }
+      );
+    }
+    const message = settlementAddressSigningMessage({ caseId: kase.id, role: resolved.role, address: normalized });
+    if (!verifyPartySignature(registeredPublicKey, message, signature)) {
+      return NextResponse.json({ error: "signature does not verify against the registered signing key for this role" }, { status: 401 });
+    }
   }
   const settlement = kase.settlement;
   if (!settlement) {

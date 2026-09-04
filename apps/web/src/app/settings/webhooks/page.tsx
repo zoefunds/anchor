@@ -14,7 +14,7 @@ const ALL_EVENTS = [
   "case.decided",
   "case.appealed",
   "case.relay_dispatched",
-  "case.emergency_refund_requested",
+  "case.emergency_refund_prepared",
   "case.emergency_refund_settled",
 ] as const;
 

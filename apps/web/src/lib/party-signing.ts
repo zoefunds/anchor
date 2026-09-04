@@ -94,3 +94,16 @@ export function signWithPartyKey(privateKeyBase64: string, message: string): str
 export function evidenceSigningMessage(params: { caseId: string; type: string; content: string }): string {
   return JSON.stringify({ caseId: params.caseId, type: params.type, content: params.content });
 }
+
+/**
+ * Canonical message a party signs when setting their own settlement
+ * payout address — security-audit fix. Unlike evidence submission
+ * (optional everywhere), this is required whenever a public key is
+ * already registered for the caller's role (see the settlement-address
+ * route): a leaked bearer token alone is no longer enough to redirect
+ * a payout address once the real party has registered a key, since
+ * that registration is write-once (see signing-key/route.ts).
+ */
+export function settlementAddressSigningMessage(params: { caseId: string; role: "claimant" | "respondent"; address: string }): string {
+  return JSON.stringify({ caseId: params.caseId, role: params.role, address: params.address.toLowerCase() });
+}

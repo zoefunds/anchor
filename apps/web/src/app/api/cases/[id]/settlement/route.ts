@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireOwner } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { logAction } from "@/lib/audit";
 import { toAttoAmount } from "@/lib/genlayer";
@@ -26,11 +26,19 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 // /api/public/cases/:id/settlement-address (see lib/party-auth.ts).
 // Staff choose WHICH integration a case settles through; they don't
 // choose whose wallet gets paid.
+//
+// Security-audit fix: OWNER-only (was requireWriteAccess, which any
+// MEMBER or API key passed) — this decision picks which real escrow
+// contract a case's funds flow through, the same real financial
+// authority creating/deactivating the integration itself already
+// requires (see settlement-integrations/route.ts). API keys never
+// pass requireOwner at all, matching how webhooks/members/audit-log
+// are already OWNER-only, session-only actions.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const auth = await resolveOrgFromRequest(req);
-  if ("error" in auth) return authErrorResponse(auth);
-  const writeError = requireWriteAccess(auth);
-  if (writeError) return writeError;
+  const auth = await requireOwner();
+  if ("error" in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.error === "forbidden" ? 403 : 401 });
+  }
 
   const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
@@ -90,7 +98,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       {
         organizationId: auth.organizationId,
         memberId: auth.memberId,
-        apiKeyId: auth.apiKeyId,
         action: "case_settlement.bound",
         targetType: "CaseSettlement",
         targetId: created.id,

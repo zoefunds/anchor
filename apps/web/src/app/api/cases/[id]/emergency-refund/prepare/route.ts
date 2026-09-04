@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { type Address } from "viem";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { requireOwner } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { depositsAbiForVersion, verifyEscrowVersionUnchanged, EscrowVersionMismatchError } from "@/lib/escrow-version";
@@ -29,11 +29,16 @@ const ESCROW_TIMEOUT_ABI = [
 // whether the on-chain state it reads suggests the case is actually
 // eligible, as a convenience — the contract's own checks are the real
 // authority, not this route's opinion.
+// Security-audit fix: OWNER-only (was requireWriteAccess, which any
+// MEMBER or API key passed) — preparing an emergency refund exposes
+// the real signing hash for a real fund-releasing multisig action;
+// this is the same real financial authority level as binding a
+// settlement integration, not routine case management.
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const auth = await resolveOrgFromRequest(req);
-  if ("error" in auth) return authErrorResponse(auth);
-  const writeError = requireWriteAccess(auth);
-  if (writeError) return writeError;
+  const auth = await requireOwner();
+  if ("error" in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.error === "forbidden" ? 403 : 401 });
+  }
 
   const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: { include: { integration: true } } } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
@@ -129,7 +134,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   await logAction({
     organizationId: auth.organizationId,
     memberId: auth.memberId,
-    apiKeyId: auth.apiKeyId,
     action: "case.emergency_refund_prepared",
     targetType: "CaseSettlement",
     targetId: cs.id,
@@ -143,7 +147,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   // refund attempt was even considered.
   dispatchWebhookEvent({
     organizationId: auth.organizationId,
-    event: "case.emergency_refund_requested",
+    event: "case.emergency_refund_prepared",
     data: { caseId: kase.id, caseSettlementId: cs.id, escrowId: cs.escrowId, proofHash, eligible, reason, readyAt },
   });
 

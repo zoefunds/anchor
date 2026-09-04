@@ -449,7 +449,17 @@ async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
 
     const minutesOpen = Math.round((now - finding.openedAt.getTime()) / 60_000);
     const title = `[ESCALATION] Unacknowledged for ${minutesOpen} minutes: ${finding.type}`;
-    const detail = `Finding ${finding.id} (${finding.targetType} ${finding.targetId}) was alerted but nobody has acknowledged it yet. See /settings/reconciliation-findings.`;
+    // Full detail (including targetId/targetType — real operational/
+    // incident info) goes to Slack only, a private, authenticated
+    // channel. Security-audit fix: ntfy topics are public pub/sub by
+    // default — a hard-to-guess topic name is the only real secret,
+    // not a confidentiality boundary equivalent to Slack's — so the
+    // ntfy payload carries a generic, non-identifying message instead,
+    // pointing whoever's subscribed to the real dashboard rather than
+    // leaking which org/integration is affected to anyone who ever
+    // learns the topic name.
+    const slackDetail = `Finding ${finding.id} (${finding.targetType} ${finding.targetId}) was alerted but nobody has acknowledged it yet. See /settings/reconciliation-findings.`;
+    const ntfyDetail = `A critical reconciliation finding has been unacknowledged for ${minutesOpen} minutes. Check /settings/reconciliation-findings for details.`;
     // Two independent channels for escalation specifically (not every
     // alert) — Slack (primary) and ntfy (a real phone push, no
     // signup/credential on ntfy's side). allSettled (not all): a real
@@ -459,8 +469,8 @@ async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
     // whole pair, losing visibility into whether the OTHER channel
     // actually delivered.
     const [slackResult, ntfyResult] = await Promise.allSettled([
-      sendOpsAlert({ severity: "critical", title, detail }),
-      sendNtfyAlert({ title, detail, priority: "urgent" }),
+      sendOpsAlert({ severity: "critical", title, detail: slackDetail }),
+      sendNtfyAlert({ title, detail: ntfyDetail, priority: "urgent" }),
     ]);
     if (slackResult.status === "rejected") console.error(`reconciliation: Slack escalation alert failed for finding ${finding.id}`, slackResult.reason);
     if (ntfyResult.status === "rejected") console.error(`reconciliation: ntfy escalation alert failed for finding ${finding.id}`, ntfyResult.reason);

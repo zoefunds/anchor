@@ -44,6 +44,19 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const field = resolved.role === "claimant" ? "claimantPublicKey" : "respondentPublicKey";
+  // Security-audit fix: this used to allow silent re-registration
+  // ("same trust boundary as reissuing a party token"). That made
+  // signature verification elsewhere (settlement-address) meaningless
+  // against the exact threat it's meant to guard: if only the bearer
+  // token leaks, an attacker could use it to register THEIR OWN key
+  // here first, then sign later requests with it and pass verification
+  // trivially. Write-once closes that — whichever key registers first
+  // for a role is the one that can ever sign for it, matching the same
+  // "first real claim wins" pattern this codebase already uses for
+  // escrowId (Escrow.sol) and deposit authorization.
+  if (kase[field]) {
+    return NextResponse.json({ error: `a signing key is already registered for ${resolved.role} on this case and cannot be replaced` }, { status: 409 });
+  }
   await prisma.$transaction(async (tx) => {
     await tx.case.update({
       where: { id: params.id },
