@@ -93,7 +93,7 @@ export default function ReliabilityPage() {
       </div>
 
       <header className="mt-8 border-b border-line pb-8 dark:border-line-dark">
-        <p className="kicker text-seal-500 dark:text-seal-400">Re-audit Phase 1</p>
+        <p className="kicker text-seal-500 dark:text-seal-400">Re-audit Phase 1 · Sepolia testnet</p>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-ink-950 dark:text-ink">Reliability observations</h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
           A durable, queryable record — checkpoint currency, DecisionRelay/ISM wiring, validator

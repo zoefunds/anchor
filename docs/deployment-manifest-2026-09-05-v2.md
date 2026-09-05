@@ -1,5 +1,7 @@
 # Signed live deployment manifest — v2, 2026-09-05
 
+**Environment: Sepolia testnet.** This is a live testnet deployment, not production. Do not represent it as production in customer-facing material — see v1 manifest's own note for the same caveat, restated here since this file is read independently.
+
 Supersedes `docs/deployment-manifest-2026-09-05.md` (kept, unmodified, as the prior signed record — this does not retract it, it extends it). Produced in response to the re-audit's Phase 0, item 4: extends the original manifest with an explicit independence matrix, attestor threshold restated alongside the matrix, and a machine-readable JSON companion (`deployment-manifest-2026-09-05-v2.json`) so the same facts are checkable programmatically, not only by a human reading a table.
 
 Every value below was read directly from the live Sepolia chain or the production database at capture time — nothing here is inferred from source code or prior documentation. `SETTLEMENT_PAUSED` remains `true` throughout; this manifest does not authorize lifting it, and does not itself change any of the facts already recorded in the v1 manifest (contract addresses, bytecode hashes, Safe/ISM/attestor config, active integrations) — those are restated here by reference, not re-verified redundantly in this file. Re-run both the v1 checks and this matrix before relying on either for a real decision, since on-chain and infrastructure state can change between captures.

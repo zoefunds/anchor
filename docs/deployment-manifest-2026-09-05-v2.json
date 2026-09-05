@@ -1,5 +1,7 @@
 {
   "supersedes": "docs/deployment-manifest-2026-09-05.md",
+  "environment": "sepolia-testnet",
+  "environmentNote": "Live testnet deployment, not production. Do not represent as production in customer-facing material.",
   "capturedAt": "2026-09-05",
   "settlementPaused": true,
   "independenceMatrix": [

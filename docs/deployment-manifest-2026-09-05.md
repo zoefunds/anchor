@@ -1,5 +1,7 @@
 # Signed live deployment manifest — 2026-09-05
 
+**Environment: Sepolia testnet.** Everything in this manifest — contracts, validators, Safe, attestors — runs on Sepolia, not a mainnet. "Live" and "production" below describe the *deployment's* operational status (real infrastructure, real on-chain state, not a simulation), not readiness for real customer funds. Do not represent this environment as production in customer-facing material.
+
 Produced in response to the re-audit's Phase 1, item 1. Every value below was read directly from the live Sepolia chain or the production database at the timestamp shown — nothing here is inferred from source code or prior documentation. `SETTLEMENT_PAUSED` remains `true` throughout; this manifest does not authorize lifting it.
 
 **Captured**: 2026-09-05T00:00Z (approx.) via direct `eth_call`/`cast` against `https://ethereum-sepolia-rpc.publicnode.com`, and a live read of the production Postgres database (`anc-hor-worker`).
