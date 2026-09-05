@@ -43,8 +43,15 @@ hexify() {
 # a superseded deployment on an older trust model; only the current
 # live contract needs to be whitelisted here, since old ones no longer
 # receive real dispatches.
+# Real gap found by the new reliability-monitoring infrastructure
+# (chains/hyperlane-validator/scripts/verify-deployment.ts's
+# relayer:whitelist check, 2026-09-05): the production DecisionRelay
+# was redeployed twice this session (security-audit findings #1-#3)
+# and this whitelist was never updated to match — it was still pointed
+# at 0x94f3FF..., a retired contract. Updated to the current real
+# production relay.
 WHITELIST='[
-  {"destinationDomain":"11155111","recipientAddress":"0x94f3FF552CC879a36B19b829af3325Ea72cbC71C"},
+  {"destinationDomain":"11155111","recipientAddress":"0xdddc52e9D20957Fb3Afe0dbee165857Cd6ADE968"},
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 
