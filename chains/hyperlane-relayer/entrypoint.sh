@@ -51,7 +51,7 @@ hexify() {
 # at 0x94f3FF..., a retired contract. Updated to the current real
 # production relay.
 WHITELIST='[
-  {"destinationDomain":"11155111","recipientAddress":"0xdddc52e9D20957Fb3Afe0dbee165857Cd6ADE968"},
+  {"destinationDomain":"11155111","recipientAddress":"0x12495e1C55e6257fdE1e1ED0be463477DAFA9907"},
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 
