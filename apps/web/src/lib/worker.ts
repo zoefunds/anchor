@@ -61,9 +61,9 @@ async function processJob(job: Job): Promise<void> {
     return;
   }
   if (job.name === "run_reliability_observation") {
-    const { passCount, warnCount, failCount } = await runReliabilityObservation();
+    const { passCount, warnCount, failCount, state } = await runReliabilityObservation();
     // eslint-disable-next-line no-console
-    console.log(`worker: reliability observation complete, ${passCount} pass, ${warnCount} warn, ${failCount} fail`);
+    console.log(`worker: reliability observation complete, state=${state}, ${passCount} pass, ${warnCount} warn, ${failCount} fail`);
     return;
   }
   if (job.name === "anchor_audit_chains") {

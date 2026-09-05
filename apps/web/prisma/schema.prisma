@@ -902,6 +902,16 @@ model ReliabilityObservation {
   // are derived from this at write time purely so the dashboard/alert
   // logic doesn't need to re-parse it for a simple trend query.
   checks       Json
+  // Re-audit hardening pass (2026-09-05): raw per-call RPC
+  // method/latency/success stats for this sweep tick — real evidence
+  // for "RPC request success/error/latency by method", not inferred
+  // from check pass/fail alone.
+  rpcStats     Json?
+  // Deterministic HEALTHY/DEGRADED/DELIVERY_BLOCKED/UNKNOWN — see
+  // reliability-monitor.ts's computeState. No inferred "probably okay"
+  // state is allowed; settlement eligibility should only ever consult
+  // this column, never re-derive its own looser interpretation.
+  state        String   @default("UNKNOWN")
   passCount    Int
   warnCount    Int
   failCount    Int

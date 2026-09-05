@@ -7,12 +7,14 @@ interface CheckResult {
   name: string;
   status: "pass" | "warn" | "fail";
   detail: string;
+  evidence?: Record<string, unknown>;
 }
 
 interface ReliabilityObservation {
   id: string;
   capturedAt: string;
   checks: CheckResult[];
+  state: "HEALTHY" | "DEGRADED" | "DELIVERY_BLOCKED" | "UNKNOWN";
   passCount: number;
   warnCount: number;
   failCount: number;
@@ -20,6 +22,13 @@ interface ReliabilityObservation {
   scriptCrashed: boolean;
   crashDetail: string | null;
 }
+
+const STATE_COLOR: Record<ReliabilityObservation["state"], string> = {
+  HEALTHY: "text-seal-500 dark:text-seal-400",
+  DEGRADED: "text-muted dark:text-muted-dark",
+  DELIVERY_BLOCKED: "text-status-undetermined",
+  UNKNOWN: "text-status-undetermined",
+};
 
 // Re-audit response (Phase 1, item 3) — real-time view of what
 // lib/reliability-monitor.ts's periodic sweep has been recording,
@@ -127,7 +136,6 @@ export default function ReliabilityPage() {
             <p className="field-label mb-4">History (most recent first)</p>
             <div className="flex flex-col gap-2">
               {observations.map((o) => {
-                const overallBad = o.failCount > 0 || o.scriptCrashed;
                 return (
                   <div key={o.id} className="border-b border-line pb-2 dark:border-line-dark">
                     <button
@@ -135,8 +143,8 @@ export default function ReliabilityPage() {
                       onClick={() => setExpanded(expanded === o.id ? null : o.id)}
                     >
                       <span className="font-mono text-xs text-muted dark:text-muted-dark">{new Date(o.capturedAt).toLocaleString()}</span>
-                      <span className={`font-mono text-xs ${overallBad ? "text-status-undetermined" : "text-seal-500 dark:text-seal-400"}`}>
-                        {o.scriptCrashed ? "CRASHED" : `${o.passCount} pass · ${o.warnCount} warn · ${o.failCount} fail`}
+                      <span className={`font-mono text-xs ${STATE_COLOR[o.state] ?? "text-muted dark:text-muted-dark"}`}>
+                        {o.state} · {o.passCount} pass · {o.warnCount} warn · {o.failCount} fail
                         {o.maxCheckpointLagLeaves !== null && ` · lag ${o.maxCheckpointLagLeaves}`}
                       </span>
                     </button>

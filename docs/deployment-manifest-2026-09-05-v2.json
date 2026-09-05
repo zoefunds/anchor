@@ -1,0 +1,58 @@
+{
+  "supersedes": "docs/deployment-manifest-2026-09-05.md",
+  "capturedAt": "2026-09-05",
+  "settlementPaused": true,
+  "independenceMatrix": [
+    {
+      "component": "validator1",
+      "address": "0x2ffFd80d446835214EF87Eb3753B48935550f73f",
+      "operator": "shared",
+      "cloudAccount": "shared-fly",
+      "provider": "fly.io",
+      "storage": "s3://anchor-hyperlane-validator-checkpoints (shared bucket)",
+      "keyCustody": "backend-controlled (Fly secret VALIDATOR_KEY on anc-hor-validator1)"
+    },
+    {
+      "component": "validator2",
+      "address": "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3",
+      "operator": "shared",
+      "cloudAccount": "shared-fly",
+      "provider": "fly.io",
+      "storage": "s3://anchor-hyperlane-validator-checkpoints (shared bucket, same as validator1)",
+      "keyCustody": "backend-controlled (Fly secret VALIDATOR_KEY on anc-hor-validator2)"
+    },
+    {
+      "component": "safe-owner-1",
+      "address": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb",
+      "operator": "shared",
+      "keyCustody": "operator-held EOA"
+    },
+    {
+      "component": "safe-owner-2",
+      "address": "0xEDc300fb7Bd8437C90aF68393381514722FE128c",
+      "operator": "shared",
+      "keyCustody": "operator-held EOA, offline but same operator"
+    },
+    {
+      "component": "attestor-1",
+      "address": "0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70",
+      "operator": "shared",
+      "cloudAccount": "shared-fly",
+      "keyCustody": "backend-held (ATTESTOR_PRIVATE_KEYS on anc-hor-worker)"
+    },
+    {
+      "component": "attestor-2",
+      "address": "0x229d46B4C22B5AA42fE7cDAae37cf611e726f732",
+      "operator": "shared",
+      "keyCustody": "operator-held, offline but same operator"
+    }
+  ],
+  "thresholds": {
+    "safe": "2-of-2, both owners under one operator",
+    "ism": "2-of-2, both validators under one operator",
+    "attestors": "2-of-2, both signers under one operator"
+  },
+  "netIndependenceClaim": "none — every threshold above is single-operator, not multi-party",
+  "referencedManifest": "docs/deployment-manifest-2026-09-05.md",
+  "generatedBy": "Anchor engineering session, 2026-09-05, re-audit Phase 0 response"
+}
