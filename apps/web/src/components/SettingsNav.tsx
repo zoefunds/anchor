@@ -14,6 +14,7 @@ const SETTINGS_LINKS = [
   { href: "/settings/webhooks", label: "Webhooks" },
   { href: "/settings/reconciliation-findings", label: "Reconciliation findings" },
   { href: "/settings/cutover-readiness", label: "Cutover readiness" },
+  { href: "/settings/reliability", label: "Reliability" },
   { href: "/settings/audit-log", label: "Audit log" },
   { href: "/settings/members", label: "Members" },
   { href: "/settings/keys", label: "API keys" },

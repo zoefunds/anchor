@@ -887,6 +887,38 @@ enum ReconciliationFindingEventType {
   NOTE
 }
 
+// Re-audit response (Phase 1, item 3): a durable, queryable record of
+// every real reliability observation — checkpoint currency, delivery,
+// relayer/ISM/trustedSender wiring, validator independence — so a real
+// 30-day reliability window has actual accumulated evidence behind it,
+// not just markdown log snapshots written by hand (see
+// chains/hyperlane-validator/24H_OBSERVATION_LOG.md's history, which
+// this supersedes going forward). One row per sweep tick.
+model ReliabilityObservation {
+  id           String   @id @default(cuid())
+  capturedAt   DateTime @default(now())
+  // Raw checks array from verify-deployment.ts --json, unmodified —
+  // the durable source of truth. passCount/warnCount/failCount below
+  // are derived from this at write time purely so the dashboard/alert
+  // logic doesn't need to re-parse it for a simple trend query.
+  checks       Json
+  passCount    Int
+  warnCount    Int
+  failCount    Int
+  // Extracted from the checkpoint-currency check details when present
+  // (the real number verify-deployment.ts already computes) — kept as
+  // its own column so a lag trend can be queried/plotted without
+  // parsing every row's raw JSON.
+  maxCheckpointLagLeaves Int?
+  // The script's own process exit code (0 = no fail-level checks).
+  // Distinct from failCount === 0 only if the script itself crashed —
+  // see runReliabilityObservation's own crash-handling.
+  scriptCrashed Boolean @default(false)
+  crashDetail   String?
+
+  @@index([capturedAt])
+}
+
 model ReconciliationFindingEvent {
   id         String                          @id @default(cuid())
   finding    ReconciliationFinding           @relation(fields: [findingId], references: [id])
