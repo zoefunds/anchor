@@ -1,4 +1,4 @@
-import { type Address } from "viem";
+import { type Address, keccak256 } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { prisma } from "@/lib/prisma";
 import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
@@ -56,6 +56,24 @@ const DECISION_RELAY_ABI = [
   { type: "function", name: "settlementMode", stateMutability: "view", inputs: [{ type: "uint32" }], outputs: [{ type: "uint8" }] },
   { type: "function", name: "trustedSender", stateMutability: "view", inputs: [{ type: "uint32" }], outputs: [{ type: "bytes32" }] },
 ] as const;
+const MAILBOX_DISPATCH_EVENT = {
+  type: "event",
+  name: "Dispatch",
+  inputs: [
+    { name: "sender", type: "address", indexed: true },
+    { name: "destination", type: "uint32", indexed: true },
+    { name: "recipient", type: "bytes32", indexed: true },
+    { name: "message", type: "bytes", indexed: false },
+  ],
+} as const;
+const MAILBOX_DELIVERED_ABI = [{ type: "function", name: "delivered", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] }] as const;
+const DISPATCH_LOOKBACK_BLOCKS = 9000n; // ~30h of Sepolia blocks — same window verify-deployment.ts uses, kept under common free-tier eth_getLogs range caps
+
+/** Hyperlane message header: version(1) + nonce(4) + origin(4) + sender(32) + destination(4) + recipient(32) + body. Nonce is bytes 1..5. Same decode verify-deployment.ts uses. */
+function decodeMessageNonce(message: `0x${string}`): number {
+  const hex = message.slice(2);
+  return parseInt(hex.slice(2, 10), 16);
+}
 
 /** Same literal URL convention Hyperlane's own S3 checkpoint syncer uses — see verify-deployment.ts's s3ObjectUrl for the real bug this fixed (region is a hostname selector, not a path segment). */
 function s3ObjectUrl(loc: string, key: string): string {
@@ -64,21 +82,30 @@ function s3ObjectUrl(loc: string, key: string): string {
   return `https://${bucket}.s3.${region}.amazonaws.com/${folder}/${key}`;
 }
 
-async function checkCheckpointCurrency(): Promise<{ results: CheckResult[]; maxLag: number | null }> {
+async function getValidatorS3Locations(): Promise<Record<string, readonly string[]>> {
   const client = getEvmPublicClient();
-  const results: CheckResult[] = [];
-  let maxLag: number | null = null;
-
   const locations = await client.readContract({
     address: VALIDATOR_ANNOUNCE,
     abi: VALIDATOR_ANNOUNCE_ABI,
     functionName: "getAnnouncedStorageLocations",
     args: [VALIDATORS.map((v) => v.address)],
   });
+  const byValidator: Record<string, readonly string[]> = {};
+  VALIDATORS.forEach((v, i) => {
+    byValidator[v.address] = (locations as readonly (readonly string[])[])[i] ?? [];
+  });
+  return byValidator;
+}
+
+async function checkCheckpointCurrency(byValidator: Record<string, readonly string[]>): Promise<{ results: CheckResult[]; maxLag: number | null }> {
+  const client = getEvmPublicClient();
+  const results: CheckResult[] = [];
+  let maxLag: number | null = null;
+
   const mailboxNonce = await client.readContract({ address: MAILBOX, abi: MAILBOX_ABI, functionName: "nonce" });
 
-  for (const [i, v] of VALIDATORS.entries()) {
-    const locs = (locations as readonly (readonly string[])[])[i] ?? [];
+  for (const v of VALIDATORS) {
+    const locs = byValidator[v.address] ?? [];
     const s3Loc = locs.find((l) => l.startsWith("s3://"));
     if (!s3Loc) {
       results.push({ name: `checkpoint-currency:${v.label}`, status: "fail", detail: "no announced S3 storage location" });
@@ -111,6 +138,78 @@ async function checkCheckpointCurrency(): Promise<{ results: CheckResult[]; maxL
     }
   }
   return { results, maxLag };
+}
+
+/**
+ * Real audit finding (2026-09-05): a message can be genuinely
+ * undeliverable — no valid attestor signature exists for it yet on
+ * either validator — while the confirmed-delivered check above still
+ * passes, because that check can pick an OLDER dispatch already safely
+ * within the completed backfill range. This checks the actual most
+ * recent dispatch specifically, which is the one that matters: if it's
+ * ahead of the sequential checkpoint frontier (see checkCheckpointCurrency)
+ * with no per-message checkpoint covering it either, it cannot be
+ * delivered right now, full stop — this is not a cosmetic metric.
+ */
+async function checkRecentDeliveryAndCoverage(byValidator: Record<string, readonly string[]>): Promise<CheckResult[]> {
+  const client = getEvmPublicClient();
+  const results: CheckResult[] = [];
+
+  const currentBlock = await client.getBlockNumber();
+  const fromBlock = currentBlock > DISPATCH_LOOKBACK_BLOCKS ? currentBlock - DISPATCH_LOOKBACK_BLOCKS : 0n;
+  const logs = await client.getLogs({
+    address: MAILBOX,
+    event: MAILBOX_DISPATCH_EVENT,
+    args: { sender: TRUSTED_SENDER_ADDRESS },
+    fromBlock,
+    toBlock: currentBlock,
+  });
+
+  if (logs.length === 0) {
+    results.push({ name: "delivery:recent", status: "warn", detail: `no Dispatch events from ${TRUSTED_SENDER_ADDRESS} in the last ${DISPATCH_LOOKBACK_BLOCKS} blocks` });
+    return results;
+  }
+
+  const latest = logs[logs.length - 1];
+  const message = latest.args.message as `0x${string}`;
+  const destinationDomain = latest.args.destination as number;
+  const nonce = decodeMessageNonce(message);
+
+  if (destinationDomain === SEPOLIA_DOMAIN) {
+    const delivered = await client.readContract({ address: MAILBOX, abi: MAILBOX_DELIVERED_ABI, functionName: "delivered", args: [keccak256(message)] }).catch(() => null);
+    results.push({
+      name: "delivery:most-recent-dispatch",
+      status: delivered ? "pass" : "warn",
+      detail: `most recent dispatch (nonce ${nonce}, tx ${latest.transactionHash}) is ${delivered ? "" : "NOT yet "}delivered`,
+    });
+  }
+
+  for (const v of VALIDATORS) {
+    const locs = byValidator[v.address] ?? [];
+    let found = false;
+    for (const loc of locs) {
+      if (!loc.startsWith("s3://") || found) continue;
+      const res = await fetch(s3ObjectUrl(loc, `checkpoint_${nonce}_with_id.json`)).catch(() => null);
+      if (res?.ok) found = true;
+    }
+    results.push({
+      name: `message-checkpoint-coverage:${v.label}`,
+      // "warn", not "fail" — confirmed live (2026-09-05) that a message
+      // can read as genuinely delivered() on-chain (see delivery check
+      // above) while this specific per-nonce object lookup finds
+      // nothing, for a reason not yet understood (a since-pruned
+      // individual checkpoint, a coverage path this naming convention
+      // doesn't capture, or something else). Treat this as informative
+      // context alongside the delivery check's ground truth, not as an
+      // independent failure signal until that discrepancy is explained.
+      status: found ? "pass" : "warn",
+      detail: found
+        ? `covers the most recent dispatch's leaf (nonce ${nonce}) — deliverable by this validator's own attestation regardless of sequential backfill lag`
+        : `no published checkpoint for the most recent dispatch's leaf (nonce ${nonce}) — informative only; a real dispatch has been confirmed delivered despite this same "no checkpoint found" result, so absence here is not proof of undeliverability`,
+    });
+  }
+
+  return results;
 }
 
 async function checkWiring(): Promise<CheckResult[]> {
@@ -168,13 +267,28 @@ export async function runReliabilityObservation(): Promise<{ passCount: number; 
   let scriptCrashed = false;
   let crashDetail: string | null = null;
 
+  let byValidator: Record<string, readonly string[]> = {};
   try {
-    const { results, maxLag: lag } = await checkCheckpointCurrency();
+    byValidator = await getValidatorS3Locations();
+  } catch (err) {
+    scriptCrashed = true;
+    crashDetail = `getValidatorS3Locations crashed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  try {
+    const { results, maxLag: lag } = await checkCheckpointCurrency(byValidator);
     allResults.push(...results);
     maxLag = lag;
   } catch (err) {
     scriptCrashed = true;
-    crashDetail = `checkCheckpointCurrency crashed: ${err instanceof Error ? err.message : String(err)}`;
+    crashDetail = `${crashDetail ? crashDetail + "; " : ""}checkCheckpointCurrency crashed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  try {
+    allResults.push(...(await checkRecentDeliveryAndCoverage(byValidator)));
+  } catch (err) {
+    scriptCrashed = true;
+    crashDetail = `${crashDetail ? crashDetail + "; " : ""}checkRecentDeliveryAndCoverage crashed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
   try {
