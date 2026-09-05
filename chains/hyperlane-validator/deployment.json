@@ -1,9 +1,10 @@
 {
   "sepolia": {
     "mailbox": "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
+    "merkleTreeHook": "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d",
     "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9",
-    "decisionRelay": "0xdddc52e9D20957Fb3Afe0dbee165857Cd6ADE968",
-    "ism": "0xf9Ceb195C295c496952649574A78B2Da6dD7b05f",
+    "decisionRelay": "0x12495e1C55e6257fdE1e1ED0be463477DAFA9907",
+    "ism": "0xf80B4De13f895ae9D3062aD78500F2C45c865109",
     "dispatcherAddress": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb"
   },
   "validators": [
@@ -26,6 +27,16 @@
       "iamPrincipal": "aws:anchor-hyperlane-validators",
       "s3Bucket": "anchor-hyperlane-validator-checkpoints",
       "s3Prefix": "validator2"
+    },
+    {
+      "address": "0x4dbc8704ebD282535d64Be6daDF2a477C543114D",
+      "label": "validator3",
+      "operator": "independent-operator-bard775",
+      "account": "aws:269469928649",
+      "provider": "aws-ec2",
+      "iamPrincipal": "aws:anchor-hyperlane-validator3",
+      "s3Bucket": "anchor-hyperlane-validator3-checkpoints",
+      "s3Prefix": "validator3"
     }
   ],
   "expectedThreshold": 2,

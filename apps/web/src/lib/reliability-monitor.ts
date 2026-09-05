@@ -1,10 +1,10 @@
-import { type Address, keccak256 } from "viem";
+import { type Address, keccak256, decodeAbiParameters } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { prisma } from "@/lib/prisma";
 import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 
-// Re-audit response (Phase 1, item 3 — reliability monitoring
-// infrastructure). Ports the core, continuously-meaningful checks from
+// Re-audit response (Phase 0 — reliability evidence exporter). Ports
+// the core, continuously-meaningful checks from
 // chains/hyperlane-validator/scripts/verify-deployment.ts (a manual,
 // point-in-time script whose results were previously recorded by hand
 // as markdown "Log Snapshot N" entries — see 24H_OBSERVATION_LOG.md)
@@ -12,11 +12,18 @@ import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 // (ReliabilityObservation) — so a genuine 30-day reliability window
 // has actual accumulated evidence behind it, not manual snapshots.
 //
-// Deliberately NOT a full port: file-based checks (relayer whitelist
-// contents, deployment.json drift) and one-time-per-deploy checks
-// don't need re-running every 15 minutes and stay in the manual
-// script. This covers what actually changes moment to moment:
-// checkpoint currency, recent delivery, and live contract wiring.
+// 2026-09-05 hardening pass (re-audit response): every check now
+// records its raw evidence (HTTP status, response headers, full
+// checkpoint body, on-chain read latency) alongside the pass/warn/fail
+// verdict, not just a human sentence — "trust the underlying data, not
+// the summary" is the whole point of an evidence exporter meant to
+// leave a Hyperlane maintainer or an external auditor able to verify
+// the claim themselves. Also adds a message-level processedDecisions
+// check (real ground truth for "was this decision actually settled",
+// independent of the delivered()/checkpoint-coverage discrepancy this
+// session found and never fully explained) and a real
+// HEALTHY/DEGRADED/DELIVERY_BLOCKED/UNKNOWN state, computed
+// deterministically — no inferred "probably fine."
 //
 // chains/hyperlane-validator isn't an npm workspace and isn't shipped
 // in the worker's Docker image (see apps/web/Dockerfile.worker) — this
@@ -33,8 +40,8 @@ const SEPOLIA_DOMAIN = 11155111;
 const MAX_CHECKPOINT_LAG_LEAVES = 100;
 
 const VALIDATORS = [
-  { address: "0x2ffFd80d446835214EF87Eb3753B48935550f73f" as Address, label: "validator1" },
-  { address: "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3" as Address, label: "validator2" },
+  { address: "0x2ffFd80d446835214EF87Eb3753B48935550f73f" as Address, label: "validator1", flyApp: "anc-hor-validator1" },
+  { address: "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3" as Address, label: "validator2", flyApp: "anc-hor-validator2" },
 ] as const;
 
 type CheckStatus = "pass" | "warn" | "fail";
@@ -42,6 +49,17 @@ interface CheckResult {
   name: string;
   status: CheckStatus;
   detail: string;
+  /** Raw, independently-verifiable evidence behind the verdict above — HTTP status/headers/body, on-chain call latency, etc. Never summarized away. */
+  evidence?: Record<string, unknown>;
+}
+
+type ReliabilityState = "HEALTHY" | "DEGRADED" | "DELIVERY_BLOCKED" | "UNKNOWN";
+
+interface RpcCallStat {
+  method: string;
+  latencyMs: number;
+  success: boolean;
+  error?: string;
 }
 
 const VALIDATOR_ANNOUNCE_ABI = [
@@ -55,6 +73,7 @@ const DECISION_RELAY_ABI = [
   { type: "function", name: "settlementTarget", stateMutability: "view", inputs: [{ type: "uint32" }], outputs: [{ type: "address" }] },
   { type: "function", name: "settlementMode", stateMutability: "view", inputs: [{ type: "uint32" }], outputs: [{ type: "uint8" }] },
   { type: "function", name: "trustedSender", stateMutability: "view", inputs: [{ type: "uint32" }], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "processedDecisions", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] },
 ] as const;
 const MAILBOX_DISPATCH_EVENT = {
   type: "event",
@@ -69,10 +88,41 @@ const MAILBOX_DISPATCH_EVENT = {
 const MAILBOX_DELIVERED_ABI = [{ type: "function", name: "delivered", stateMutability: "view", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }] }] as const;
 const DISPATCH_LOOKBACK_BLOCKS = 9000n; // ~30h of Sepolia blocks — same window verify-deployment.ts uses, kept under common free-tier eth_getLogs range caps
 
+// Matches packages/hyperlane-relay/index.ts's encodeDecisionRelayBody
+// exactly — the ONE place this shape is defined; duplicated here (not
+// imported) only because that package isn't built for direct TS
+// import from this module's real runtime path. Keep these two in sync
+// if that encoding ever changes.
+const DECISION_RELAY_BODY_ABI = [
+  { type: "bytes32" }, // caseId
+  { type: "string" }, // outcome
+  { type: "uint256" }, // claimantAmount
+  { type: "uint256" }, // respondentAmount
+  { type: "bytes32" }, // escrowId
+  { type: "bytes32" }, // proofHash
+  { type: "bytes[]" }, // attestationSignatures
+] as const;
+const MESSAGE_HEADER_BYTES = 1 + 4 + 4 + 32 + 4 + 32; // version + nonce + origin + sender + destination + recipient
+
 /** Hyperlane message header: version(1) + nonce(4) + origin(4) + sender(32) + destination(4) + recipient(32) + body. Nonce is bytes 1..5. Same decode verify-deployment.ts uses. */
 function decodeMessageNonce(message: `0x${string}`): number {
   const hex = message.slice(2);
   return parseInt(hex.slice(2, 10), 16);
+}
+
+function decodeMessageBody(message: `0x${string}`): `0x${string}` {
+  return `0x${message.slice(2 + MESSAGE_HEADER_BYTES * 2)}` as `0x${string}`;
+}
+
+/** Best-effort — this decode only applies to DecisionRelay-shaped messages (real settlement dispatches); anything else (e.g. a raw test/proof message) fails to decode and is reported as such, not silently skipped. */
+function tryDecodeProofHash(message: `0x${string}`): { ok: true; proofHash: `0x${string}` } | { ok: false; reason: string } {
+  try {
+    const body = decodeMessageBody(message);
+    const [, , , , , proofHash] = decodeAbiParameters(DECISION_RELAY_BODY_ABI, body);
+    return { ok: true, proofHash: proofHash as `0x${string}` };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** Same literal URL convention Hyperlane's own S3 checkpoint syncer uses — see verify-deployment.ts's s3ObjectUrl for the real bug this fixed (region is a hostname selector, not a path segment). */
@@ -82,14 +132,51 @@ function s3ObjectUrl(loc: string, key: string): string {
   return `https://${bucket}.s3.${region}.amazonaws.com/${folder}/${key}`;
 }
 
-async function getValidatorS3Locations(): Promise<Record<string, readonly string[]>> {
+/** Fetches an S3 checkpoint object and returns full, independently-verifiable evidence — not just ok/not-ok. Selected response headers only (no auth-adjacent ones — these are anonymous public reads, so there's nothing sensitive to redact, but keep it to headers actually useful for verification). */
+async function fetchS3Evidence(url: string): Promise<{ status: number | null; headers: Record<string, string>; body: unknown; error?: string }> {
+  try {
+    const res = await fetch(url);
+    const headers: Record<string, string> = {};
+    for (const key of ["last-modified", "content-length", "etag", "x-amz-request-id"]) {
+      const v = res.headers.get(key);
+      if (v) headers[key] = v;
+    }
+    let body: unknown = null;
+    if (res.ok) {
+      try {
+        body = await res.json();
+      } catch {
+        body = "(non-JSON body)";
+      }
+    }
+    return { status: res.status, headers, body };
+  } catch (err) {
+    return { status: null, headers: {}, body: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function timedRpcCall<T>(rpcStats: RpcCallStat[], method: string, fn: () => Promise<T>): Promise<T> {
+  const start = Date.now();
+  try {
+    const result = await fn();
+    rpcStats.push({ method, latencyMs: Date.now() - start, success: true });
+    return result;
+  } catch (err) {
+    rpcStats.push({ method, latencyMs: Date.now() - start, success: false, error: err instanceof Error ? err.message : String(err) });
+    throw err;
+  }
+}
+
+async function getValidatorS3Locations(rpcStats: RpcCallStat[]): Promise<Record<string, readonly string[]>> {
   const client = getEvmPublicClient();
-  const locations = await client.readContract({
-    address: VALIDATOR_ANNOUNCE,
-    abi: VALIDATOR_ANNOUNCE_ABI,
-    functionName: "getAnnouncedStorageLocations",
-    args: [VALIDATORS.map((v) => v.address)],
-  });
+  const locations = await timedRpcCall(rpcStats, "ValidatorAnnounce.getAnnouncedStorageLocations", () =>
+    client.readContract({
+      address: VALIDATOR_ANNOUNCE,
+      abi: VALIDATOR_ANNOUNCE_ABI,
+      functionName: "getAnnouncedStorageLocations",
+      args: [VALIDATORS.map((v) => v.address)],
+    })
+  );
   const byValidator: Record<string, readonly string[]> = {};
   VALIDATORS.forEach((v, i) => {
     byValidator[v.address] = (locations as readonly (readonly string[])[])[i] ?? [];
@@ -97,45 +184,45 @@ async function getValidatorS3Locations(): Promise<Record<string, readonly string
   return byValidator;
 }
 
-async function checkCheckpointCurrency(byValidator: Record<string, readonly string[]>): Promise<{ results: CheckResult[]; maxLag: number | null }> {
+async function checkCheckpointCurrency(byValidator: Record<string, readonly string[]>, rpcStats: RpcCallStat[]): Promise<{ results: CheckResult[]; maxLag: number | null }> {
   const client = getEvmPublicClient();
   const results: CheckResult[] = [];
   let maxLag: number | null = null;
 
-  const mailboxNonce = await client.readContract({ address: MAILBOX, abi: MAILBOX_ABI, functionName: "nonce" });
+  const mailboxNonce = await timedRpcCall(rpcStats, "Mailbox.nonce", () => client.readContract({ address: MAILBOX, abi: MAILBOX_ABI, functionName: "nonce" }));
 
   for (const v of VALIDATORS) {
     const locs = byValidator[v.address] ?? [];
     const s3Loc = locs.find((l) => l.startsWith("s3://"));
     if (!s3Loc) {
-      results.push({ name: `checkpoint-currency:${v.label}`, status: "fail", detail: "no announced S3 storage location" });
+      results.push({ name: `checkpoint-currency:${v.label}`, status: "fail", detail: "no announced S3 storage location", evidence: { announcedLocations: locs } });
       continue;
     }
-    try {
-      const res = await fetch(s3ObjectUrl(s3Loc, "checkpoint_latest_index.json"));
-      if (!res.ok) {
-        results.push({ name: `checkpoint-currency:${v.label}`, status: "warn", detail: `checkpoint_latest_index.json -> HTTP ${res.status} (not independently verifiable over HTTPS)` });
-        continue;
-      }
-      // Hyperlane's own format wraps the index as {"value": N}; accept a
-      // bare number too rather than assume one shape and crash on the
-      // other (same defensiveness as verify-deployment.ts's own check).
-      const body = (await res.json()) as unknown;
-      const latestIndex = typeof body === "number" ? body : Number((body as { value?: number })?.value);
-      if (!Number.isFinite(latestIndex)) {
-        results.push({ name: `checkpoint-currency:${v.label}`, status: "warn", detail: `checkpoint_latest_index.json reachable but unparseable: ${JSON.stringify(body)}` });
-        continue;
-      }
-      const lag = Number(mailboxNonce) - latestIndex;
-      maxLag = maxLag === null ? lag : Math.max(maxLag, lag);
-      results.push({
-        name: `checkpoint-currency:${v.label}`,
-        status: lag > MAX_CHECKPOINT_LAG_LEAVES ? "fail" : "pass",
-        detail: `latest signed index: ${latestIndex}, mailbox nonce: ${mailboxNonce}, lag: ${lag} leaves`,
-      });
-    } catch (err) {
-      results.push({ name: `checkpoint-currency:${v.label}`, status: "fail", detail: `could not read checkpoint: ${err instanceof Error ? err.message : String(err)}` });
+    const url = s3ObjectUrl(s3Loc, "checkpoint_latest_index.json");
+    const ev = await fetchS3Evidence(url);
+    if (ev.error || ev.status === null) {
+      results.push({ name: `checkpoint-currency:${v.label}`, status: "fail", detail: `checkpoint_latest_index.json fetch failed: ${ev.error}`, evidence: { url, ...ev } });
+      continue;
     }
+    if (ev.status !== 200) {
+      results.push({ name: `checkpoint-currency:${v.label}`, status: "warn", detail: `checkpoint_latest_index.json -> HTTP ${ev.status} (not independently verifiable over HTTPS)`, evidence: { url, ...ev } });
+      continue;
+    }
+    // Hyperlane's own format wraps the index as {"value": N}; accept a
+    // bare number too rather than assume one shape and crash on the other.
+    const latestIndex = typeof ev.body === "number" ? ev.body : Number((ev.body as { value?: number })?.value);
+    if (!Number.isFinite(latestIndex)) {
+      results.push({ name: `checkpoint-currency:${v.label}`, status: "warn", detail: `checkpoint_latest_index.json reachable but unparseable: ${JSON.stringify(ev.body)}`, evidence: { url, ...ev } });
+      continue;
+    }
+    const lag = Number(mailboxNonce) - latestIndex;
+    maxLag = maxLag === null ? lag : Math.max(maxLag, lag);
+    results.push({
+      name: `checkpoint-currency:${v.label}`,
+      status: lag > MAX_CHECKPOINT_LAG_LEAVES ? "fail" : "pass",
+      detail: `latest signed index: ${latestIndex}, mailbox nonce: ${mailboxNonce}, lag: ${lag} leaves`,
+      evidence: { url, latestIndex, mailboxNonce: Number(mailboxNonce), lag, ...ev },
+    });
   }
   return { results, maxLag };
 }
@@ -143,27 +230,24 @@ async function checkCheckpointCurrency(byValidator: Record<string, readonly stri
 /**
  * Real audit finding (2026-09-05): a message can be genuinely
  * undeliverable — no valid attestor signature exists for it yet on
- * either validator — while the confirmed-delivered check above still
- * passes, because that check can pick an OLDER dispatch already safely
- * within the completed backfill range. This checks the actual most
- * recent dispatch specifically, which is the one that matters: if it's
- * ahead of the sequential checkpoint frontier (see checkCheckpointCurrency)
- * with no per-message checkpoint covering it either, it cannot be
- * delivered right now, full stop — this is not a cosmetic metric.
+ * either validator — while a confirmed-delivered check can still pass
+ * if it picks an OLDER dispatch already safely within the completed
+ * backfill range. This checks the actual most recent dispatch
+ * specifically. Also checks DecisionRelay.processedDecisions directly
+ * (real settlement ground truth, independent of Mailbox.delivered()) —
+ * a message can be "delivered" at the Mailbox/ISM level without
+ * settle() having actually run, or vice versa in theory; checking both
+ * separately is what an evidence exporter is for.
  */
-async function checkRecentDeliveryAndCoverage(byValidator: Record<string, readonly string[]>): Promise<CheckResult[]> {
+async function checkRecentDeliveryAndCoverage(byValidator: Record<string, readonly string[]>, rpcStats: RpcCallStat[]): Promise<CheckResult[]> {
   const client = getEvmPublicClient();
   const results: CheckResult[] = [];
 
-  const currentBlock = await client.getBlockNumber();
+  const currentBlock = await timedRpcCall(rpcStats, "eth_blockNumber", () => client.getBlockNumber());
   const fromBlock = currentBlock > DISPATCH_LOOKBACK_BLOCKS ? currentBlock - DISPATCH_LOOKBACK_BLOCKS : 0n;
-  const logs = await client.getLogs({
-    address: MAILBOX,
-    event: MAILBOX_DISPATCH_EVENT,
-    args: { sender: TRUSTED_SENDER_ADDRESS },
-    fromBlock,
-    toBlock: currentBlock,
-  });
+  const logs = await timedRpcCall(rpcStats, "eth_getLogs(Dispatch)", () =>
+    client.getLogs({ address: MAILBOX, event: MAILBOX_DISPATCH_EVENT, args: { sender: TRUSTED_SENDER_ADDRESS }, fromBlock, toBlock: currentBlock })
+  );
 
   if (logs.length === 0) {
     results.push({ name: "delivery:recent", status: "warn", detail: `no Dispatch events from ${TRUSTED_SENDER_ADDRESS} in the last ${DISPATCH_LOOKBACK_BLOCKS} blocks` });
@@ -174,70 +258,108 @@ async function checkRecentDeliveryAndCoverage(byValidator: Record<string, readon
   const message = latest.args.message as `0x${string}`;
   const destinationDomain = latest.args.destination as number;
   const nonce = decodeMessageNonce(message);
+  const messageId = keccak256(message);
 
   if (destinationDomain === SEPOLIA_DOMAIN) {
-    const delivered = await client.readContract({ address: MAILBOX, abi: MAILBOX_DELIVERED_ABI, functionName: "delivered", args: [keccak256(message)] }).catch(() => null);
+    const delivered = await timedRpcCall(rpcStats, "Mailbox.delivered", () =>
+      client.readContract({ address: MAILBOX, abi: MAILBOX_DELIVERED_ABI, functionName: "delivered", args: [messageId] })
+    ).catch(() => null);
+
+    const decoded = tryDecodeProofHash(message);
+    let processedDecision: boolean | null = null;
+    if (decoded.ok) {
+      processedDecision = await timedRpcCall(rpcStats, "DecisionRelay.processedDecisions", () =>
+        client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "processedDecisions", args: [decoded.proofHash] })
+      ).catch(() => null);
+    }
+
+    // Flagged, not silently buried in evidence: delivered=true with
+    // processedDecisions=false is either a real settlement gap (handle()
+    // ran but settle() didn't complete/commit) or — more likely, since
+    // this session dispatched several non-settlement message types from
+    // the same TRUSTED_SENDER_ADDRESS — this specific dispatch simply
+    // isn't DecisionRelay-body-shaped and the proofHash decode above,
+    // while it didn't throw, extracted meaningless bytes. Not
+    // determined which; noted explicitly rather than asserted either way.
+    const unexplainedGap = decoded.ok && delivered === true && processedDecision === false;
     results.push({
       name: "delivery:most-recent-dispatch",
       status: delivered ? "pass" : "warn",
-      detail: `most recent dispatch (nonce ${nonce}, tx ${latest.transactionHash}) is ${delivered ? "" : "NOT yet "}delivered`,
+      detail:
+        `most recent dispatch (nonce ${nonce}, tx ${latest.transactionHash}, messageId ${messageId}) is ${delivered ? "" : "NOT yet "}delivered` +
+        (unexplainedGap ? " — NOTE: delivered=true but DecisionRelay.processedDecisions(proofHash)=false; not yet determined whether this is a real settlement gap or a non-DecisionRelay message this decode misread" : ""),
+      evidence: {
+        nonce,
+        messageId,
+        txHash: latest.transactionHash,
+        mailboxDelivered: delivered,
+        proofHash: decoded.ok ? decoded.proofHash : null,
+        proofHashDecodeError: decoded.ok ? undefined : decoded.reason,
+        decisionRelayProcessedDecisions: processedDecision,
+        unexplainedGap,
+      },
     });
   }
 
   for (const v of VALIDATORS) {
     const locs = byValidator[v.address] ?? [];
     let found = false;
+    let checkedUrl: string | null = null;
+    let lastEvidence: Awaited<ReturnType<typeof fetchS3Evidence>> | null = null;
     for (const loc of locs) {
       if (!loc.startsWith("s3://") || found) continue;
-      const res = await fetch(s3ObjectUrl(loc, `checkpoint_${nonce}_with_id.json`)).catch(() => null);
-      if (res?.ok) found = true;
+      checkedUrl = s3ObjectUrl(loc, `checkpoint_${nonce}_with_id.json`);
+      lastEvidence = await fetchS3Evidence(checkedUrl);
+      if (lastEvidence.status === 200) found = true;
     }
     results.push({
       name: `message-checkpoint-coverage:${v.label}`,
       // "warn", not "fail" — confirmed live (2026-09-05) that a message
       // can read as genuinely delivered() on-chain (see delivery check
       // above) while this specific per-nonce object lookup finds
-      // nothing, for a reason not yet understood (a since-pruned
-      // individual checkpoint, a coverage path this naming convention
-      // doesn't capture, or something else). Treat this as informative
-      // context alongside the delivery check's ground truth, not as an
-      // independent failure signal until that discrepancy is explained.
+      // nothing, for a reason not yet fully understood. Treat this as
+      // informative context alongside the delivery/processedDecisions
+      // checks' ground truth, not as an independent failure signal.
       status: found ? "pass" : "warn",
       detail: found
         ? `covers the most recent dispatch's leaf (nonce ${nonce}) — deliverable by this validator's own attestation regardless of sequential backfill lag`
-        : `no published checkpoint for the most recent dispatch's leaf (nonce ${nonce}) — informative only; a real dispatch has been confirmed delivered despite this same "no checkpoint found" result, so absence here is not proof of undeliverability`,
+        : `no published checkpoint for the most recent dispatch's leaf (nonce ${nonce}) — informative only; real dispatches have been confirmed delivered despite this same "no checkpoint found" result`,
+      evidence: { url: checkedUrl, nonce, ...lastEvidence },
     });
   }
 
   return results;
 }
 
-async function checkWiring(): Promise<CheckResult[]> {
+async function checkWiring(rpcStats: RpcCallStat[]): Promise<CheckResult[]> {
   const client = getEvmPublicClient();
   const results: CheckResult[] = [];
 
   const [target, mode, trustedSender, ismValidatorsAndThreshold] = await Promise.all([
-    client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "settlementTarget", args: [SEPOLIA_DOMAIN] }),
-    client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "settlementMode", args: [SEPOLIA_DOMAIN] }),
-    client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "trustedSender", args: [SEPOLIA_DOMAIN] }),
-    client.readContract({ address: ISM, abi: ISM_ABI, functionName: "validatorsAndThreshold", args: ["0x"] }).catch(() => null),
+    timedRpcCall(rpcStats, "DecisionRelay.settlementTarget", () => client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "settlementTarget", args: [SEPOLIA_DOMAIN] })),
+    timedRpcCall(rpcStats, "DecisionRelay.settlementMode", () => client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "settlementMode", args: [SEPOLIA_DOMAIN] })),
+    timedRpcCall(rpcStats, "DecisionRelay.trustedSender", () => client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "trustedSender", args: [SEPOLIA_DOMAIN] })),
+    timedRpcCall(rpcStats, "ISM.validatorsAndThreshold", () => client.readContract({ address: ISM, abi: ISM_ABI, functionName: "validatorsAndThreshold", args: ["0x"] })).catch(() => null),
   ]);
 
   results.push({
     name: "decisionrelay:settlementMode",
     status: Number(mode) === 1 ? "pass" : "fail",
     detail: `settlementMode(${SEPOLIA_DOMAIN}) = ${mode} (expected 1/SETTLEMENT)`,
+    evidence: { mode: Number(mode) },
   });
   results.push({
     name: "decisionrelay:settlementTarget",
     status: target !== "0x0000000000000000000000000000000000000000" ? "pass" : "fail",
     detail: `settlementTarget(${SEPOLIA_DOMAIN}) = ${target}`,
+    evidence: { target },
   });
   const expectedSender = `0x000000000000000000000000${TRUSTED_SENDER_ADDRESS.slice(2).toLowerCase()}`;
   results.push({
     name: "decisionrelay:trustedSender",
     status: (trustedSender as string).toLowerCase() === expectedSender ? "pass" : "fail",
     detail: `trustedSender(${SEPOLIA_DOMAIN}) = ${trustedSender}`,
+    evidence: { trustedSender, expectedSender },
   });
   if (ismValidatorsAndThreshold) {
     const [validators, threshold] = ismValidatorsAndThreshold as readonly [readonly Address[], number];
@@ -245,6 +367,7 @@ async function checkWiring(): Promise<CheckResult[]> {
       name: "ism:validator-set",
       status: validators.length === VALIDATORS.length && Number(threshold) === VALIDATORS.length ? "pass" : "warn",
       detail: `ISM has ${validators.length} validator(s), threshold ${threshold}`,
+      evidence: { validators, threshold },
     });
   }
 
@@ -261,22 +384,86 @@ function checkValidatorIndependence(): CheckResult {
   };
 }
 
-export async function runReliabilityObservation(): Promise<{ passCount: number; warnCount: number; failCount: number }> {
+/**
+ * Validator process metadata (deployed image digest, restart count,
+ * uptime) via Fly's Machines API — genuinely optional, since it needs
+ * a Fly API token this worker doesn't hold by default (deliberately:
+ * not provisioning a broad personal/account-level token into a
+ * running service without the operator's own explicit choice). Absent
+ * FLY_API_TOKEN, this reports "unknown" rather than fabricating a
+ * healthy-looking gap — exactly the UNKNOWN state this exporter is
+ * meant to make honest.
+ */
+async function checkValidatorMachineMetadata(): Promise<CheckResult[]> {
+  const token = process.env.FLY_API_TOKEN;
+  if (!token) {
+    return VALIDATORS.map((v) => ({
+      name: `machine-metadata:${v.label}`,
+      status: "warn" as const,
+      detail: `FLY_API_TOKEN not configured on this worker — validator uptime/restart-count/image-digest/memory/disk cannot be captured. Set a scoped, read-only Fly API token to close this gap.`,
+    }));
+  }
+
+  const results: CheckResult[] = [];
+  for (const v of VALIDATORS) {
+    try {
+      const res = await fetch(`https://api.machines.dev/v1/apps/${v.flyApp}/machines`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) {
+        results.push({ name: `machine-metadata:${v.label}`, status: "warn", detail: `Fly Machines API returned HTTP ${res.status}`, evidence: { status: res.status } });
+        continue;
+      }
+      const machines = (await res.json()) as Array<{ id: string; state: string; image_ref?: { digest?: string }; created_at?: string }>;
+      const machine = machines[0];
+      results.push({
+        name: `machine-metadata:${v.label}`,
+        status: machine?.state === "started" ? "pass" : "warn",
+        detail: `state: ${machine?.state ?? "unknown"}, image digest: ${machine?.image_ref?.digest ?? "unknown"}`,
+        evidence: { machines },
+      });
+    } catch (err) {
+      results.push({ name: `machine-metadata:${v.label}`, status: "warn", detail: `Fly Machines API call failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+  return results;
+}
+
+/**
+ * Deterministic overall state — no "probably fine." HEALTHY requires
+ * every check to pass. DELIVERY_BLOCKED specifically means the checks
+ * that answer "can a real message settle right now" failed (checkpoint
+ * currency past threshold, or the most recent dispatch confirmed
+ * undelivered past a reasonable window) — this is the state that
+ * should gate any settlement-eligibility decision, never an inferred
+ * "probably okay." DEGRADED covers everything else with a warn but no
+ * delivery-relevant failure. UNKNOWN means the sweep itself couldn't
+ * form a reliable picture (crashed, or one of the on-chain reads
+ * needed to compute state failed outright).
+ */
+function computeState(results: CheckResult[], scriptCrashed: boolean): ReliabilityState {
+  if (scriptCrashed) return "UNKNOWN";
+  const deliveryRelevant = results.filter((r) => r.name.startsWith("checkpoint-currency:") || r.name === "delivery:most-recent-dispatch");
+  if (deliveryRelevant.some((r) => r.status === "fail")) return "DELIVERY_BLOCKED";
+  if (results.some((r) => r.status === "fail" || r.status === "warn")) return "DEGRADED";
+  return "HEALTHY";
+}
+
+export async function runReliabilityObservation(): Promise<{ passCount: number; warnCount: number; failCount: number; state: ReliabilityState }> {
   const allResults: CheckResult[] = [];
+  const rpcStats: RpcCallStat[] = [];
   let maxLag: number | null = null;
   let scriptCrashed = false;
   let crashDetail: string | null = null;
 
   let byValidator: Record<string, readonly string[]> = {};
   try {
-    byValidator = await getValidatorS3Locations();
+    byValidator = await getValidatorS3Locations(rpcStats);
   } catch (err) {
     scriptCrashed = true;
     crashDetail = `getValidatorS3Locations crashed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
   try {
-    const { results, maxLag: lag } = await checkCheckpointCurrency(byValidator);
+    const { results, maxLag: lag } = await checkCheckpointCurrency(byValidator, rpcStats);
     allResults.push(...results);
     maxLag = lag;
   } catch (err) {
@@ -285,28 +472,32 @@ export async function runReliabilityObservation(): Promise<{ passCount: number; 
   }
 
   try {
-    allResults.push(...(await checkRecentDeliveryAndCoverage(byValidator)));
+    allResults.push(...(await checkRecentDeliveryAndCoverage(byValidator, rpcStats)));
   } catch (err) {
     scriptCrashed = true;
     crashDetail = `${crashDetail ? crashDetail + "; " : ""}checkRecentDeliveryAndCoverage crashed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
   try {
-    allResults.push(...(await checkWiring()));
+    allResults.push(...(await checkWiring(rpcStats)));
   } catch (err) {
     scriptCrashed = true;
     crashDetail = `${crashDetail ? crashDetail + "; " : ""}checkWiring crashed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
   allResults.push(checkValidatorIndependence());
+  allResults.push(...(await checkValidatorMachineMetadata()));
 
   const passCount = allResults.filter((r) => r.status === "pass").length;
   const warnCount = allResults.filter((r) => r.status === "warn").length;
   const failCount = allResults.filter((r) => r.status === "fail").length;
+  const state = computeState(allResults, scriptCrashed);
 
   const observation = await prisma.reliabilityObservation.create({
     data: {
       checks: allResults as unknown as object,
+      rpcStats: rpcStats as unknown as object,
+      state,
       passCount,
       warnCount,
       failCount,
@@ -331,7 +522,7 @@ export async function runReliabilityObservation(): Promise<{ passCount: number; 
     const previouslyHealthy = !previous || (previous.failCount === 0 && !previous.scriptCrashed);
     if (previouslyHealthy) {
       const failing = allResults.filter((r) => r.status === "fail").map((r) => `${r.name}: ${r.detail}`).join("\n");
-      const title = scriptCrashed ? "Reliability observation crashed" : `Reliability observation found ${failCount} failing check(s)`;
+      const title = scriptCrashed ? "Reliability observation crashed" : `Reliability observation found ${failCount} failing check(s) — state: ${state}`;
       const detail = scriptCrashed ? crashDetail! : failing;
       try {
         await sendOpsAlert({ severity: "critical", title, detail });
@@ -346,5 +537,5 @@ export async function runReliabilityObservation(): Promise<{ passCount: number; 
     }
   }
 
-  return { passCount, warnCount, failCount };
+  return { passCount, warnCount, failCount, state };
 }

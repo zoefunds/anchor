@@ -33,6 +33,7 @@ const asJson = process.argv.includes("--json");
 interface Deployment {
   sepolia: {
     mailbox: Address;
+    merkleTreeHook: Address;
     validatorAnnounce: Address;
     decisionRelay: Address;
     ism: Address;
@@ -279,15 +280,28 @@ async function checkFreshness(byValidator: Record<string, string[]>): Promise<vo
 // to the latest published index is "checkpoint_latest_index.json". Both
 // are prefixed with "{folder}/" the same way metadata_latest.json is.
 async function checkCheckpointCurrency(byValidator: Record<string, string[]>): Promise<void> {
+  // Deliberately NOT Mailbox.nonce(): this Mailbox is Hyperlane's shared
+  // canonical Sepolia mailbox, used by the entire ecosystem, not
+  // something Anchor owns exclusively. nonce() counts every dispatch
+  // from every project sharing it. The Mailbox's defaultHook is a
+  // FallbackRoutingHook that only falls back to our MerkleTreeHook for
+  // destination domains with no explicit override (real destinations
+  // this project and others actually use, e.g. Solana, route to a
+  // completely different hook and never touch our tree at all) —
+  // confirmed live: nonce() sat ~1370 above MerkleTreeHook.count() while
+  // a freshly-built, zero-prior-state third validator (validator3)
+  // independently converged to the exact same tree-frontier index as
+  // the other two, proving the "lag" was never validator-side. The only
+  // number that can ever be checkpointed is the tree's own leaf count.
   let currentNonce: number;
   try {
     currentNonce = await client.readContract({
-      address: deployment.sepolia.mailbox,
-      abi: [{ type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint32" }] }] as const,
-      functionName: "nonce",
+      address: deployment.sepolia.merkleTreeHook,
+      abi: [{ type: "function", name: "count", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint32" }] }] as const,
+      functionName: "count",
     });
   } catch (err) {
-    record("checkpoint-currency", "warn", `could not read Mailbox nonce for comparison: ${err instanceof Error ? err.message : String(err)}`);
+    record("checkpoint-currency", "warn", `could not read MerkleTreeHook count for comparison: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
 
@@ -301,7 +315,7 @@ async function checkCheckpointCurrency(byValidator: Record<string, string[]>): P
           `checkpoint-currency:${v.label}`,
           "warn",
           `checkpoint_latest_index.json is not publicly reachable, so the signed checkpoint index cannot be independently ` +
-            `verified over HTTPS. Live Mailbox nonce for comparison: ${currentNonce}. Cross-check directly: ` +
+            `verified over HTTPS. Live MerkleTreeHook leaf count for comparison: ${currentNonce}. Cross-check directly: ` +
             `'flyctl logs -a <validator-app> --no-tail | grep "Latest checkpoint"' for the in-memory-computed index, and ` +
             `'flyctl logs -a <validator-app> --no-tail | grep -c AccessDenied' for authenticated S3 failures.`
         );
@@ -329,7 +343,7 @@ async function checkCheckpointCurrency(byValidator: Record<string, string[]>): P
           /* leave root as "unavailable" */
         }
       }
-      const detail = `latest signed index: ${latestIndex}, root: ${root}, mailbox nonce: ${currentNonce}, lag: ${lag} leaves`;
+      const detail = `latest signed index: ${latestIndex}, root: ${root}, tree leaf count: ${currentNonce}, lag: ${lag} leaves`;
       if (lag > deployment.maxCheckpointLagLeaves) {
         // Careful wording: this is CONTIGUOUS backfill lag (how far behind
         // the sequential "latest index" pointer is), not proof that any
