@@ -1,5 +1,35 @@
 # Replacing the permissive ISM with a real Hyperlane validator set — DONE (mostly), how to keep operating it
 
+> **Update (2026-09-06)**: the "two validators, one operator" state
+> described below is superseded — there are now 3 validators across 2
+> independent AWS accounts plus Fly, per
+> [`docs/mainnet-readiness-runbook.md`](mainnet-readiness-runbook.md) §0.
+> The prose below is kept as historical context for how the 2-validator
+> setup was built; the hosting topology diagram right below is current.
+
+```mermaid
+flowchart TB
+    subgraph Fly["Fly.io"]
+        V1["validator1<br/>anc-hor-validator1"]
+    end
+    subgraph AWS1["AWS 069066994101 (gideon820001)"]
+        V2["validator2<br/>EC2, Docker, SSM-only, no SSH key"]
+        S3_2[("S3: public-read checkpoints<br/>+ IAM-scoped write")]
+        V2 --> S3_2
+    end
+    subgraph AWS2["AWS 269469928649 (bard775)"]
+        V3["validator3<br/>EC2, Docker"]
+        S3_3[("S3: public-read checkpoints<br/>+ IAM-scoped write")]
+        V3 --> S3_3
+    end
+    V1 --> S3_1[("S3: validator1<br/>checkpoints")]
+
+    Note["Each: agents-v2.3.0 image, chunk=9<br/>(Alchemy free-tier 10-block getLogs cap),<br/>public-read bucket policy required<br/>(checkpoint reads are always anonymous —<br/>see hyperlane-base/src/types/s3_storage.rs)"]
+    V1 -.-> Note
+    V2 -.-> Note
+    V3 -.-> Note
+```
+
 This used to be a plan. As of this pass, it's mostly real and live: two
 validators are running, announced on-chain, and a real 2-of-2 multisig
 ISM is wired to `DecisionRelay`. What's still a placeholder (both

@@ -2,15 +2,26 @@
 
 This is the visual companion to the README's [Architecture: the full
 decision-to-settlement pipeline](../README.md#architecture-the-full-decision-to-settlement-pipeline)
-section — that section is the authoritative prose description; the
-diagrams here are kept in sync with it and with
-[`docs/mainnet-readiness-runbook.md`](mainnet-readiness-runbook.md)'s
-live baseline. If a diagram and the prose ever disagree, the prose in
-the linked doc and the live on-chain/config state win — open an issue,
-don't just trust the picture.
+section. It holds the two truly whole-system diagrams (below). Every
+other diagram lives directly in the doc it's actually about — each doc
+owns its own diagram rather than everything being centralized here:
 
-All diagrams are Mermaid, rendered natively by GitHub and by Claude
-artifacts — no image files to keep in sync separately.
+| Diagram | Lives in |
+|---|---|
+| Worker sweep architecture | [`README.md`](../README.md#repo-layout) (Repo layout) |
+| Deployment topology (who runs what, where) | [`README.md`](../README.md#live-deployment--every-address-every-app) (Live deployment) |
+| Trust boundary | [`README.md`](../README.md#trust-boundary) (Trust boundary) |
+| Validator checkpoint → ISM → delivery flow | [`docs/hyperlane-integration.md`](hyperlane-integration.md) |
+| Trust-layer independence map | [`docs/mainnet-readiness-runbook.md`](mainnet-readiness-runbook.md) §0 |
+| Attestor co-signing (EVM) | [`docs/multisig-attestor-setup.md`](multisig-attestor-setup.md) |
+| Alert escalation path | [`docs/ops-alert-escalation.md`](ops-alert-escalation.md) |
+| Key rotation procedure | [`docs/key-rotation-checklist.md`](key-rotation-checklist.md) |
+| V1 → V2 Escrow cutover (historical) | [`docs/v1-v2-escrow-cutover.md`](v1-v2-escrow-cutover.md) |
+
+If a diagram and its doc's prose ever disagree, the prose and the live
+on-chain/config state win — open an issue, don't just trust the picture.
+All diagrams are Mermaid, rendered natively by GitHub — no image files
+to keep in sync separately.
 
 ---
 
@@ -31,7 +42,7 @@ flowchart TB
 
     subgraph FlyWorker["Fly.io — anc-hor-worker"]
         Worker["BullMQ worker<br/>(apps/web/src/worker.ts)"]
-        Sweeps["Scheduled sweeps:<br/>finalize-appeals · retry-settlements ·<br/>confirm-deposits · reconciliation ·<br/>reliability-observation · audit-anchor"]
+        Sweeps["Scheduled sweeps — see README's<br/>Repo layout section for the full diagram"]
     end
 
     Postgres[("Postgres<br/>(Fly)")]
@@ -152,102 +163,19 @@ sequenceDiagram
 
 ---
 
-## 3. Validator checkpoint → message delivery (EVM side)
-
-What actually has to be true before a message can settle — the flow the
-`checkpoint-currency` and `decisionrelay:ism` checks in
-`reliability-monitor.ts`/`verify-deployment.ts` exist to verify.
-
-```mermaid
-flowchart LR
-    Dispatch["A message is dispatched<br/>via Mailbox.dispatch()"] --> Tree["MerkleTreeHook<br/>appends leaf, count() += 1"]
-
-    subgraph Signing["Each validator, independently"]
-        direction TB
-        V1["validator1"] -->|reads| Tree
-        V2["validator2"] -->|reads| Tree
-        V3["validator3"] -->|reads| Tree
-        V1 -->|"signs checkpoint<br/>over tree root + index"| C1["checkpoint_N.json → S3"]
-        V2 --> C2["checkpoint_N.json → S3"]
-        V3 --> C3["checkpoint_N.json → S3"]
-    end
-
-    C1 & C2 & C3 --> Relayer["Self-hosted relayer<br/>picks any 2-of-3 checkpoints"]
-    Relayer --> Metadata["Builds ISM metadata<br/>(signatures + root + index)"]
-    Metadata --> Process["Mailbox.process()"]
-    Process --> Verify{"ISM.verify()<br/>≥2 valid validator sigs<br/>over the claimed root?"}
-    Verify -->|no| Reject["Reverts — message stays undelivered"]
-    Verify -->|yes| Deliver["DecisionRelay.handle()"]
-    Deliver --> Settle["Escrow.settle()<br/>(also requires attestor threshold)"]
-```
-
----
-
-## 4. Trust-layer independence — current state
-
-Companion diagram to
-[`mainnet-readiness-runbook.md`](mainnet-readiness-runbook.md)'s §0/§2 —
-this is what "independence" actually looks like today, layer by layer.
-**Green = verified independent. Yellow = partially independent. Red =
-known not independent.** Update this diagram whenever the underlying
-runbook section changes — it should never silently go stale like
-`reliability-monitor.ts`'s hardcoded validator list did.
-
-```mermaid
-flowchart TB
-    subgraph SafeLayer["Safe (2-of-2 governance) — 🔴 NOT independent"]
-        S1["Owner 1<br/>0x7401...058Eb"]
-        S2["Owner 2<br/>0xEDc3...128c"]
-        SameOp1["Same operator/entity controls both"]
-        S1 -.-> SameOp1
-        S2 -.-> SameOp1
-    end
-
-    subgraph AttestorLayer["Attestors (2-of-2 dispatch signing) — 🔴 NOT verified independent"]
-        A1["Attestor 1<br/>0x3261...8b70"]
-        A2["Attestor 2<br/>0x229d...6f732"]
-        Unverified["Distinct keys, but operator<br/>independence never checked"]
-        A1 -.-> Unverified
-        A2 -.-> Unverified
-    end
-
-    subgraph ValidatorLayer["Validators (2-of-3 ISM) — 🟡 partially independent"]
-        VA1["validator1<br/>Fly · priscilla-george-personal"]
-        VA2["validator2<br/>AWS 069066994101<br/>gideon820001"]
-        VA3["validator3<br/>AWS 269469928649<br/>bard775"]
-        GreenNote["Operator/account/IAM/bucket:<br/>🟢 real, verified distinct"]
-        YellowNote["Cloud provider:<br/>🟡 VA2 + VA3 both AWS<br/>(different accounts)"]
-        VA1 -.-> GreenNote
-        VA2 -.-> GreenNote
-        VA3 -.-> GreenNote
-        VA2 -.-> YellowNote
-        VA3 -.-> YellowNote
-    end
-
-    subgraph RPCLayer["RPC provider — 🔴 not production-grade"]
-        RPC["ethereum-sepolia-rpc.publicnode.com<br/>free, no SLA, shared by ALL of the above"]
-    end
-
-    SafeLayer --> Overall
-    AttestorLayer --> Overall
-    ValidatorLayer --> Overall
-    RPCLayer --> Overall
-    Overall["Mainnet gate:<br/>ALL FOUR layers must be independently<br/>controlled + on dedicated infra<br/>— see runbook Mainnet gate checklist"]
-```
-
----
-
 ## Keeping these current
 
-Every diagram here references specific addresses, accounts, or code
-paths. When any of the following changes, update the matching diagram
-**in the same commit**, the same discipline this project applies to
-`deployment.json` and `reliability-monitor.ts`'s `VALIDATORS` constant:
+Every diagram in this project references specific addresses, accounts,
+or code paths. When any of the following changes, update the matching
+diagram **in the same commit**, the same discipline this project applies
+to `deployment.json` and `reliability-monitor.ts`'s `VALIDATORS`
+constant:
 
-- A validator is added, replaced, or moved to a different account/provider → §1, §3, §4.
-- The Safe owners, attestor set, or their independence status changes → §4.
-- `DecisionRelay`/`Escrow`/ISM is redeployed → §1.
-- The RPC provider changes (e.g. once a dedicated provider replaces the
-  public endpoint from `mainnet-readiness-runbook.md` §3) → §1, §4.
-- The settlement dispatch flow itself changes (new chain, new attestation
-  scheme) → §2.
+- A validator is added, replaced, or moved to a different account/provider → this doc's §1, README's Live deployment + Trust boundary diagrams, `hyperlane-integration.md`, `mainnet-readiness-runbook.md`.
+- The Safe owners, attestor set, or their independence status changes → `mainnet-readiness-runbook.md`'s independence map, README's Trust boundary diagram.
+- `DecisionRelay`/`Escrow`/ISM is redeployed → this doc's §1, README's Live deployment diagram.
+- The RPC provider changes (e.g. once a dedicated provider replaces the public endpoint from `mainnet-readiness-runbook.md` §3) → this doc's §1, README's Live deployment diagram, `mainnet-readiness-runbook.md`'s independence map.
+- The settlement dispatch flow itself changes (new chain, new attestation scheme) → this doc's §2, `multisig-attestor-setup.md`.
+- A worker sweep is added, removed, or its interval changes → README's Repo layout diagram.
+- An alert severity or escalation rule changes → `ops-alert-escalation.md`.
+- The escrow cutover/migration story changes → `v1-v2-escrow-cutover.md`.

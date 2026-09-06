@@ -1,5 +1,14 @@
 # Key rotation checklist — exposed credentials from this hardening pass
 
+```mermaid
+flowchart LR
+    Generate["Generate new key<br/>on operator's own machine<br/>(never in an AI session)"] --> Deploy["Deploy/reconfigure<br/>with new key"]
+    Deploy --> Verify["Verify: announcement,<br/>checkpoint production,<br/>or signature capability<br/>as applicable"]
+    Verify -->|fails| Rollback["Roll back to old key<br/>(not yet revoked)"]
+    Verify -->|passes| Revoke["Revoke old key<br/>(deactivate, then delete<br/>after a rollback window)"]
+    Revoke --> Document["Document the rotation:<br/>date, what, who verified —<br/>never the secret value itself"]
+```
+
 Status: **checklist only — not executed.** This document exists so the
 human custodian can perform each rotation deliberately, not so an
 agent can. No secret value appears anywhere in this document, only

@@ -1,5 +1,33 @@
 # EVM attestor custody + governance — DONE, and how to keep operating it
 
+## Co-signing flow
+
+What happens when the backend's own attestor key isn't enough to reach
+threshold alone:
+
+```mermaid
+sequenceDiagram
+    participant Worker as Fly worker
+    participant API as /api/internal/pending-attestations
+    participant DB as Decision row
+    actor Offline as Offline co-signer
+
+    Worker->>Worker: compute attestation hash for decision
+    Worker->>Worker: sign with backend's own ATTESTOR_PRIVATE_KEYS
+    Worker->>Worker: signature count < attestorThreshold
+    Worker->>DB: persist pendingAttestationHash + pendingAttestationSignatures
+    Note over Worker: throws InsufficientAttestorSignaturesError, dispatch waits
+
+    Offline->>API: GET pending hash (bearer ATTESTOR_COSIGN_SECRET)
+    Offline->>Offline: cast wallet sign --no-hash <hash> (offline machine)
+    Offline->>API: POST signature
+    API->>API: verify signature recovers to a registered attestor address
+    API->>DB: append signature
+
+    Worker->>DB: periodic retry sweep (retry-failed-settlements-sweep)
+    Worker->>Worker: threshold now met → dispatch via Mailbox
+```
+
 This used to be a plan for setting up real M-of-N attestor key custody.
 As of this pass, both the EVM and Solana sides are done, wired into the
 real dispatch path, and verified live — not just designed. This doc

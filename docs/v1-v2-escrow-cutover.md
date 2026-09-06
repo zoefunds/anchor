@@ -1,5 +1,24 @@
 # V1 → V2 Escrow cutover plan (Item D)
 
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant UI as Settlement-integrations UI
+    participant Chain as Sepolia
+    participant Safe as Safe (2-of-2)
+
+    Op->>UI: Deactivate live V1 SettlementIntegration
+    Op->>Op: cutover-readiness-check.sh confirms 0 unsettled V1 deposits
+    Op->>Chain: Deploy Escrow V2 (trusts current DecisionRelay)
+    Op->>UI: Register V2 as new SettlementIntegration
+    Note over UI: V1 and V2 auto-detected by on-chain byte-length check — no ABI-switch deploy needed
+    Safe->>Chain: setSettlementTarget(sepolia domain, V2 address)
+    Op->>Chain: Throwaway case: deposit → adjudicate → 2-of-2 attested settle()
+    Chain-->>Op: deposits() status SETTLED, correct caseId
+    Op->>Op: Delete throwaway org/case/decision
+    Note over Chain: V1 stays deployed, untouched, for rollback — just receives no new dispatches
+```
+
 ## Status: DONE (2026-09-04) — real cutover executed and verified
 
 The real production cutover described below was actually carried out, in order, exactly as planned:

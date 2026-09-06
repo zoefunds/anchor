@@ -3,6 +3,22 @@
 Real, minimal, and honest about what's actually configured today — this
 is the mechanism, not a claim that a 24/7 rotation exists.
 
+```mermaid
+flowchart TD
+    Finding["A sweep raises a ReconciliationFinding"] --> Severity{"Severity?"}
+    Severity -->|critical| Critical["OPS_ALERT_OWNER_CRITICAL<br/>(falls back to OPS_ALERT_OWNER)"]
+    Severity -->|warning| Warning["OPS_ALERT_OWNER_WARNING"]
+    Severity -->|info| Info["OPS_ALERT_OWNER_INFO<br/>(or unset — no alert)"]
+
+    Critical --> Deliver["sendOpsAlert() → Slack<br/>+ sendNtfyAlert() → ntfy"]
+    Warning --> Deliver
+    Deliver --> Delivered{"Actually delivered?<br/>(not just 'didn't throw')"}
+    Delivered -->|no| Retry["alertedAt stays null<br/>→ retried next tick this finding is still open"]
+    Delivered -->|yes| Stamped["alertedAt stamped<br/>→ won't re-alert unless still open next tick"]
+
+    Critical -.->|"still unacknowledged after threshold"| AutoEscalate["escalateUnacknowledgedCriticalFindings()<br/>real auto-escalation, not just a re-send"]
+```
+
 ## Severity → response target
 
 | Severity | Meaning | Response target | Env var |

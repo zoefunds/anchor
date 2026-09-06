@@ -64,6 +64,46 @@ phase of work built and hardened.
 
 ## Repo layout
 
+The worker process (`apps/web/src/worker.ts`) is the one piece of this
+layout worth a diagram of its own — one BullMQ `Worker` plus 6 scheduled
+sweeps, each cheap when idle:
+
+```mermaid
+flowchart TB
+    Redis[("Redis<br/>(BullMQ queue + repeatable-job clock)")]
+    Postgres[("Postgres")]
+
+    subgraph WorkerProcess["anc-hor-worker (Fly)"]
+        BullMQWorker["BullMQ Worker<br/>event-driven, blocking dequeue"]
+        Scheduler["upsertJobScheduler<br/>6 repeatable jobs"]
+    end
+
+    Scheduler -->|"every 5 min"| FinalizeAppeals["finalize-expired-appeals-sweep<br/>→ finalizeExpiredAppealWindows()"]
+    Scheduler -->|"every 5 min"| ConfirmDeposits["confirm-pending-deposits-sweep<br/>→ confirmPendingDeposits()<br/>(RPC only per pending row)"]
+    Scheduler -->|"every 10 min"| RetrySettlements["retry-failed-settlements-sweep<br/>→ retryFailedSettlements()"]
+    Scheduler -->|"every 15 min"| Reconciliation["reconciliation-sweep<br/>→ runReconciliationSweep()<br/>(RPC only per matched candidate row)"]
+    Scheduler -->|"every 30 min"| ReliabilityObs["reliability-observation-sweep<br/>→ runReliabilityObservation()<br/>(unconditional RPC — real infra health check)"]
+    Scheduler -->|"every 30 min"| AuditAnchor["anchor-audit-chains-sweep<br/>→ anchorAuditChains()<br/>(gated: 0 RPC cost if nothing changed)"]
+
+    FinalizeAppeals --> Postgres
+    ConfirmDeposits --> Postgres
+    ConfirmDeposits -.->|"per pending row"| SepoliaRPC["Sepolia RPC"]
+    RetrySettlements --> Postgres
+    RetrySettlements -.->|"only for stuck rows"| SepoliaRPC
+    Reconciliation --> Postgres
+    Reconciliation -.->|"only for matched candidates"| SepoliaRPC
+    ReliabilityObs --> Postgres
+    ReliabilityObs -->|"always"| SepoliaRPC
+    ReliabilityObs -->|"always"| S3["Validator S3 buckets"]
+    AuditAnchor --> Postgres
+    AuditAnchor -.->|"only if audit log changed"| SepoliaRPC
+
+    Reconciliation -->|"critical findings"| Alerts["Slack / ntfy"]
+
+    BullMQWorker <--> Redis
+    Scheduler -.->|"registered on"| Redis
+```
+
 ```
 apps/web/                     Next.js app — API routes, case/evidence UI,
                                Postgres via Prisma, BullMQ job queue, and
@@ -101,6 +141,36 @@ docs/                          Policy specs, decision schema, architecture
 ---
 
 ## Trust boundary
+
+No single actor — Anchor's own backend included — can unilaterally move
+funds:
+
+```mermaid
+flowchart LR
+    subgraph Untrusted["Cannot move funds alone"]
+        Backend["Anchor backend<br/>(holds < attestorThreshold keys, by design)"]
+        OneValidator["Any single validator"]
+        OneAttestor["Any single attestor"]
+        Relayer["Self-hosted relayer<br/>(constructs metadata, doesn't sign)"]
+    end
+
+    subgraph Trusted["Required together to settle"]
+        GenLayer["GenLayer Optimistic Democracy<br/>(produces the decision itself)"]
+        ISMQuorum["ISM: 2-of-3 validator<br/>checkpoint signatures"]
+        AttestorQuorum["DecisionRelay: 2-of-2<br/>attestor signatures"]
+    end
+
+    Backend -.->|"1 of 2 needed"| AttestorQuorum
+    OneValidator -.->|"1 of 3 needed"| ISMQuorum
+    OneAttestor -.->|"1 of 2 needed"| AttestorQuorum
+    Relayer -->|"delivers, doesn't authorize"| ISMQuorum
+
+    GenLayer --> Decision["Decision"]
+    Decision --> AttestorQuorum
+    ISMQuorum --> Delivery["Message delivered"]
+    Delivery --> AttestorQuorum
+    AttestorQuorum --> Settle["Escrow.settle()"]
+```
 
 ```
 YOUR INFRASTRUCTURE (apps/web, packages/*)
@@ -312,6 +382,57 @@ covers what's actually built.
 ---
 
 ## Live deployment — every address, every app
+
+```mermaid
+flowchart TB
+    GitHub["GitHub: zoefunds/anchor<br/>(main branch)"]
+
+    subgraph VercelHost["Vercel — anc-hor (manual deploy, no Git integration)"]
+        WebApp["Next.js app<br/>apps/web"]
+    end
+
+    subgraph FlyHost["Fly.io"]
+        WorkerApp["anc-hor-worker<br/>BullMQ worker + sweeps"]
+        RelayerApp["anc-hor-relayer<br/>self-hosted Hyperlane relayer"]
+        Val1App["anc-hor-validator1<br/>Hyperlane validator"]
+    end
+
+    subgraph AWS1["AWS account 069066994101<br/>(gideon820001, independent operator)"]
+        Val2EC2["EC2: anchor-hyperlane-validator2-new<br/>Hyperlane validator"]
+        Val2S3[("S3: validator2 checkpoints")]
+    end
+
+    subgraph AWS2["AWS account 269469928649<br/>(bard775, independent operator)"]
+        Val3EC2["EC2: validator3 instance<br/>Hyperlane validator"]
+        Val3S3[("S3: validator3 checkpoints")]
+    end
+
+    Postgres[("Postgres (Fly)")]
+    Redis[("Redis")]
+    PublicRPC["ethereum-sepolia-rpc.publicnode.com<br/>(free, no SLA — see mainnet-readiness-runbook.md §3)"]
+
+    GitHub -.->|"manual `vercel --prod`"| VercelHost
+    GitHub -.->|"manual `fly deploy`"| FlyHost
+
+    WebApp --> Postgres
+    WorkerApp --> Postgres
+    WorkerApp <--> Redis
+    WebApp -.->|"enqueue jobs"| Redis
+
+    WebApp --> PublicRPC
+    WorkerApp --> PublicRPC
+    RelayerApp --> PublicRPC
+    Val1App --> PublicRPC
+    Val2EC2 --> PublicRPC
+    Val3EC2 --> PublicRPC
+
+    Val1App -->|"checkpoints"| Val1S3[("S3: validator1<br/>(shared bucket, own prefix)")]
+    Val2EC2 --> Val2S3
+    Val3EC2 --> Val3S3
+    RelayerApp -->|"reads 2-of-3"| Val1S3
+    RelayerApp --> Val2S3
+    RelayerApp --> Val3S3
+```
 
 ### Fly.io apps
 
