@@ -32,16 +32,39 @@ import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 // packaging.
 
 const MAILBOX = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766" as Address;
+// The tree leaf count any validator can ever checkpoint to — NOT
+// Mailbox.nonce(), which counts every dispatch from every user of this
+// shared canonical testnet mailbox, not just Anchor's own traffic. This
+// was a real false-alarm root cause found and fixed in
+// chains/hyperlane-validator/scripts/verify-deployment.ts earlier this
+// project; this module is a separate implementation (see header) that
+// carried the same bug independently until this fix (2026-09-06) — it
+// was producing a fake ~1370-leaf "lag" and a false DELIVERY_BLOCKED
+// state on the live dashboard.
+const MERKLE_TREE_HOOK = "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d" as Address;
 const VALIDATOR_ANNOUNCE = "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9" as Address;
-const DECISION_RELAY = "0xdddc52e9D20957Fb3Afe0dbee165857Cd6ADE968" as Address;
-const ISM = "0xf9Ceb195C295c496952649574A78B2Da6dD7b05f" as Address;
+// Current as of the validator2-replacement cutover (2026-09-06) — see
+// chains/hyperlane-validator/deployment.json (source of truth) and
+// VALIDATOR2_REPLACEMENT.md. These were also stale here (still pointing
+// at the pre-validator3 relay/ISM) until this fix.
+const DECISION_RELAY = "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2" as Address;
+const ISM = "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0" as Address;
 const TRUSTED_SENDER_ADDRESS = "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb" as Address;
 const SEPOLIA_DOMAIN = 11155111;
 const MAX_CHECKPOINT_LAG_LEAVES = 100;
 
+// Mirrors chains/hyperlane-validator/deployment.json's validators array
+// (kept as a separate literal here rather than importing that file,
+// per this module's own "intentionally self-contained" note above).
+// flyApp is only present for Fly-hosted validators — validator2 and
+// validator3 run on their own independent AWS EC2 instances instead
+// (see VALIDATOR2_REPLACEMENT.md / VALIDATOR3_CUTOVER.md), so
+// checkValidatorMachineMetadata below treats its absence as "not
+// applicable," not an error.
 const VALIDATORS = [
-  { address: "0x2ffFd80d446835214EF87Eb3753B48935550f73f" as Address, label: "validator1", flyApp: "anc-hor-validator1" },
-  { address: "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3" as Address, label: "validator2", flyApp: "anc-hor-validator2" },
+  { address: "0x2ffFd80d446835214EF87Eb3753B48935550f73f" as Address, label: "validator1", operator: "anchor-operator", account: "fly:priscilla-george-personal", provider: "fly.io", flyApp: "anc-hor-validator1" as string | undefined },
+  { address: "0xf171c23607b892797Eb5eb4e52fc668f924Df0A3" as Address, label: "validator2", operator: "independent-operator-gideon820001", account: "aws:069066994101", provider: "aws-ec2", flyApp: undefined as string | undefined },
+  { address: "0x4dbc8704ebD282535d64Be6daDF2a477C543114D" as Address, label: "validator3", operator: "independent-operator-bard775", account: "aws:269469928649", provider: "aws-ec2", flyApp: undefined as string | undefined },
 ] as const;
 
 type CheckStatus = "pass" | "warn" | "fail";
@@ -65,7 +88,7 @@ interface RpcCallStat {
 const VALIDATOR_ANNOUNCE_ABI = [
   { type: "function", name: "getAnnouncedStorageLocations", stateMutability: "view", inputs: [{ type: "address[]" }], outputs: [{ type: "string[][]" }] },
 ] as const;
-const MAILBOX_ABI = [{ type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ type: "uint32" }] }] as const;
+const MERKLE_TREE_HOOK_ABI = [{ type: "function", name: "count", stateMutability: "view", inputs: [], outputs: [{ type: "uint32" }] }] as const;
 const ISM_ABI = [
   { type: "function", name: "validatorsAndThreshold", stateMutability: "view", inputs: [{ type: "bytes" }], outputs: [{ type: "address[]" }, { type: "uint8" }] },
 ] as const;
@@ -189,7 +212,7 @@ async function checkCheckpointCurrency(byValidator: Record<string, readonly stri
   const results: CheckResult[] = [];
   let maxLag: number | null = null;
 
-  const mailboxNonce = await timedRpcCall(rpcStats, "Mailbox.nonce", () => client.readContract({ address: MAILBOX, abi: MAILBOX_ABI, functionName: "nonce" }));
+  const treeLeafCount = await timedRpcCall(rpcStats, "MerkleTreeHook.count", () => client.readContract({ address: MERKLE_TREE_HOOK, abi: MERKLE_TREE_HOOK_ABI, functionName: "count" }));
 
   for (const v of VALIDATORS) {
     const locs = byValidator[v.address] ?? [];
@@ -215,13 +238,13 @@ async function checkCheckpointCurrency(byValidator: Record<string, readonly stri
       results.push({ name: `checkpoint-currency:${v.label}`, status: "warn", detail: `checkpoint_latest_index.json reachable but unparseable: ${JSON.stringify(ev.body)}`, evidence: { url, ...ev } });
       continue;
     }
-    const lag = Number(mailboxNonce) - latestIndex;
+    const lag = Number(treeLeafCount) - latestIndex;
     maxLag = maxLag === null ? lag : Math.max(maxLag, lag);
     results.push({
       name: `checkpoint-currency:${v.label}`,
       status: lag > MAX_CHECKPOINT_LAG_LEAVES ? "fail" : "pass",
-      detail: `latest signed index: ${latestIndex}, mailbox nonce: ${mailboxNonce}, lag: ${lag} leaves`,
-      evidence: { url, latestIndex, mailboxNonce: Number(mailboxNonce), lag, ...ev },
+      detail: `latest signed index: ${latestIndex}, tree leaf count: ${treeLeafCount}, lag: ${lag} leaves`,
+      evidence: { url, latestIndex, treeLeafCount: Number(treeLeafCount), lag, ...ev },
     });
   }
   return { results, maxLag };
@@ -375,13 +398,35 @@ async function checkWiring(rpcStats: RpcCallStat[]): Promise<CheckResult[]> {
 }
 
 /** Static, config-derived — real independence requires distinct operators/accounts/providers, not just distinct addresses. See docs/self-hosted-validator-setup.md's own "What's still a placeholder" section. */
+/**
+ * Computed from VALIDATORS' own operator/account/provider metadata
+ * rather than a hand-written sentence — the previous hardcoded "both
+ * validators share everything" text survived unedited through the
+ * validator3 addition AND the validator2 replacement (see
+ * VALIDATOR2_REPLACEMENT.md), silently describing a stale 2-validator
+ * state that had already been fixed on-chain. Mirrors
+ * chains/hyperlane-validator/scripts/verify-deployment.ts's
+ * checkOperatorIndependence so the two never drift into disagreement
+ * about the same real-world fact again.
+ */
 function checkValidatorIndependence(): CheckResult {
-  return {
-    name: "independence",
-    status: "warn",
-    detail:
-      "Both validators share one operator, one cloud account, one AWS account, one S3 bucket. Not independent security actors — a single compromise or operational fault affects both. Do not count this toward quorum-based reliability guarantees until each validator has its own operator/account/provider/bucket.",
-  };
+  const accounts = new Set(VALIDATORS.map((v) => v.account));
+  const operators = new Set(VALIDATORS.map((v) => v.operator));
+  const providers = new Set(VALIDATORS.map((v) => v.provider));
+
+  const sharedDims: string[] = [];
+  if (accounts.size < VALIDATORS.length) sharedDims.push("cloud account");
+  if (operators.size < VALIDATORS.length) sharedDims.push("operator");
+  if (providers.size < VALIDATORS.length) sharedDims.push("cloud provider");
+
+  if (sharedDims.length > 0) {
+    return {
+      name: "independence",
+      status: "warn",
+      detail: `NOT independent consensus: validators share ${sharedDims.join(", ")}. A compromise of that shared thing compromises every validator that shares it. Do not count this toward quorum-based reliability guarantees until every validator has its own operator, account, and provider.`,
+    };
+  }
+  return { name: "independence", status: "pass", detail: "every validator has a distinct operator, account, and cloud provider" };
 }
 
 /**
@@ -395,17 +440,27 @@ function checkValidatorIndependence(): CheckResult {
  * meant to make honest.
  */
 async function checkValidatorMachineMetadata(): Promise<CheckResult[]> {
+  const flyValidators = VALIDATORS.filter((v): v is (typeof VALIDATORS)[number] & { flyApp: string } => Boolean(v.flyApp));
+  const nonFlyResults: CheckResult[] = VALIDATORS.filter((v) => !v.flyApp).map((v) => ({
+    name: `machine-metadata:${v.label}`,
+    status: "pass" as const,
+    detail: `not Fly-hosted (provider: ${v.provider}) — this check only covers Fly Machines API metadata; not applicable`,
+  }));
+
   const token = process.env.FLY_API_TOKEN;
   if (!token) {
-    return VALIDATORS.map((v) => ({
-      name: `machine-metadata:${v.label}`,
-      status: "warn" as const,
-      detail: `FLY_API_TOKEN not configured on this worker — validator uptime/restart-count/image-digest/memory/disk cannot be captured. Set a scoped, read-only Fly API token to close this gap.`,
-    }));
+    return [
+      ...flyValidators.map((v) => ({
+        name: `machine-metadata:${v.label}`,
+        status: "warn" as const,
+        detail: `FLY_API_TOKEN not configured on this worker — validator uptime/restart-count/image-digest/memory/disk cannot be captured. Set a scoped, read-only Fly API token to close this gap.`,
+      })),
+      ...nonFlyResults,
+    ];
   }
 
-  const results: CheckResult[] = [];
-  for (const v of VALIDATORS) {
+  const results: CheckResult[] = [...nonFlyResults];
+  for (const v of flyValidators) {
     try {
       const res = await fetch(`https://api.machines.dev/v1/apps/${v.flyApp}/machines`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) {
