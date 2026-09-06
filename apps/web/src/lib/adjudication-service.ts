@@ -484,11 +484,35 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
   try {
     let contractAddress = kase.contractAddress as `0x${string}` | null;
 
+    // Real bug found and fixed 2026-09-06 (case cmtq5l4jq0002gi5mum3t6xui):
+    // the non-appeal branch used to unconditionally deployCase() every
+    // time this job ran, with no `if (!contractAddress)` guard — unlike
+    // the appeal branch right above, which already reuses the existing
+    // contract. A retry after ANY transient failure (a network blip
+    // reading getDecision(), a DB write hiccup) would redeploy a brand
+    // new contract and call adjudicate() again, abandoning whatever the
+    // first, possibly-successful attempt had already decided on GenLayer
+    // — the real decision then sits on-chain at the OLD address forever,
+    // invisible to this job and to the app, while the case is left
+    // showing a generic UNDETERMINED from whatever the retry's own
+    // failure happened to be. Now: only deploy once per case; a retry
+    // reuses the existing contract and checks get_decision() BEFORE
+    // calling adjudicate() again, so a decision that already exists is
+    // recovered instead of silently orphaned by a duplicate deploy.
+    let recoveredDecision: Awaited<ReturnType<typeof genlayer.getDecision>> = null;
     if (isAppeal) {
       if (!contractAddress) {
         throw new Error("cannot appeal a case with no deployed contract");
       }
       await genlayer.appealCase(contractAddress);
+    } else if (contractAddress) {
+      // A retry: this case already has a deployed contract from a prior
+      // attempt. Check whether that attempt actually landed a real
+      // decision before assuming it didn't and calling adjudicate()
+      // again (which the contract correctly rejects once already
+      // decided — see genvm-lint's own "already-decided re-adjudication
+      // rejection" test case).
+      recoveredDecision = await genlayer.getDecision(contractAddress);
     } else {
       const deployed = await genlayer.deployCase({
         code: getAdjudicatorContractCode(),
@@ -553,18 +577,32 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       );
     }
 
-    // Capture the real GenLayer transaction hash of the call that
-    // produced this decision — previously discarded, leaving no way to
-    // independently verify a decision actually happened on GenLayer
-    // (`genlayer receipt <txHash>`) short of trusting Anchor's own claim.
-    const { txHash: adjudicateTxHash } = await genlayer.runAdjudication(contractAddress, {
-      policyId: kase.policyId,
-      evidence,
-    });
+    let adjudicateTxHash: string | null = null;
+    let decision: NonNullable<typeof recoveredDecision>;
+    if (recoveredDecision) {
+      // Recovered from a prior attempt's already-decided contract (see
+      // the retry-safety comment above) — no new adjudicate() call, so
+      // no new transaction hash exists for this run. adjudicateTxHash
+      // stays null rather than fabricated; the original attempt's real
+      // tx hash wasn't captured before it was lost, which is exactly
+      // the gap this fix closes for every future case.
+      decision = recoveredDecision;
+    } else {
+      // Capture the real GenLayer transaction hash of the call that
+      // produced this decision — previously discarded, leaving no way to
+      // independently verify a decision actually happened on GenLayer
+      // (`genlayer receipt <txHash>`) short of trusting Anchor's own claim.
+      const result = await genlayer.runAdjudication(contractAddress, {
+        policyId: kase.policyId,
+        evidence,
+      });
+      adjudicateTxHash = result.txHash;
 
-    const decision = await genlayer.getDecision(contractAddress);
-    if (!decision) {
-      throw new Error("adjudicate() succeeded but get_decision() returned empty");
+      const fetched = await genlayer.getDecision(contractAddress);
+      if (!fetched) {
+        throw new Error("adjudicate() succeeded but get_decision() returned empty");
+      }
+      decision = fetched;
     }
 
     // A successful first decision opens an appeal window; a successful
