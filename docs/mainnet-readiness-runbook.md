@@ -155,6 +155,22 @@ compromised or bypassed Solana ISM cannot itself authorize a settlement.
 **This invariant is load-bearing and must never regress** without the
 same rigor as a change to `attested_settle` itself.
 
+### `SETTLEMENT_PAUSED` status log
+
+| Date | Change | Scope | Authorized by |
+|---|---|---|---|
+| 2026-09-06 | Set to `false` on `anc-hor-worker` (permanent, not a scoped test-and-re-pause like the earlier V1→V2 cutover dispatch) | **Sepolia testnet only** — for active development/testing of the settlement dispatch path | Explicit user request in chat, same day |
+
+**This does not satisfy, bypass, or count toward the Mainnet gate's own
+"explicit, separate authorization to unpause" item below.** That gate
+item refers to the future decision to allow real settlement dispatch
+once mainnet is actually being deployed to — a categorically different,
+much higher-stakes decision than allowing testnet dispatch to run during
+active development, since testnet has never handled and cannot handle
+real customer funds. Any future mainnet deployment starts this flag back
+at `true` regardless of this testnet history, per the Mainnet gate
+checklist.
+
 ### 30-day reliability observation window
 
 **Formally restarted as of 2026-09-06**, since the underlying validator
