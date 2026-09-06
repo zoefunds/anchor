@@ -20,11 +20,11 @@ const SETTLEMENT_RETRY_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 const AUDIT_ANCHOR_SWEEP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes — an external checkpoint doesn't need to be real-time, just regular
 const DEPOSIT_CONFIRMATION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes — same cadence as the finalize sweep; a deposit sitting unconfirmed doesn't need faster polling than that
 const RECONCILIATION_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes — several real on-chain reads per tick, doesn't need finalize-sweep speed
-// Re-audit response (Phase 1, item 3) — same cadence as reconciliation:
-// frequent enough that a real 30-day observation window has meaningful
-// density (96 observations/day), infrequent enough not to hammer the
-// RPC provider or S3 with checkpoint reads.
-const RELIABILITY_OBSERVATION_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+// Re-audit response (Phase 1, item 3). Widened from 15 to 30 minutes
+// (2026-09-06) to cut idle RPC/getLogs usage — still 48 observations/day,
+// enough density for a 30-day observation window, without doubling the
+// RPC provider load of a check that runs unconditionally on every tick.
+const RELIABILITY_OBSERVATION_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 let worker: Worker | null = null;
 
