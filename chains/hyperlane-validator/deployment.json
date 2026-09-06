@@ -3,8 +3,9 @@
     "mailbox": "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
     "merkleTreeHook": "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d",
     "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9",
-    "decisionRelay": "0x12495e1C55e6257fdE1e1ED0be463477DAFA9907",
-    "ism": "0xf80B4De13f895ae9D3062aD78500F2C45c865109",
+    "decisionRelay": "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
+    "escrow": "0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7",
+    "ism": "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0",
     "dispatcherAddress": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb"
   },
   "validators": [
@@ -19,14 +20,17 @@
       "s3Prefix": "validator1"
     },
     {
-      "address": "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3",
+      "address": "0xf171c23607b892797Eb5eb4e52fc668f924Df0A3",
       "label": "validator2",
-      "operator": "anchor-operator",
-      "account": "fly:priscilla-george-personal",
-      "provider": "fly.io",
-      "iamPrincipal": "aws:anchor-hyperlane-validators",
-      "s3Bucket": "anchor-hyperlane-validator-checkpoints",
-      "s3Prefix": "validator2"
+      "operator": "independent-operator-gideon820001",
+      "account": "aws:069066994101",
+      "provider": "aws-ec2",
+      "iamPrincipal": "aws:anchor-hyperlane-validator2-new",
+      "s3Bucket": "anchor-hyperlane-validator2-new-checkpoints",
+      "s3Prefix": "validator2",
+      "replaces": "0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3",
+      "replacedAt": "2026-09-06",
+      "replacementReason": "Real A/B/C independence -- see VALIDATOR2_REPLACEMENT.md. Old validator2 shared an operator/AWS account with validator1."
     },
     {
       "address": "0x4dbc8704ebD282535d64Be6daDF2a477C543114D",

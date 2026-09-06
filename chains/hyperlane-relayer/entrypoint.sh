@@ -45,13 +45,12 @@ hexify() {
 # receive real dispatches.
 # Real gap found by the new reliability-monitoring infrastructure
 # (chains/hyperlane-validator/scripts/verify-deployment.ts's
-# relayer:whitelist check, 2026-09-05): the production DecisionRelay
-# was redeployed twice this session (security-audit findings #1-#3)
-# and this whitelist was never updated to match — it was still pointed
-# at 0x94f3FF..., a retired contract. Updated to the current real
-# production relay.
+# relayer:whitelist check, 2026-09-06): redeployed again for the
+# validator2 replacement (real A/B/C validator independence — see
+# chains/hyperlane-validator/VALIDATOR2_REPLACEMENT.md). Previous relay
+# 0x12495e1C55e6257fdE1e1ED0be463477DAFA9907 retired, not deleted.
 WHITELIST='[
-  {"destinationDomain":"11155111","recipientAddress":"0x12495e1C55e6257fdE1e1ED0be463477DAFA9907"},
+  {"destinationDomain":"11155111","recipientAddress":"0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2"},
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 
