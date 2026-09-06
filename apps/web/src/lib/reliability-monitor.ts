@@ -397,7 +397,44 @@ async function checkWiring(rpcStats: RpcCallStat[]): Promise<CheckResult[]> {
   return results;
 }
 
-/** Static, config-derived — real independence requires distinct operators/accounts/providers, not just distinct addresses. See docs/self-hosted-validator-setup.md's own "What's still a placeholder" section. */
+// Known free/public RPC hostnames with no SLA, no dedicated rate limit,
+// and no paid support -- fine for testnet, not evidence of production
+// reliability. Update this list (and docs/mainnet-readiness-runbook.md
+// §3) once a dedicated provider is actually funded and configured.
+const KNOWN_PUBLIC_RPC_HOSTS = ["publicnode.com", "rpc.sepolia.org", "drpc.org", "ankr.com"];
+
+/**
+ * Re-audit response (2026-09-06, docs/mainnet-readiness-runbook.md §3):
+ * the migration off an exhausted paid Alchemy key onto a free public RPC
+ * was a necessary emergency fix, not reliability hardening -- it removed
+ * a hard dependency on a key with no budget behind it, but added no SLA,
+ * no dedicated rate limit, and no failover. This check exists so that
+ * fact can't quietly disappear from the dashboard once the migration
+ * stops being top of mind. It stays "warn" for as long as the configured
+ * RPC host matches a known public endpoint, and should flip to "pass"
+ * only once a dedicated, budgeted provider (or a self-hosted node) is
+ * back in place.
+ */
+function checkRpcProviderRisk(): CheckResult {
+  const rpcUrl = process.env.HYPERLANE_RELAY_RPC_URL ?? "";
+  let host = "unknown";
+  try {
+    host = new URL(rpcUrl).host;
+  } catch {
+    // leave host as "unknown" -- an unparseable/unset RPC URL is caught by every other check's own RPC calls failing, not this one's job to duplicate
+  }
+  const isKnownPublic = KNOWN_PUBLIC_RPC_HOSTS.some((known) => host.endsWith(known));
+  if (isKnownPublic) {
+    return {
+      name: "rpc-provider-risk",
+      status: "warn",
+      detail: `RPC host ${host} is a free public endpoint with no SLA, no dedicated rate limit, and no failover. Acceptable for testnet; do NOT count this toward a production-reliability or mainnet-readiness claim until a dedicated, budgeted provider is configured. See docs/mainnet-readiness-runbook.md §3.`,
+      evidence: { host },
+    };
+  }
+  return { name: "rpc-provider-risk", status: "pass", detail: `RPC host ${host} is not on the known-public-endpoint list`, evidence: { host } };
+}
+
 /**
  * Computed from VALIDATORS' own operator/account/provider metadata
  * rather than a hand-written sentence — the previous hardcoded "both
@@ -540,6 +577,7 @@ export async function runReliabilityObservation(): Promise<{ passCount: number; 
     crashDetail = `${crashDetail ? crashDetail + "; " : ""}checkWiring crashed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
+  allResults.push(checkRpcProviderRisk());
   allResults.push(checkValidatorIndependence());
   allResults.push(...(await checkValidatorMachineMetadata()));
 
