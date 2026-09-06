@@ -131,6 +131,12 @@ EXTERNAL (not in MVP)
 
 ## Architecture: the full decision-to-settlement pipeline
 
+See [`docs/architecture.md`](docs/architecture.md) for the full diagram
+set (system components, this pipeline as a sequence diagram, the
+validator/ISM checkpoint flow, and the current trust-layer independence
+map) — kept in sync with this section and with
+[`docs/mainnet-readiness-runbook.md`](docs/mainnet-readiness-runbook.md).
+
 ```
 1. Case created (API or dashboard) → evidence submitted → policy selected
 2. runAdjudicationJob() (apps/web/src/lib/adjudication-service.ts):

@@ -31,6 +31,52 @@ throughout:
 
 ## 0. Baseline — corrected and verified, 2026-09-06
 
+See [`docs/architecture.md`](architecture.md) for the full diagram set.
+The trust-layer independence diagram from that doc is reproduced here
+since it's this runbook's own subject — update both together:
+
+```mermaid
+flowchart TB
+    subgraph SafeLayer["Safe (2-of-2 governance) — 🔴 NOT independent"]
+        S1["Owner 1<br/>0x7401...058Eb"]
+        S2["Owner 2<br/>0xEDc3...128c"]
+        SameOp1["Same operator/entity controls both"]
+        S1 -.-> SameOp1
+        S2 -.-> SameOp1
+    end
+
+    subgraph AttestorLayer["Attestors (2-of-2 dispatch signing) — 🔴 NOT verified independent"]
+        A1["Attestor 1<br/>0x3261...8b70"]
+        A2["Attestor 2<br/>0x229d...6f732"]
+        Unverified["Distinct keys, but operator<br/>independence never checked"]
+        A1 -.-> Unverified
+        A2 -.-> Unverified
+    end
+
+    subgraph ValidatorLayer["Validators (2-of-3 ISM) — 🟡 partially independent"]
+        VA1["validator1<br/>Fly · priscilla-george-personal"]
+        VA2["validator2<br/>AWS 069066994101<br/>gideon820001"]
+        VA3["validator3<br/>AWS 269469928649<br/>bard775"]
+        GreenNote["Operator/account/IAM/bucket:<br/>🟢 real, verified distinct"]
+        YellowNote["Cloud provider:<br/>🟡 VA2 + VA3 both AWS<br/>(different accounts)"]
+        VA1 -.-> GreenNote
+        VA2 -.-> GreenNote
+        VA3 -.-> GreenNote
+        VA2 -.-> YellowNote
+        VA3 -.-> YellowNote
+    end
+
+    subgraph RPCLayer["RPC provider — 🔴 not production-grade"]
+        RPC["ethereum-sepolia-rpc.publicnode.com<br/>free, no SLA, shared by ALL of the above"]
+    end
+
+    SafeLayer --> Overall
+    AttestorLayer --> Overall
+    ValidatorLayer --> Overall
+    RPCLayer --> Overall
+    Overall["Mainnet gate:<br/>ALL FOUR layers must be independently<br/>controlled + on dedicated infra"]
+```
+
 ### Environment label
 
 **Everything below is Sepolia testnet.** No component described in this

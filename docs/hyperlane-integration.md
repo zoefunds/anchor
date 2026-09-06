@@ -1,5 +1,26 @@
 # Cross-chain adjudication relay (Hyperlane)
 
+See [`docs/architecture.md`](architecture.md) for the full diagram set,
+including the validator-checkpoint → ISM → delivery flow this doc
+describes in prose below:
+
+```mermaid
+flowchart LR
+    Dispatch["Message dispatched<br/>via Mailbox.dispatch()"] --> Tree["MerkleTreeHook<br/>count() += 1"]
+    subgraph Signing["Each validator, independently"]
+        direction TB
+        V1["validator1"] --> C1["checkpoint → S3"]
+        V2["validator2"] --> C2["checkpoint → S3"]
+        V3["validator3"] --> C3["checkpoint → S3"]
+    end
+    Tree --> Signing
+    C1 & C2 & C3 --> Relayer["Self-hosted relayer<br/>picks 2-of-3 checkpoints"]
+    Relayer --> Process["Mailbox.process()"]
+    Process --> Verify{"ISM: ≥2 valid<br/>validator signatures?"}
+    Verify -->|no| Reject["Reverts"]
+    Verify -->|yes| Deliver["DecisionRelay.handle()"]
+```
+
 Anchor's decisions are produced on GenLayer. Most parties in a dispute hold
 funds/escrow on other chains (EVM chains, Solana). Hyperlane is the
 interchain messaging layer that gets a finalized decision — and an
