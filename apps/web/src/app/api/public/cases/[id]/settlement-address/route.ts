@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
-import { normalizeEvmAddress, authorizeDepositOnChain } from "@/lib/case-settlement";
+import { normalizeSettlementAddress, authorizeDepositOnChain } from "@/lib/case-settlement";
 import { verifyPartySignature, settlementAddressSigningMessage } from "@/lib/party-signing";
 import { logAction } from "@/lib/audit";
 
@@ -32,14 +32,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
-  const normalized = normalizeEvmAddress(address);
-  if (!normalized) {
-    return NextResponse.json({ error: "address must be a valid EVM address" }, { status: 400 });
-  }
-
   const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
   if (!kase) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
+  }
+
+  const normalized = normalizeSettlementAddress(kase.settlementChain ?? "", address);
+  if (!normalized) {
+    return NextResponse.json(
+      { error: kase.settlementChain === "solanatestnet" ? "address must be a valid base58 Solana pubkey" : "address must be a valid EVM address" },
+      { status: 400 }
+    );
   }
 
   const publicKeyField = resolved.role === "claimant" ? "claimantPublicKey" : "respondentPublicKey";

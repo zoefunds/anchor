@@ -282,6 +282,14 @@ async function checkDispatchedButStale(): Promise<void> {
     }
     if (!processed) continue; // dispatch recorded a txHash but the chain doesn't (yet) show it processed — not stale, just still in flight
 
+    // kase.settlementChain !== "sepolia" already continued above, so
+    // this integration is structurally EVM (V1/V2) here -- narrowed
+    // explicitly rather than cast.
+    if (cs.integration.escrowVersion === "SOLANA_V1") {
+      console.error(`reconciliation: CaseSettlement ${cs.id} has chain sepolia but escrowVersion SOLANA_V1 -- inconsistent record, skipping`);
+      continue;
+    }
+
     let escrowStatus: number;
     try {
       const result = (await client.readContract({

@@ -4,7 +4,8 @@ import { resolveOrgFromRequest, authErrorResponse, requireOwner } from "@/lib/au
 import { canAccessCase } from "@/lib/case-access";
 import { logAction } from "@/lib/audit";
 import { toAttoAmount } from "@/lib/genlayer";
-import { deriveEscrowId, assertEscrowBoundToDecisionRelay, SettlementIntegrationError } from "@/lib/case-settlement";
+import { deriveEscrowIdForCase, assertEscrowBoundToDecisionRelay, SettlementIntegrationError } from "@/lib/case-settlement";
+import { assertSolanaEscrowBoundToDecisionRelay, toLamports, SolanaEscrowError } from "@/lib/solana-escrow";
 
 // GET /api/cases/:id/settlement — current binding/deposit/settlement
 // state for this case, if any.
@@ -70,20 +71,27 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   try {
-    await assertEscrowBoundToDecisionRelay({
-      chain: integration.chain,
-      escrowContractAddress: integration.escrowContractAddress as `0x${string}`,
-      expectedDecisionRelayAddress: kase.settlementContract as `0x${string}`,
-    });
+    if (integration.chain === "solanatestnet") {
+      await assertSolanaEscrowBoundToDecisionRelay({
+        escrowProgramId: integration.escrowContractAddress,
+        decisionRelayProgramId: kase.settlementContract,
+      });
+    } else {
+      await assertEscrowBoundToDecisionRelay({
+        chain: integration.chain,
+        escrowContractAddress: integration.escrowContractAddress as `0x${string}`,
+        expectedDecisionRelayAddress: kase.settlementContract as `0x${string}`,
+      });
+    }
   } catch (err) {
-    if (err instanceof SettlementIntegrationError) {
+    if (err instanceof SettlementIntegrationError || err instanceof SolanaEscrowError) {
       return NextResponse.json({ error: err.message }, { status: 422 });
     }
     return NextResponse.json({ error: `could not verify escrow contract on-chain: ${(err as Error).message}` }, { status: 502 });
   }
 
-  const expectedAmountAtto = toAttoAmount(kase.amount.toString()).toString();
-  const escrowId = deriveEscrowId(kase.id);
+  const expectedAmountAtto = integration.chain === "solanatestnet" ? toLamports(kase.amount.toString()).toString() : toAttoAmount(kase.amount.toString()).toString();
+  const escrowId = deriveEscrowIdForCase(kase);
 
   const settlement = await prisma.$transaction(async (tx) => {
     const created = await tx.caseSettlement.create({

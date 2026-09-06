@@ -413,6 +413,15 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
     }
     const escrowId = escrowIdToBytes32(caseSettlement.escrowId, "CaseSettlement.escrowId");
     const { EscrowVersionMismatchError } = await import("@/lib/escrow-version");
+    // settlement/route.ts's bind-time check (integration.chain must
+    // equal kase.settlementChain) makes this structurally unreachable
+    // for a case actually dispatching via this sepolia branch — narrowed
+    // explicitly rather than cast, so a future bind-time regression
+    // fails loudly here instead of silently using an EVM ABI against a
+    // Solana integration.
+    if (caseSettlement.integration.escrowVersion === "SOLANA_V1") {
+      throw new Error(`case ${params.caseId} is dispatching via sepolia but its bound CaseSettlement integration is SOLANA_V1 — inconsistent record`);
+    }
     try {
       await assertEscrowDepositMatches({
         escrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
@@ -492,6 +501,36 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
     if (!rpcUrl) {
       throw new Error("SOLANA_RPC_URL is not set — see apps/web/.env.example");
     }
+
+    // Real deposit-confirmation gate, mirroring the sepolia branch's
+    // assertSettlementTargetMatchesIntegration/assertEscrowDepositMatches
+    // above — added 2026-09-06, closing a real gap: this branch used to
+    // dispatch straight off the Case row's own settlementSolana* fields
+    // with no on-chain deposit check at all, unlike the EVM path.
+    // Only enforced when a CaseSettlement is actually bound (a case
+    // that never registered one keeps its prior, pre-tracking
+    // behavior — dispatch straight from Case fields — so this is
+    // additive, not a breaking change for existing Solana cases).
+    const caseSettlement = await prisma.caseSettlement.findUnique({ where: { caseId: params.caseId }, include: { integration: true } });
+    if (caseSettlement && caseSettlement.integration.chain === "solanatestnet") {
+      if (caseSettlement.status !== "DEPOSITED") {
+        throw new Error(
+          `case ${params.caseId} has a bound Solana settlement integration but its CaseSettlement status is ${caseSettlement.status}, not DEPOSITED — refusing to dispatch a settlement with no confirmed deposit`
+        );
+      }
+      if (!caseSettlement.claimantAddress || !caseSettlement.respondentAddress) {
+        throw new Error(`case ${params.caseId}'s CaseSettlement is DEPOSITED but missing claimantAddress/respondentAddress — inconsistent record, refusing to dispatch`);
+      }
+      const { assertSolanaEscrowDepositMatches } = await import("@/lib/solana-escrow");
+      await assertSolanaEscrowDepositMatches({
+        escrowProgramId: caseSettlement.integration.escrowContractAddress,
+        onChainCaseId: caseSettlement.escrowId,
+        expectedClaimant: caseSettlement.claimantAddress,
+        expectedRespondent: caseSettlement.respondentAddress,
+        expectedAmountLamports: BigInt(caseSettlement.expectedAmountAtto),
+      });
+    }
+
     const { submitAttestedSettle } = await import("@/lib/solana-settle");
     const { signature } = await submitAttestedSettle(
       {

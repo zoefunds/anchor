@@ -14,7 +14,10 @@ interface SettlementIntegration {
   createdAt: string;
 }
 
-const CHAIN_OPTIONS = [{ value: "sepolia", label: "Sepolia (EVM)" }];
+const CHAIN_OPTIONS = [
+  { value: "sepolia", label: "Sepolia (EVM)" },
+  { value: "solanatestnet", label: "Solana Testnet" },
+];
 
 export default function SettlementIntegrationsPage() {
   const [integrations, setIntegrations] = useState<SettlementIntegration[]>([]);
@@ -41,6 +44,17 @@ export default function SettlementIntegrationsPage() {
   useEffect(() => {
     load();
   }, []);
+
+  function handleChainChange(next: string) {
+    setChain(next);
+    if (next === "solanatestnet") {
+      setAssetSymbol("SOL");
+      setAssetDecimals(9);
+    } else {
+      setAssetSymbol("ETH");
+      setAssetDecimals(18);
+    }
+  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -125,7 +139,7 @@ export default function SettlementIntegrationsPage() {
         <form onSubmit={handleCreate} className="flex flex-col gap-4">
           <label className="flex flex-col gap-2">
             <span className="field-label">Chain</span>
-            <select className="field-input" value={chain} onChange={(e) => setChain(e.target.value)}>
+            <select className="field-input" value={chain} onChange={(e) => handleChainChange(e.target.value)}>
               {CHAIN_OPTIONS.map((c) => (
                 <option key={c.value} value={c.value}>
                   {c.label}
@@ -134,20 +148,22 @@ export default function SettlementIntegrationsPage() {
             </select>
           </label>
           <label className="flex flex-col gap-2">
-            <span className="field-label">Escrow contract address</span>
+            <span className="field-label">{chain === "solanatestnet" ? "Escrow program ID" : "Escrow contract address"}</span>
             <input
               className="field-input font-mono"
-              placeholder="0x…"
+              placeholder={chain === "solanatestnet" ? "base58 program ID" : "0x…"}
               value={escrowContractAddress}
               onChange={(e) => setEscrowContractAddress(e.target.value)}
               required
             />
           </label>
           <label className="flex flex-col gap-2">
-            <span className="field-label">DecisionRelay address (to verify the escrow is bound to it)</span>
+            <span className="field-label">
+              {chain === "solanatestnet" ? "decision-relay program ID" : "DecisionRelay address"} (to verify the escrow is bound to it)
+            </span>
             <input
               className="field-input font-mono"
-              placeholder="0x…"
+              placeholder={chain === "solanatestnet" ? "base58 program ID" : "0x…"}
               value={decisionRelayAddress}
               onChange={(e) => setDecisionRelayAddress(e.target.value)}
               required

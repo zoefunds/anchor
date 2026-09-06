@@ -96,6 +96,14 @@ export async function runCutoverReadinessCheck(params?: { v1EscrowDeployBlock?: 
   let totalUnsettled = 0;
 
   for (const integration of integrations) {
+    // Query above already filters chain: "sepolia" -- SOLANA_V1 is
+    // structurally unreachable here, but narrowed explicitly rather
+    // than cast, so a future query change that drops that filter fails
+    // loudly instead of silently mis-scanning a Solana integration
+    // with an EVM ABI.
+    if (integration.escrowVersion === "SOLANA_V1") {
+      throw new Error(`cutover readiness check only supports EVM (sepolia) integrations, got SOLANA_V1 for integration ${integration.id}`);
+    }
     const { everMade, unsettled } = await scanUnsettledDeposits(
       integration.escrowContractAddress as Address,
       integration.escrowVersion,

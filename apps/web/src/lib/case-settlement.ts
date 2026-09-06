@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
 import { verifyEscrowVersionUnchanged, depositsAbiForVersion } from "@/lib/escrow-version";
 import { caseIdToBytes32 } from "@/lib/emergency-refund";
+import { normalizeSolanaAddress, checkAndConfirmSolanaDeposit } from "@/lib/solana-escrow";
 
 // Item C (re-audit): the real CaseSettlement/SettlementIntegration
 // creation workflow. Everything this session built before now
@@ -67,6 +68,24 @@ export function deriveEscrowId(caseId: string): Hex {
   return `0x${createHash("sha256").update(caseId).digest("hex")}` as Hex;
 }
 
+/**
+ * Chain-aware escrowId: for Solana, the escrow's own case-account PDA
+ * is seeded by a caller-chosen string set at case-filing time
+ * (Case.settlementSolanaCaseId — the party who deposits picks it when
+ * calling initialize_case), NOT a value this app can derive on its
+ * own the way deriveEscrowId's sha256 does for EVM. Using the wrong
+ * one here would derive a PDA that never matches the real deposit.
+ */
+export function deriveEscrowIdForCase(kase: { id: string; settlementChain: string | null; settlementSolanaCaseId: string | null }): string {
+  if (kase.settlementChain === "solanatestnet") {
+    if (!kase.settlementSolanaCaseId) {
+      throw new SettlementIntegrationError("case has no settlementSolanaCaseId set — required to bind a Solana settlement integration");
+    }
+    return kase.settlementSolanaCaseId;
+  }
+  return deriveEscrowId(kase.id);
+}
+
 const AUTHORIZE_DEPOSIT_ABI = [
   {
     type: "function",
@@ -97,16 +116,28 @@ const AUTHORIZE_DEPOSIT_ABI = [
  * V1-only integrations have no authorizeDeposit() function at all
  * (it's a V2 addition) — this is a genuine no-op for those, not a
  * silently-skipped step, since V1's deposit() never gained the
- * authorization requirement in the first place.
+ * authorization requirement in the first place. Solana's reference
+ * escrow program (chains/solana/programs/escrow) has no pre-
+ * authorization step either — the deposit happens atomically inside
+ * initialize_case, called directly by the claimant with the adjudicator
+ * PDA already fixed — so this is a genuine no-op there too, not a
+ * missing feature.
  */
 export async function authorizeDepositOnChain(caseSettlementId: string): Promise<
-  { outcome: "authorized"; txHash: string } | { outcome: "not_applicable_v1" } | { outcome: "already_authorized" } | { outcome: "not_ready"; reason: string }
+  | { outcome: "authorized"; txHash: string }
+  | { outcome: "not_applicable_v1" }
+  | { outcome: "not_applicable_solana" }
+  | { outcome: "already_authorized" }
+  | { outcome: "not_ready"; reason: string }
 > {
   const cs = await prisma.caseSettlement.findUniqueOrThrow({
     where: { id: caseSettlementId },
     include: { integration: true, case: true },
   });
 
+  if (cs.integration.chain === "solanatestnet") {
+    return { outcome: "not_applicable_solana" };
+  }
   if (cs.integration.escrowVersion === "V1") {
     return { outcome: "not_applicable_v1" };
   }
@@ -217,6 +248,44 @@ export async function checkAndConfirmDeposit(caseSettlementId: string): Promise<
     return { outcome: "not_ready", reason: "both parties must set their settlement address before a deposit can be confirmed" };
   }
 
+  if (cs.integration.chain === "solanatestnet") {
+    const result = await checkAndConfirmSolanaDeposit({
+      escrowProgramId: cs.integration.escrowContractAddress,
+      onChainCaseId: cs.escrowId,
+      expectedClaimant: cs.claimantAddress,
+      expectedRespondent: cs.respondentAddress,
+      expectedAmountLamports: BigInt(cs.expectedAmountAtto),
+    });
+    if (result.outcome === "no_deposit_yet") return { outcome: "no_deposit_yet" };
+    if (result.outcome === "mismatch") return { outcome: "not_ready", reason: result.reason };
+
+    await prisma.$transaction(async (tx) => {
+      await tx.caseSettlement.update({
+        where: { id: cs.id },
+        data: { status: "DEPOSITED", depositConfirmedAt: new Date() },
+      });
+      await logAction(
+        {
+          organizationId: cs.case.organizationId,
+          action: "case_settlement.deposit_confirmed",
+          targetType: "CaseSettlement",
+          targetId: cs.id,
+          metadata: { caseId: cs.caseId, escrowId: cs.escrowId, depositedAmountLamports: result.depositedAmountLamports.toString() },
+        },
+        tx
+      );
+    });
+    return { outcome: "confirmed", txHash: "" };
+  }
+
+  if (cs.integration.escrowVersion === "SOLANA_V1") {
+    // Unreachable in practice (chain and escrowVersion are set together
+    // at registration time — see settlement-integrations/route.ts), but
+    // guarded explicitly rather than assumed, and narrows the type for
+    // the EVM-only calls below.
+    throw new SettlementIntegrationError(`CaseSettlement ${cs.id} has escrowVersion SOLANA_V1 but chain ${cs.integration.chain} — inconsistent integration record`);
+  }
+
   // Priority 2: re-verify the live contract still behaves like the
   // version this integration was registered against before decoding
   // anything — never assume the ABI from which address is configured.
@@ -291,4 +360,10 @@ export async function checkAndConfirmDeposit(caseSettlementId: string): Promise<
 export function normalizeEvmAddress(raw: unknown): Address | null {
   if (typeof raw !== "string" || !isAddress(raw)) return null;
   return getAddress(raw);
+}
+
+/** Chain-aware settlement address normalization — routes to normalizeEvmAddress or Solana's base58-pubkey check depending on which chain the case actually settles through, so a party's public settlement-address route doesn't have to know or guess. */
+export function normalizeSettlementAddress(chain: string, raw: unknown): string | null {
+  if (chain === "solanatestnet") return normalizeSolanaAddress(raw);
+  return normalizeEvmAddress(raw);
 }

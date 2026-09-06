@@ -841,6 +841,15 @@ enum ReconciliationFindingType {
 enum EscrowVersion {
   V1
   V2
+  // The Sealevel (Solana) reference escrow program
+  // (chains/solana/programs/escrow) — a single fixed Anchor-framework
+  // account layout, not versioned the way the EVM contracts are (no
+  // deposits()-return-length probe applies; verification instead reads
+  // decision-relay's own storage PDA and the escrow's Case PDA
+  // directly — see lib/solana-escrow.ts). Kept as its own enum value,
+  // not reused "V1", so nothing ever assumes EVM ABI shape for a
+  // Solana integration by name confusion.
+  SOLANA_V1
 }
 
 model ReconciliationFinding {
