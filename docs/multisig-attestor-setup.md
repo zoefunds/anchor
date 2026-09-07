@@ -160,14 +160,26 @@ on-chain governance account for this set (unlike the EVM Safe) — it's
 consts, rotated by redeploying via this program's own upgrade
 authority.
 
-**Live state:**
+**Live state (2026-09-07: retired the offline key — see below):**
 - Program: `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN` (Solana Testnet)
-- Attestors: 2-of-2 — `4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq`
-  (backend-held, `SOLANA_ATTESTOR_PRIVATE_KEY`) and
-  `7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY` (generated via
-  `solana-keygen new` and held offline — the backend never had this key)
+- Attestors: 2-of-3 — `4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq`
+  (backend-held, `SOLANA_ATTESTOR_PRIVATE_KEY` on `anc-hor-worker`),
+  `4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ` (automated, `anc-hor-attestor2`,
+  same Fly app already automating the EVM side), `9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1`
+  (automated, `anc-hor-attestor3`) — no signature in this set requires a
+  human to run anything manually.
 - 9 Rust unit tests cover the parsing/dedup/threshold logic
   (`cargo test -p decision-relay`)
+
+**2026-09-07 — retired the pure-offline attestor key
+(`7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY`, previously the second
+half of the 2-of-2 set).** It made every Solana settlement wait on a
+human manually running the offline-signing command below — discovered
+live during a Studio Next migration E2E test, where a real settlement
+sat blocked for hours on exactly this. Mirrors the same-day fix to
+DecisionRelay.sol's EVM attestor set (2-of-2, one manual key -> 2-of-3,
+fully automated). The offline-signing command below is kept for
+reference/rollback, not because it's still the normal path.
 
 **Real transaction-size constraint found and fixed during
 verification**: each Ed25519 native-program instruction embeds the

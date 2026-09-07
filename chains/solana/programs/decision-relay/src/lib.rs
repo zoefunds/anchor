@@ -94,15 +94,23 @@ const REAL_MULTISIG_ISM: Pubkey = solana_program::pubkey!("5DLNSFtzEJBTipvvSvNPz
 /// changing this array and redeploying (which this program's own
 /// upgrade authority can do) — see docs/multisig-attestor-setup.md's
 /// Solana section for the operational tradeoff that implies.
-const ATTESTOR_PUBKEYS: [Pubkey; 2] = [
-    // Backend-held (SOLANA_ATTESTOR_PRIVATE_KEY on anc-hor-worker) — the
-    // pre-existing single key, kept as one of two rather than dropped.
+// 2026-09-07: retired the pure-offline attestor key entirely — mirrors
+// the same fix made to DecisionRelay.sol's EVM attestor set the same
+// day (2-of-2, one manual key -> 2-of-3, all automated). The offline
+// key made every Solana settlement wait on a human manually running a
+// signing command; there is now no such bottleneck on either chain.
+// Both new keys run as automated signers on anc-hor-attestor2 and
+// anc-hor-attestor3 (the same two Fly apps already automating the EVM
+// side), each gated by the same per-case amount-cap policy check
+// before co-signing — see apps/web/src/lib/auto-attestor/policy.ts.
+const ATTESTOR_PUBKEYS: [Pubkey; 3] = [
+    // Backend-held (SOLANA_ATTESTOR_PRIVATE_KEY on anc-hor-worker) — unchanged.
     solana_program::pubkey!("4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq"),
-    // Held entirely offline — generated via `solana-keygen new` on a
-    // machine never connected to Fly/Vercel, mirroring the EVM side's
-    // real 2-of-2 split (see docs/multisig-attestor-setup.md). The
-    // backend never had this private key.
-    solana_program::pubkey!("7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY"),
+    // Automated signer on anc-hor-attestor2 (Fly, env-key custody —
+    // same custody model as that app's existing EVM attestor key).
+    solana_program::pubkey!("4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ"),
+    // Automated signer on anc-hor-attestor3 (Fly, env-key custody).
+    solana_program::pubkey!("9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1"),
 ];
 const ATTESTOR_THRESHOLD: usize = 2;
 

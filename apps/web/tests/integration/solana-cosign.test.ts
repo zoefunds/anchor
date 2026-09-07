@@ -164,7 +164,11 @@ describe("Solana M-of-N co-signing", () => {
     // hold). This still proves signature verification runs (a
     // mismatched signature/pubkey pair is rejected — see the next
     // assertion) before proving the accept path.
-    const otherRegisteredAttestor = "7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY";
+    // 2026-09-07: the old pure-offline attestor was retired in favor of
+    // two automated signers — see docs/multisig-attestor-setup.md. Any
+    // currently-registered non-backend pubkey works for this test; using
+    // one of the new automated ones.
+    const otherRegisteredAttestor = "4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ";
     const wrongSig = signMessageHex(strangerKeys.privateKey.export({ type: "pkcs8", format: "der" }) as Buffer, messageHex);
     const rejectReq = new Request(`http://localhost/api/internal/pending-solana-attestations/${decision.id}/sign`, {
       method: "POST",

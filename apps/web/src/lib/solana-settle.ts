@@ -161,9 +161,14 @@ export interface SolanaAttestationRecord {
  * views work, since decision-relay has no equivalent governance account
  * (see docs/multisig-attestor-setup.md's Solana section).
  */
+// 2026-09-07: retired the pure-offline key, added two automated
+// signers (anc-hor-attestor2/3, same Fly apps already automating the
+// EVM side) — must exactly mirror decision-relay's Rust ATTESTOR_PUBKEYS
+// const after its matching upgrade deploy.
 const ATTESTOR_PUBKEYS = [
   "4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq",
-  "7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY",
+  "4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ",
+  "9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1",
 ];
 const ATTESTOR_THRESHOLD = 2; // must match decision-relay's Rust ATTESTOR_THRESHOLD const exactly
 
@@ -265,7 +270,16 @@ function validateExternalAttestations(
     if (seen.has(b58)) continue; // duplicate signer (or the backend's own key resubmitted) — one signer counts once
     seen.add(b58);
     valid.push(ext);
-    if (valid.length >= ATTESTOR_PUBKEYS.length - 1) break; // cap: at most (N-1) external entries, since the backend itself fills one slot
+    // 2026-09-07: real bug found via a live 2-of-3 dispatch — this cap
+    // used to be ATTESTOR_PUBKEYS.length - 1 (total registered attestors
+    // minus the backend's own slot), which grows every time an attestor
+    // is added even though the required THRESHOLD hasn't changed. With
+    // 3 registered attestors and both externals collected, that let 2
+    // extra Ed25519 instructions into a transaction sized for 1,
+    // overflowing a fixed-size buffer during serialization ("encoding
+    // overruns Uint8Array"). Only ever need enough externals to reach
+    // ATTESTOR_THRESHOLD, never "all attestors that happen to exist."
+    if (valid.length >= ATTESTOR_THRESHOLD - 1) break;
   }
 
   return valid;

@@ -481,9 +481,12 @@ offline by the operator).
 | Hyperlane ValidatorAnnounce | `8qNYSi9EP1xSnRjtMpyof88A26GBbdcrsa61uSaHiwx3` | Canonical Hyperlane infra |
 | Address Lookup Table | `DRSsBj3qsZ3YG2EmAivLPp4vjtJu54FmeZRaWqobeFEs` | Keeps AttestedSettle transactions under the 1232-byte limit |
 
-**Attestor addresses (Solana, 2-of-2)**: `4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq`
-(backend-held) and `7RcEJvhzeHzaZ3CDn5SEe9BEcYLxP1C2KawuCMqof1zY` (held
-offline by the operator).
+**Attestor addresses (Solana, 2-of-3, fully automated as of 2026-09-07)**:
+`4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq` (backend, `anc-hor-worker`),
+`4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ` (`anc-hor-attestor2`),
+`9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1` (`anc-hor-attestor3`) —
+see docs/multisig-attestor-setup.md for why the old offline-held key
+was retired.
 
 ### Checkpoint storage
 

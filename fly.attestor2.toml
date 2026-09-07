@@ -10,9 +10,17 @@ primary_region = 'iad'
 [build]
   dockerfile = 'apps/web/Dockerfile.worker'
 
+# Runs both the EVM and Solana automated signers as separate processes
+# in the same machine — same secrets store, same isolation boundary from
+# the main worker either way, no need for a second Fly app just to split
+# them (see scripts/auto-attestor-sign-solana.ts's own header for why
+# Solana automation was added here on 2026-09-07).
 [processes]
-  app = 'npx tsx scripts/auto-attestor-sign.ts'
+  app = 'sh -c "npx tsx scripts/auto-attestor-sign.ts & npx tsx scripts/auto-attestor-sign-solana.ts & wait"'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  # Bumped from 256mb after a real OOM kill running two tsx/Prisma
+  # processes at once (each Prisma client engine has real overhead) —
+  # confirmed live on 2026-09-07 when the Solana signer was added.
+  memory = '512mb'

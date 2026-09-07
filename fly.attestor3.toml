@@ -4,9 +4,12 @@ primary_region = 'iad'
 [build]
   dockerfile = 'apps/web/Dockerfile.worker'
 
+# Runs both the EVM and Solana automated signers as separate processes
+# in the same machine — see fly.attestor2.toml's matching comment.
 [processes]
-  app = 'npx tsx scripts/auto-attestor-sign.ts'
+  app = 'sh -c "npx tsx scripts/auto-attestor-sign.ts & npx tsx scripts/auto-attestor-sign-solana.ts & wait"'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '256mb'
+  # Bumped from 256mb — see fly.attestor2.toml's matching comment.
+  memory = '512mb'

@@ -10,6 +10,44 @@ import type { Hex } from "viem";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 import { resolveEvidenceUri } from "@/lib/storage";
 
+// Real incident, 2026-09-07 (Studio Next migration E2E test): a genuine
+// GenLayer decision was computed (real fee spent, real consensus reached)
+// but LOST because the immediately-following prisma.decision.create()
+// hit a transient "Can't reach database server" — a brief network blip
+// to the DB host, not a connection-pool-exhaustion issue (max_connections
+// was 300, only ~14 in use at the time). Worse: the catch block's own
+// recovery write (marking the case UNDETERMINED) ALSO failed the same
+// way, leaving the case permanently stuck in ADJUDICATING with no
+// automatic path forward — BullMQ's 3 retries all landed inside the same
+// ~20s outage window. This helper retries only the narrow set of
+// Prisma "can't reach the database right now" error codes, never a real
+// application error, and only around the two writes where losing the
+// attempt is expensive (a real GenLayer call already happened) or
+// leaves the case permanently unrecoverable.
+const TRANSIENT_PRISMA_ERROR_CODES = new Set(["P1001", "P1002", "P1008", "P1017"]);
+
+function isTransientPrismaError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  return typeof code === "string" && TRANSIENT_PRISMA_ERROR_CODES.has(code);
+}
+
+async function withDbRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientPrismaError(err)) throw err;
+      const delayMs = 1000 * 2 ** i; // 1s, 2s, 4s, 8s, 16s
+      // eslint-disable-next-line no-console
+      console.error(`withDbRetry: transient DB error (attempt ${i + 1}/${attempts}), retrying in ${delayMs}ms:`, (err as Error).message);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 // GenVM fetches evidence URLs itself, independent of this backend, and
 // an appeal can trigger a fresh adjudication run — and therefore a
@@ -475,10 +513,12 @@ export async function finalizeExpiredAppealWindows(): Promise<number> {
  * now — which may include rows added during the appeal window).
  */
 export async function runAdjudicationJob(caseId: string, isAppeal = false): Promise<void> {
-  const kase = await prisma.case.findUniqueOrThrow({
-    where: { id: caseId },
-    include: { evidence: true },
-  });
+  const kase = await withDbRetry(() =>
+    prisma.case.findUniqueOrThrow({
+      where: { id: caseId },
+      include: { evidence: true },
+    })
+  );
 
   const genlayer = getGenLayerClient();
 
@@ -637,7 +677,7 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       contractCodeHash,
     });
 
-    const [createdDecision] = await prisma.$transaction([
+    const [createdDecision] = await withDbRetry(() => prisma.$transaction([
       prisma.decision.create({
         data: {
           caseId: kase.id,
@@ -666,7 +706,7 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
         },
       }),
       prisma.case.update({ where: { id: kase.id }, data: { status: nextStatus } }),
-    ]);
+    ]));
 
     dispatchWebhookEvent({
       organizationId: kase.organizationId,
@@ -695,7 +735,12 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
     const message = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
     console.error(`adjudication job failed for case ${caseId}:`, message);
-    await prisma.case.update({ where: { id: kase.id }, data: { status: "UNDETERMINED" } });
+    // Retried too: if THIS write also hits a transient DB error and
+    // throws, the case is left stuck in ADJUDICATING forever with no
+    // automatic recovery path (adjudicate's own API guard only accepts
+    // EVIDENCE_COLLECTION) — exactly what happened in the 2026-09-07
+    // incident this whole retry mechanism exists to prevent.
+    await withDbRetry(() => prisma.case.update({ where: { id: kase.id }, data: { status: "UNDETERMINED" } }));
     dispatchWebhookEvent({
       organizationId: kase.organizationId,
       event: "case.status_changed",
