@@ -206,7 +206,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     // dispatch for it. Not counted as a real attempt because the block
     // is operator-imposed, not a failure of this dispatch attempt.
     if (decision.relayError !== SETTLEMENT_BLOCKED_PAUSED) {
-      await prisma.decision.update({ where: { id: decision.id }, data: { relayError: SETTLEMENT_BLOCKED_PAUSED } });
+      await withDbRetry(() => prisma.decision.update({ where: { id: decision.id }, data: { relayError: SETTLEMENT_BLOCKED_PAUSED } }));
     }
     // eslint-disable-next-line no-console
     console.error(`settlement dispatch paused (SETTLEMENT_PAUSED) — refusing to dispatch decision ${decision.id} for case ${kase.id}`);
@@ -219,7 +219,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     // via the same retry sweep, not require someone to notice and
     // manually re-trigger dispatch.
     if (decision.relayError !== SETTLEMENT_BLOCKED_LIMIT_EXCEEDED) {
-      await prisma.decision.update({ where: { id: decision.id }, data: { relayError: SETTLEMENT_BLOCKED_LIMIT_EXCEEDED } });
+      await withDbRetry(() => prisma.decision.update({ where: { id: decision.id }, data: { relayError: SETTLEMENT_BLOCKED_LIMIT_EXCEEDED } }));
     }
     // eslint-disable-next-line no-console
     console.error(`case ${kase.id} amount exceeds configured settlement limit for chain ${kase.settlementChain} — refusing to dispatch decision ${decision.id}`);
@@ -240,14 +240,16 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
   // decision, so a concurrent retry sweep firing at the same moment as
   // this call can't both pass the checks above and both dispatch.
   const claimCutoff = new Date(Date.now() - RELAY_CLAIM_TTL_MS);
-  const claimed = await prisma.decision.updateMany({
-    where: {
-      id: decision.id,
-      relayTxHash: null,
-      OR: [{ relayClaimedAt: null }, { relayClaimedAt: { lt: claimCutoff } }],
-    },
-    data: { relayClaimedAt: new Date() },
-  });
+  const claimed = await withDbRetry(() =>
+    prisma.decision.updateMany({
+      where: {
+        id: decision.id,
+        relayTxHash: null,
+        OR: [{ relayClaimedAt: null }, { relayClaimedAt: { lt: claimCutoff } }],
+      },
+      data: { relayClaimedAt: new Date() },
+    })
+  );
   if (claimed.count === 0) {
     // eslint-disable-next-line no-console
     console.error(`decision ${decision.id} for case ${kase.id} already has an in-flight relay claim — skipping`);
@@ -279,20 +281,28 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         signature: new Uint8Array(Buffer.from(a.signature, "base64")),
       })),
     });
-    await prisma.decision.update({
-      where: { id: decision.id },
-      data: {
-        relayTxHash: txHash,
-        relayMessageId: messageId,
-        relayNotificationTxHash: notificationTxHash ?? null,
-        relayError: null,
-        relayAttempts: { increment: 1 },
-        pendingAttestationHash: null,
-        pendingAttestationSignatures: [],
-        pendingSolanaAttestationMessage: null,
-        pendingSolanaAttestations: [],
-      },
-    });
+    // Retried, not just wrapped like the other writes below: the real
+    // on-chain dispatch above has ALREADY happened by this point — a
+    // lost write here (confirmed live, 2026-09-07) risks re-dispatching
+    // a settlement that already succeeded on-chain. DecisionAlreadySettledError
+    // reconciliation is the last-resort backstop for that; this retry is
+    // what should prevent ever needing it in the first place.
+    await withDbRetry(() =>
+      prisma.decision.update({
+        where: { id: decision.id },
+        data: {
+          relayTxHash: txHash,
+          relayMessageId: messageId,
+          relayNotificationTxHash: notificationTxHash ?? null,
+          relayError: null,
+          relayAttempts: { increment: 1 },
+          pendingAttestationHash: null,
+          pendingAttestationSignatures: [],
+          pendingSolanaAttestationMessage: null,
+          pendingSolanaAttestations: [],
+        },
+      })
+    );
     dispatchWebhookEvent({
       organizationId: kase.organizationId,
       event: "case.relay_dispatched",
@@ -314,10 +324,12 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       // actually matters here.
       // eslint-disable-next-line no-console
       console.error(`decision ${decision.id} for case ${kase.id} already settled on-chain — reconciled, not re-sent`);
-      await prisma.decision.update({
-        where: { id: decision.id },
-        data: { relayTxHash: "reconciled:onchain", relayError: null, relayAttempts: { increment: 1 } },
-      });
+      await withDbRetry(() =>
+        prisma.decision.update({
+          where: { id: decision.id },
+          data: { relayTxHash: "reconciled:onchain", relayError: null, relayAttempts: { increment: 1 } },
+        })
+      );
       return;
     }
     if (relayErr instanceof InsufficientAttestorSignaturesError) {
@@ -335,13 +347,15 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         `decision ${decision.id} for case ${kase.id} awaiting external attestor signature(s): ` +
           `${relayErr.collectedCount}/${relayErr.threshold} collected (hash ${relayErr.attestationHash})`
       );
-      await prisma.decision.update({
-        where: { id: decision.id },
-        data: {
-          pendingAttestationHash: relayErr.attestationHash,
-          relayError: `awaiting external attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
-        },
-      });
+      await withDbRetry(() =>
+        prisma.decision.update({
+          where: { id: decision.id },
+          data: {
+            pendingAttestationHash: relayErr.attestationHash,
+            relayError: `awaiting external attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
+          },
+        })
+      );
       return;
     }
     if (relayErr instanceof InsufficientSolanaAttestationsError) {
@@ -357,13 +371,15 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         `decision ${decision.id} for case ${kase.id} awaiting external Solana attestor signature(s): ` +
           `${relayErr.collectedCount}/${relayErr.threshold} collected`
       );
-      await prisma.decision.update({
-        where: { id: decision.id },
-        data: {
-          pendingSolanaAttestationMessage: relayErr.messageHex,
-          relayError: `awaiting external Solana attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
-        },
-      });
+      await withDbRetry(() =>
+        prisma.decision.update({
+          where: { id: decision.id },
+          data: {
+            pendingSolanaAttestationMessage: relayErr.messageHex,
+            relayError: `awaiting external Solana attestor signature(s): ${relayErr.collectedCount}/${relayErr.threshold} collected`,
+          },
+        })
+      );
       return;
     }
     // A failed relay dispatch doesn't undo the decision itself — the
@@ -376,10 +392,12 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
     // eslint-disable-next-line no-console
     console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
-    await prisma.decision.update({
-      where: { id: decision.id },
-      data: { relayError: relayMessage, relayAttempts: { increment: 1 } },
-    });
+    await withDbRetry(() =>
+      prisma.decision.update({
+        where: { id: decision.id },
+        data: { relayError: relayMessage, relayAttempts: { increment: 1 } },
+      })
+    );
   }
 }
 
