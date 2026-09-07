@@ -11,10 +11,30 @@ interface CaseSummary {
   claim: string;
   amount: string;
   currency: string;
+  settlementChain: string | null;
   policyId: string;
   claimantRef: string;
   respondentRef: string;
   createdAt: string;
+}
+
+// The amount is always denominated in the settlement chain's own native
+// asset (real ETH moved by Escrow.sol, real SOL moved by the Solana
+// escrow program — neither moves any stablecoin) — see
+// chains/evm/contracts/Escrow.sol's payable deposit()/settle() and
+// chains/solana/programs/escrow's lamport-denominated CaseAccount.
+// Case.currency defaulting to "USD" was a launch-era placeholder that
+// never reflected the real settlement asset; this derives the correct
+// label from settlementChain once one is bound, falling back to the
+// stored currency only for a case with no settlement target yet (a
+// decision-only case that was never meant to move funds on any chain).
+const NATIVE_ASSET_LABELS: Record<string, string> = {
+  sepolia: "ETH",
+  solanatestnet: "SOL",
+};
+
+function displayCurrency(c: { currency: string; settlementChain: string | null }): string {
+  return (c.settlementChain && NATIVE_ASSET_LABELS[c.settlementChain]) || c.currency;
 }
 
 interface PolicySummary {
@@ -231,13 +251,21 @@ export default function CasesPage() {
             <input className="field-input" value={claim} onChange={(e) => setClaim(e.target.value)} />
           </label>
           <label className="flex flex-col gap-2">
-            <span className="field-label">Amount</span>
+            <span className="field-label">
+              Amount{settlementChain ? ` (${NATIVE_ASSET_LABELS[settlementChain]})` : ""}
+            </span>
             <input
               className="field-input"
               type="number"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
             />
+            {!settlementChain && (
+              <span className="text-xs text-muted dark:text-muted-dark">
+                Choose a settlement target below to enter this in ETH or SOL — settlement always moves the
+                chain&apos;s native asset, never a stablecoin.
+              </span>
+            )}
           </label>
           <label className="flex flex-col gap-2">
             <span className="field-label">Claimant ref</span>
@@ -388,7 +416,7 @@ export default function CasesPage() {
                     <td className="py-4 pr-4 font-mono text-xs text-muted dark:text-muted-dark">{c.policyId}</td>
                     <td className="py-4 pr-4">{c.claim}</td>
                     <td className="py-4 pr-4 font-mono tabular-nums">
-                      {c.amount} {c.currency}
+                      {c.amount} {displayCurrency(c)}
                     </td>
                     <td className="py-4 pr-4 text-muted dark:text-muted-dark">
                       {c.claimantRef} <span className="mx-1.5 text-line dark:text-line-dark">v.</span>{" "}

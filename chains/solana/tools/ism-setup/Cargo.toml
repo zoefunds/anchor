@@ -1,0 +1,43 @@
+[package]
+name = "ism-setup"
+version = "0.1.0"
+edition = "2021"
+
+# One-off operator tool (not deployed on-chain) that initializes a real
+# hyperlane-sealevel-multisig-ism-message-id instance on Solana Testnet
+# for the sepolia->solanatestnet route, using the SAME validator set
+# already running for the EVM side (anc-hor-validator1/validator2 — see
+# docs/self-hosted-validator-setup.md). Uses the real crate's own typed
+# instruction builders (not a hand-rolled Borsh encoder) — see
+# chains/solana/ISM_MIGRATION.md for why this migration exists and what
+# it deliberately does NOT change (attested_settle stays the only path
+# that moves funds).
+#
+# Deliberately does NOT depend on solana-client/solana-sdk: those pull a
+# different major solana-program version than the one Hyperlane's own
+# workspace (and this repo's other Solana programs) pin, which produces
+# incompatible types across the instruction-building boundary even
+# though they look identical (confirmed the hard way — see git history
+# of this file). Instead this talks to the RPC directly over plain JSON
+# (ureq has almost no transitive deps, so it can't reintroduce that
+# conflict) and signs the compiled Message itself via ed25519-dalek,
+# exactly the same "build the real wire format by hand, verified against
+# source" approach already used for attested_settle's own signing this
+# session (see docs/multisig-attestor-setup.md).
+[dependencies]
+borsh = "1.5"
+solana-program = "=3.0.0"
+solana-message = "3"
+solana-hash = "3"
+solana-system-interface = { version = "=2.0.0", features = ["bincode"] }
+bincode = "1.3"
+bs58 = "0.5"
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+rand = "0.8"
+ureq = { version = "2", features = ["json"] }
+serde_json = "1"
+
+hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+hyperlane-sealevel-multisig-ism-message-id = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b", features = [
+    "no-entrypoint",
+] }

@@ -89,14 +89,30 @@ in any customer-facing or investor-facing derivative of this document.
 
 | Component | Address | Bytecode hash (`codehash`) |
 |---|---|---|
-| Mailbox (Hyperlane canonical, shared) | `0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766` | not ours to hash — third-party shared infra |
-| MerkleTreeHook | `0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d` | not re-verified this pass |
-| ValidatorAnnounce | `0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9` | not re-verified this pass |
+| Mailbox (Anchor's own, deployed 2026-09-07) | `0x345E7246631ceb0300427caB75eacA10c326BB09` | not re-verified this pass |
+| MerkleTreeHook (Anchor's own) | `0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB` | not re-verified this pass |
+| ValidatorAnnounce (Anchor's own) | `0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5` | not re-verified this pass |
+| NoopIsm (Mailbox's own default ISM at deploy time — not the ISM actually used, see `ISM` row) | `0x28bE617493Cd993D76Cd04b969694dCB64702951` | not re-verified this pass |
 | ISM (`StaticMerkleRootMultisigIsm`, 2-of-3) | `0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0` | `0xe83f070584f3a57d54c9f89cca8b208733f03c19254479faafac844780a37df7` |
 | DecisionRelay | `0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2` | `0x819bb5e028030cf7f77091aa66d12b55f3f73450d7819f47a47c2937f55c47e5` |
 | Escrow (V2) | `0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7` | `0x01d1050bfe1c2731c187938a75f384dbcd36dec9741b48d2ff34515344c4c1a3` |
 | Safe (governance owner) | `0xc200534F7Debf2816C085c5a156AbD686FA19f4C` | nonce at time of writing: 16 |
 | Dispatcher / trustedSender / depositAuthorizer | `0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb` | — |
+
+**2026-09-07: migrated off the canonical shared Hyperlane Sepolia
+Mailbox** (`0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766`). Root cause: that
+Mailbox's `defaultHook`/`requiredHook` were found disconnected from any
+real `MerkleTreeHook` — dispatches through it never advanced a merkle
+tree a validator could checkpoint against, so real multisig-ISM-based
+delivery could never have worked through it regardless of validator
+setup. This likely affects other Hyperlane integrators still pointed at
+that same shared Mailbox, not just Anchor. Fixed by deploying Anchor's
+own Mailbox + MerkleTreeHook + ValidatorAnnounce (`chains/evm/deploy/DeployOwnMailbox.s.sol`,
+owner `0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb`) and re-pointing
+`packages/hyperlane-relay/index.ts`'s `HYPERLANE_MAILBOX.sepolia` and all
+three validators' `config.json` at it. The `ISM` row above is unchanged
+— it was never the broken component — but it now receives checkpoints
+against the new Mailbox's merkle root, not the old one's.
 
 **Validator set** (2-of-3, `chains/hyperlane-validator/deployment.json` is
 the source of truth — this table is a snapshot, that file is authoritative):
@@ -113,10 +129,43 @@ fail as of the last full run). Cloud-provider independence: **not
 achieved** — validator2 and validator3 are both AWS (different accounts).
 See §2.3.
 
-**Attestor set** (2-of-2, `DecisionRelay.isAttestor`): `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70`,
-`0x229d46B4C22B5AA42fE7cDAae37cf611e726f732`. Operator independence: **not
-verified, likely not real** — tracked in §2.2, not to be assumed either
-way without an explicit check.
+**2026-09-07: moved to a fully automated 2-of-3 attestor set**, retiring
+the manually-held offline attestor key entirely — settlement no longer
+requires any human to co-sign. Executed via Safe tx
+`0x6c10196d3c061b05e5185f6bdf11520670da8944f2caaeb5675636cacd9957fd`
+(`removeAttestor(0x229d46B4...)`, `addAttestor(0xfFC936AE...)`,
+`addAttestor(0x6F1A0EE8...)`), verified live against
+`deployment-manifest.json`.
+
+**Attestor set** (2-of-3, `DecisionRelay.isAttestor`):
+- `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70` — the existing backend
+  automated key (`ATTESTOR_PRIVATE_KEYS` on `anc-hor-worker`).
+- `0xfFC936AEab8220bFD283f3016356F67EEb32130B` — new automated signer,
+  `anc-hor-attestor2` (Fly app, raw key in its own isolated Fly secrets
+  store — env-key custody, not KMS/HSM; see `apps/web/scripts/auto-attestor-sign.ts`).
+- `0x6F1A0EE85f08C54669E33103486D98D947Efc043` — new automated signer,
+  `anc-hor-attestor3` (Fly app, same custody model as attestor2).
+
+Each of the two new signers runs its own policy gate
+(`apps/web/src/lib/auto-attestor/policy.ts`) before signing: it will
+only co-sign a pending decision if the case amount is under
+`AUTO_ATTESTOR_MAX_AMOUNT_USD` (currently $500). Anything above that
+cap is not auto-signed by either — same as before, it waits for manual
+attestor action. All other gates (KYC, deposit/target binding) were
+already enforced upstream in `dispatchDecisionForCase` before a
+decision ever reaches "pending attestation" state, so this cap is the
+one genuinely new check.
+
+**Operator independence: not real** — despite being three separate
+signing keys, `anc-hor-attestor2` and `anc-hor-attestor3` both run on
+the same Fly account/org as the backend worker, with raw private keys
+in Fly secrets rather than KMS/HSM-held keys. A compromise of that Fly
+account or its secrets store could plausibly reach all three. This is
+a real, deliberate tradeoff to unblock self-service settlement quickly
+without new cloud accounts/billing — **do not describe this as
+"independent" or "secure 2-of-3" in any customer-facing material**.
+Upgrading to genuinely separate custody (different cloud accounts,
+KMS/HSM-held keys) remains open work — see §2.2.
 
 **Safe owners** (2-of-2): `0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb`,
 `0xEDc300fb7Bd8437C90aF68393381514722FE128c`. Operator independence:
@@ -131,20 +180,40 @@ risk, not a resolved item.
 **Deployment revision**: git commit `6c7065ecd9c542117335c9112821efc8d5dce513`
 on `main`, GitHub `zoefunds/anchor`.
 
-### Solana inbound transport — verified, not re-labeled
+### Solana inbound transport — updated 2026-09-07, real multisig ISM now live
 
-Read directly from `chains/solana/programs/decision-relay/src/lib.rs`
-(not inferred from a doc): `TRUSTED_ISM` (`PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus`)
-is a deployed `hyperlane-sealevel-composite-ism` instance configured as
-`IsmNode::TrustedRelayer { relayer: <Anchor's own relayer signer> }`. Its
-`Verify` instruction accepts **iff Anchor's own relayer key signed the
-inbound `process()` call** — it does not check any validator checkpoint
-or quorum. This is confirmed accurate, not overstated anywhere in the
-existing docs (`ISM_MIGRATION.md`, `production-readiness-hardening-pass.md`
-both already label it correctly). This runbook does not change that
-labeling and will not describe Solana transport as "secure multisig" at
-any point before `ISM_MIGRATION.md`'s 8-point Testnet proof is complete
-and its result is recorded here.
+**Superseded since 2026-09-06/07**: this section previously described
+`TRUSTED_ISM` (`PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus`, a
+`hyperlane-sealevel-composite-ism` accepting `Verify` iff Anchor's own
+relayer key signed the inbound call — no validator checkpoint or quorum
+check at all) as the live ISM. That constant still exists in
+`chains/solana/programs/decision-relay/src/lib.rs` for rollback, but the
+program's `InterchainSecurityModule` query now returns
+`REAL_MULTISIG_ISM` (`5DLNSFtzEJBTipvvSvNPzvAFpx8uwf96qEjygAwT6ncY`) —
+Anchor's own deployment of the real
+`hyperlane-sealevel-multisig-ism-message-id` program (the official
+shared instance, `4GHxwWyKB9exhKG4fdyU2hfLgfFzhHp2WcsSKc2uNR1k`, is owned
+by Hyperlane's own team and rejects external `init`/`set-validators`
+calls). Configured validator set: 2-of-3 —
+`2ffFd80d446835214EF87Eb3753B48935550f73f`,
+`f171c23607b892797Eb5eb4e52fc668f924Df0A3`,
+`4dbc8704ebD282535d64Be6daDF2a477C543114D` (the same three EVM-side
+validator identities, now also checkpointing the Solana route's Sepolia
+Mailbox dispatches). Solana-side Hyperlane infra dispatched to from
+Sepolia: Mailbox `0x345E7246631ceb0300427caB75eacA10c326BB09`,
+MerkleTreeHook `0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB`,
+ValidatorAnnounce `0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5` (same
+Sepolia-side infra as the EVM settlement route above — Solana settlement
+now dispatches a real, separate Hyperlane notification message through
+this same Mailbox after `attested_settle` succeeds; see
+`apps/web/src/lib/hyperlane.ts`'s `dispatchDecisionForCase`).
+
+This is a genuine upgrade from "no real validator-quorum check at all"
+to "real 2-of-3 multisig ISM, same validator set as the EVM route" —
+**but it has not yet had `ISM_MIGRATION.md`'s 8-point Testnet proof run
+against it**, and per that plan's own explicit instruction, do not call
+this "secure" or "independent" until that proof is complete and recorded
+here.
 
 **Why this is currently an acceptable risk, not a live vulnerability**:
 `decision-relay`'s `handle()` is notification-only (see its own doc

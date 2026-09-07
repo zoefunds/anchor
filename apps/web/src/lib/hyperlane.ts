@@ -1,5 +1,6 @@
 import {
   dispatchDecisionRelay,
+  dispatchDecisionRelayToSealevel,
   computeDecisionAttestationHash,
   caseIdToBytes32,
   HYPERLANE_DOMAIN,
@@ -63,7 +64,18 @@ export function getEvmPublicClient() {
 // `solana program show` this session) so existing legitimate dispatches
 // keep working; override via env for a genuinely new approved
 // integration, never by loosening this to "anything."
-const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = ["0x94f3FF552CC879a36B19b829af3325Ea72cbC71C"];
+//
+// 2026-09-07: this default had drifted to a stale DecisionRelay address
+// (0x94f3FF55...) that no longer matches the live contract — exactly the
+// class of doc/code drift apps/web/scripts/generate-deployment-manifest.ts
+// exists to catch. Corrected against that script's live on-chain read
+// (owner/attestorThreshold/codehash all verified against the real Safe).
+// Production already sets APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS via env,
+// so this default only matters for local/staging environments without
+// that override — but a wrong default there fails closed (rejects
+// legitimate case creation) rather than open, which is why this went
+// unnoticed rather than causing a security incident.
+const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = ["0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2"];
 const DEFAULT_APPROVED_SOLANA_SETTLEMENT_PROGRAMS = ["DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"];
 // The escrow program actually invoked to move funds on Solana settlement
 // (see solana-settle.ts's submitAttestedSettle) — a separate, even more
@@ -325,7 +337,9 @@ async function isDecisionSettledOnSepolia(settlementContract: Address, decisionH
  * no-opping, so a misconfigured case surfaces immediately instead of
  * quietly never settling.
  */
-export async function dispatchDecisionForCase(params: DispatchDecisionParams): Promise<{ txHash: string; messageId: string }> {
+export async function dispatchDecisionForCase(
+  params: DispatchDecisionParams
+): Promise<{ txHash: string; messageId: string; notificationTxHash?: string }> {
   // Real gate, checked before any chain interaction: see
   // lib/settlement-kyc.ts's own header comment. No-ops unless an
   // operator has actually opted this case's SettlementIntegration into
@@ -546,7 +560,79 @@ export async function dispatchDecisionForCase(params: DispatchDecisionParams): P
       rpcUrl,
       params.externalSolanaAttestations ?? []
     );
-    return { txHash: signature, messageId: signature };
+
+    // Fires the real Hyperlane notification automatically, right after the
+    // real settlement above — previously this only ever happened when a
+    // human ran a test script by hand (see chains/solana/tests/run-multisig-ism-delivery-proof.ts).
+    // Best-effort and non-blocking: attested_settle above is what actually
+    // moved funds and has already succeeded by this point, so a dispatch
+    // failure here must not surface as a settlement failure — it would
+    // only cost this case its explorer-visible notification record, not
+    // any money. See docs/mainnet-readiness-runbook.md's Solana ISM
+    // migration note for why this notification carries no settlement
+    // authority (decision-relay's handle() stays notification-only).
+    // Three genuinely distinct identifiers for a Solana settlement — never
+    // collapse these into each other:
+    //   1. signature       — the real Solana attested_settle transaction
+    //                        that actually moved funds (this is what
+    //                        relayTxHash means for every other chain too).
+    //   2. notificationTxHash — the Sepolia tx hash of the separate
+    //                        Mailbox.dispatch() call for the Hyperlane
+    //                        notification (a completely different chain
+    //                        and a completely different transaction).
+    //   3. hyperlaneMessageId — the real message ID Hyperlane itself
+    //                        assigns to that dispatch (from the Dispatch
+    //                        event), NOT any transaction hash at all —
+    //                        this is what Hyperlane's own explorer keys
+    //                        on. A prior version of this function
+    //                        returned `signature` for both txHash AND
+    //                        messageId, which was simply wrong: it meant
+    //                        relayMessageId in the database was never a
+    //                        real Hyperlane message ID for any Solana
+    //                        settlement.
+    let notificationTxHash: string | undefined;
+    let hyperlaneMessageId: string | undefined;
+    const hyperlaneRelayPrivateKey = process.env.HYPERLANE_RELAY_PRIVATE_KEY;
+    if (hyperlaneRelayPrivateKey) {
+      try {
+        const privateKey = (hyperlaneRelayPrivateKey.startsWith("0x") ? hyperlaneRelayPrivateKey : `0x${hyperlaneRelayPrivateKey}`) as `0x${string}`;
+        const dispatchResult = await dispatchDecisionRelayToSealevel(
+          { originChain: "sepolia", privateKey },
+          HYPERLANE_DOMAIN.solanaTestnet,
+          params.settlementContract,
+          {
+            caseId: params.settlementSolanaCaseId,
+            claimant: params.settlementSolanaClaimant,
+            respondent: params.settlementSolanaRespondent,
+            escrowProgram: params.settlementSolanaEscrowProgram,
+            claimantShareBps: params.claimantShareBps,
+            respondentShareBps: params.respondentShareBps,
+            decisionHash: hashToBytes32(params.decisionHash, "decisionHash"),
+          }
+        );
+        notificationTxHash = dispatchResult.txHash;
+        hyperlaneMessageId = dispatchResult.messageId;
+        console.log(
+          `solana settlement notification dispatched via Hyperlane for case ${params.caseId}: ` +
+            `sepolia tx ${notificationTxHash}, hyperlane messageId ${hyperlaneMessageId}`
+        );
+      } catch (err) {
+        console.error(
+          `solana settlement for case ${params.caseId} succeeded (tx ${signature}) but the Hyperlane notification dispatch failed — funds moved correctly, this only affects explorer visibility:`,
+          err
+        );
+      }
+    } else {
+      console.warn(`HYPERLANE_RELAY_PRIVATE_KEY not set — skipping Hyperlane notification dispatch for case ${params.caseId} (settlement itself still succeeded)`);
+    }
+
+    // messageId falls back to the settle signature only when the
+    // notification never went out at all (no relay key configured, or
+    // the dispatch itself failed) — better than null for callers that
+    // treat messageId as required, but never confused with a real
+    // Hyperlane message ID: notificationTxHash being undefined is the
+    // signal that this fallback happened.
+    return { txHash: signature, messageId: hyperlaneMessageId ?? signature, notificationTxHash };
   }
 
   throw new Error(

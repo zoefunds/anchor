@@ -65,6 +65,20 @@ const SETTLE_DISCRIMINATOR: [u8; 8] = [175, 42, 185, 87, 144, 131, 102, 212];
 /// see chains/hyperlane-relayer/README.md's "Known issue NOT fixed").
 const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVmVjXs7zrVBNe2mfus");
 
+/// Real hyperlane-sealevel-multisig-ism-message-id instance, deployed and
+/// owned by Anchor's own operator (NOT Hyperlane's shared testnet
+/// program, which is already initialized by Hyperlane's own team — see
+/// chains/solana/ISM_MIGRATION.md's git history for that finding),
+/// configured with the SAME validator set/threshold already running for
+/// the EVM DecisionRelay ISM (2-of-2: anc-hor-validator1/validator2 —
+/// see docs/self-hosted-validator-setup.md). Verified on-chain (not
+/// assumed) via a direct account-data read of its sepolia domain PDA
+/// before this cutover. See chains/solana/ISM_MIGRATION.md for what this
+/// migration does and does NOT change — handle() below stays
+/// notification-only regardless of which ISM gates it; attested_settle
+/// remains the only path that can move funds.
+const REAL_MULTISIG_ISM: Pubkey = solana_program::pubkey!("5DLNSFtzEJBTipvvSvNPzvAFpx8uwf96qEjygAwT6ncY");
+
 /// M-of-N: Anchor's dedicated Solana attestation keys (Ed25519, distinct
 /// from this program's upgrade authority and from the Hyperlane
 /// relayer's own signer) — see `attested_settle`'s doc comment for the
@@ -339,7 +353,7 @@ pub fn process_instruction(
                 // own test-send-receiver program (programs/test-send-receiver/
                 // src/program.rs's get_interchain_security_module, pinned
                 // at the same rev as everything else in this file).
-                let ism: Option<Pubkey> = Some(TRUSTED_ISM);
+                let ism: Option<Pubkey> = Some(REAL_MULTISIG_ISM);
                 solana_program::program::set_return_data(
                     &borsh::to_vec(&ism).map_err(|_| ProgramError::BorshIoError)?,
                 );

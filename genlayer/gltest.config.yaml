@@ -1,9 +1,17 @@
 networks:
-  default: studionet
+  # Migrating to Studio Next / Studio-dev (chain 61997, v0.6 RC fee stack).
+  # studionet (61999) is kept below, deliberately not removed or relabeled —
+  # per GenLayer's own migration guidance, 61999 and 61997 are separate
+  # deployments with separate evidence; do not treat one as proof of the
+  # other. Default now points at studio_devnet since that's the active
+  # migration target.
+  default: studio_devnet
 
   localnet:
     url: "http://127.0.0.1:4000/api"
     leader_only: false
+
+  studio_devnet: {}
 
   studionet: {}
 

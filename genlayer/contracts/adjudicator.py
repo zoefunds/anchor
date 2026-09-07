@@ -1,4 +1,4 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# { "Depends": "py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng" }
 
 # IMPORTANT: the truly blank line above (no `#`) is load-bearing. GenVM's
 # real network-side header parser concatenates ALL contiguous leading `#`
@@ -34,6 +34,14 @@ import json
 import re
 
 from genlayer import *
+# GenVM v0.6 (Studio Next / Studio-dev, chain 61997) no longer implicitly
+# binds `gl` via `from genlayer import *` — confirmed via a real deploy
+# to Studio-dev: `from genlayer import *` alone produced
+# `NameError: name 'gl' is not defined` at `class Adjudicator(gl.Contract)`,
+# straight from GenVM's own bootloader traceback, not a linter artifact.
+# The package's own docstring says submodules are "accessible via gl.X
+# when using `import genlayer as gl`" — that's the explicit contract now.
+import genlayer as gl
 
 # Outcome vocabulary is fixed infrastructure shared by every policy - see
 # docs/decision-schema.md. Reason codes and evidence requirements are
@@ -382,7 +390,7 @@ def _coerce_decision_fields(obj: dict, reason_codes: tuple) -> dict:
 MAX_APPEALS = 1
 
 
-class Adjudicator(gl.Contract):
+class Adjudicator(gl.contract.Contract):
     # Storage fields are class-level annotations - __init__ only sets values.
     owner: Address  # the account that deployed this contract (Anchor's own backend wallet)
     case_id: str
@@ -500,7 +508,13 @@ class Adjudicator(gl.Contract):
 
             return True
 
-        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        # v0.6 (Studio Next) renamed run_nondet_unsafe -> run_nondet_default,
+        # confirmed via a real deploy/adjudicate call against Studio-dev
+        # (AttributeError from GenVM's own bootloader, not a guess). Same
+        # leader_fn/validator_fn positional signature; run_nondet_default
+        # additionally runs validator_fn in a sandbox with safer error
+        # handling per its own docstring - a real upgrade, not just a rename.
+        result = gl.vm.run_nondet_default(leader_fn, validator_fn)
 
         # A deterministic hash of the exact evidence_json calldata every
         # validator agreed to adjudicate against - not the nondeterministic

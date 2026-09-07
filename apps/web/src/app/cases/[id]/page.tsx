@@ -28,6 +28,7 @@ interface Decision {
   adjudicateTxHash: string | null;
   relayTxHash: string | null;
   relayMessageId: string | null;
+  relayNotificationTxHash: string | null;
   relayError: string | null;
   relayAttempts: number;
 }
@@ -425,7 +426,7 @@ export default function CaseDetailPage() {
           {kase.respondentRef}
           <span className="mx-2 text-line dark:text-line-dark">·</span>
           <span className="font-mono tabular-nums">
-            {kase.amount} {kase.currency}
+            {kase.amount} {displayCurrency(kase)}
           </span>
           <span className="mx-2 text-line dark:text-line-dark">·</span>
           <span className="font-mono text-xs">{policy?.label ?? kase.policyId}</span>
@@ -748,6 +749,20 @@ const SETTLEMENT_CHAIN_LABELS: Record<string, string> = {
   solanatestnet: "Solana Testnet — decision-relay program",
 };
 
+// Settlement always moves the chain's own native asset — real ETH via
+// Escrow.sol's payable deposit()/settle(), real SOL via the Solana
+// escrow program's lamport transfers — never a stablecoin. Case.currency
+// defaulting to "USD" was a launch-era placeholder; this derives the
+// real unit from settlementChain once one is bound.
+const NATIVE_ASSET_LABELS: Record<string, string> = {
+  sepolia: "ETH",
+  solanatestnet: "SOL",
+};
+
+function displayCurrency(c: { currency: string; settlementChain: string | null }): string {
+  return (c.settlementChain && NATIVE_ASSET_LABELS[c.settlementChain]) || c.currency;
+}
+
 // Makes the otherwise-invisible cross-chain pipeline visible: GenLayer
 // decides -> Anchor's backend relays that decision via Hyperlane (since
 // GenLayer itself isn't a Hyperlane chain and can't dispatch the
@@ -936,7 +951,15 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
               reconciled
                 ? undefined
                 : d?.relayTxHash
-                  ? `tx ${d.relayTxHash}${d.relayMessageId ? ` · message ${d.relayMessageId}` : ""}`
+                  ? // Three distinct identifiers, shown distinctly — never
+                    // collapse the settlement tx, the notification tx, and
+                    // the Hyperlane message ID into one value. For EVM
+                    // settlements relayNotificationTxHash is null (the
+                    // Hyperlane-delivered message IS the settlement tx),
+                    // so only Solana settlements show the extra "notify tx".
+                    `settle tx ${d.relayTxHash}` +
+                    (d.relayNotificationTxHash ? ` · notify tx ${d.relayNotificationTxHash}` : "") +
+                    (d.relayMessageId ? ` · hyperlane message ${d.relayMessageId}` : "")
                   : d?.relayError
                     ? `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
                     : undefined

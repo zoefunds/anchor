@@ -16,7 +16,18 @@ import { privateKeyToAccount } from "viem/accounts";
 import { sepolia, baseSepolia } from "viem/chains";
 
 export const HYPERLANE_MAILBOX: Record<string, Address> = {
-  sepolia: "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
+  // Anchor's own Sepolia Mailbox (deployed 2026-09-07) -- NOT Hyperlane's
+  // canonical shared registry Mailbox. That shared Mailbox's defaultHook/
+  // requiredHook were found live to not route through any MerkleTreeHook
+  // at all (orphaned from the one its own registry documents), meaning no
+  // real multisig-ISM-based delivery could ever complete through it,
+  // regardless of validator health -- see chains/solana/ISM_MIGRATION.md
+  // and this session's investigation. This Mailbox's own MerkleTreeHook
+  // (0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB) is verified live-working,
+  // and all 3 real validators (anc-hor-validator1/2/3) are reconfigured
+  // to index it and have re-announced against its ValidatorAnnounce
+  // (0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5).
+  sepolia: "0x345E7246631ceb0300427caB75eacA10c326BB09",
   baseSepolia: "0x6966b0E55883d49BFB24539356a2f8A673E02039",
 };
 

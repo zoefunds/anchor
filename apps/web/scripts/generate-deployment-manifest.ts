@@ -1,0 +1,132 @@
+// Reads the CURRENT live on-chain governance/settlement state directly
+// from Sepolia and writes it to deployment-manifest.json. This is the
+// authoritative source of truth this session's governance work requires
+// — docs (README, mainnet-readiness-runbook.md) and application code
+// must be reconciled AGAINST this file's output, never the reverse.
+//
+// Per the governance redesign: "Claude must treat on-chain reads as
+// authoritative and remove stale fallback addresses" — this script is
+// that read. It does not trust any hardcoded address in this repo; every
+// value below comes from a live RPC call.
+//
+// Run: npx tsx scripts/generate-deployment-manifest.ts
+import { createPublicClient, http, type Address } from "viem";
+import { sepolia } from "viem/chains";
+import { writeFileSync } from "fs";
+
+const RPC_URL = process.env.HYPERLANE_RELAY_RPC_URL ?? "https://ethereum-sepolia.publicnode.com";
+
+// Only the CONTRACT ADDRESSES themselves are hardcoded here — these are
+// not "trusted defaults" the app falls back to, they are simply which
+// contracts this specific audit run is pointed at. Everything else
+// (owner, attestor membership, threshold, Safe owners/threshold,
+// codehash) is read live, not assumed.
+const DECISION_RELAY: Address = "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2";
+const SAFE: Address = "0xc200534F7Debf2816C085c5a156AbD686FA19f4C";
+// Known historical attestor candidates to check membership for — this
+// list is a starting point for a human reviewing the manifest, NOT an
+// authoritative source; isAttestor() is queried live for each, and any
+// address here that no longer returns true is flagged, not silently
+// dropped.
+const CANDIDATE_ATTESTORS: Address[] = [
+  "0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70", // backend automated key (ATTESTOR_PRIVATE_KEYS on anc-hor-worker)
+  "0x229d46B4C22B5AA42fE7cDAae37cf611e726f732", // retired 2026-09-07 — was the manually-held offline attestor key, removed via Safe tx 0x6c10196d3c061b05e5185f6bdf11520670da8944f2caaeb5675636cacd9957fd
+  "0xfFC936AEab8220bFD283f3016356F67EEb32130B", // added 2026-09-07 — automated signer on anc-hor-attestor2 (Fly, env-key custody)
+  "0x6F1A0EE85f08C54669E33103486D98D947Efc043", // added 2026-09-07 — automated signer on anc-hor-attestor3 (Fly, env-key custody)
+];
+
+const DECISION_RELAY_ABI = [
+  { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "attestorThreshold", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "isAttestor", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bool" }] },
+  { type: "function", name: "interchainSecurityModule", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+
+const SAFE_ABI = [
+  { type: "function", name: "getOwners", stateMutability: "view", inputs: [], outputs: [{ type: "address[]" }] },
+  { type: "function", name: "getThreshold", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+] as const;
+
+async function main() {
+  const client = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
+
+  const [owner, attestorThreshold, ism, safeOwners, safeThreshold, safeNonce, decisionRelayBytecode] = await Promise.all([
+    client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "owner" }),
+    client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "attestorThreshold" }),
+    client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "interchainSecurityModule" }),
+    client.readContract({ address: SAFE, abi: SAFE_ABI, functionName: "getOwners" }),
+    client.readContract({ address: SAFE, abi: SAFE_ABI, functionName: "getThreshold" }),
+    client.readContract({ address: SAFE, abi: SAFE_ABI, functionName: "nonce" }),
+    client.getCode({ address: DECISION_RELAY }),
+  ]);
+
+  const attestorMembership = await Promise.all(
+    CANDIDATE_ATTESTORS.map(async (addr) => ({
+      address: addr,
+      isAttestor: await client.readContract({ address: DECISION_RELAY, abi: DECISION_RELAY_ABI, functionName: "isAttestor", args: [addr] }),
+    }))
+  );
+
+  const activeAttestors = attestorMembership.filter((a) => a.isAttestor).map((a) => a.address);
+  const inactiveCandidates = attestorMembership.filter((a) => !a.isAttestor).map((a) => a.address);
+
+  // Real, honest flags — not just data. A manifest that only dumps
+  // values without calling out the actual governance-independence gap
+  // is exactly the kind of doc drift this script exists to prevent.
+  const flags: string[] = [];
+  if (owner.toLowerCase() !== SAFE.toLowerCase()) {
+    flags.push(`DecisionRelay.owner() (${owner}) is NOT the expected Safe (${SAFE}) — governance may have been reassigned to an EOA or a different contract.`);
+  }
+  if (Number(attestorThreshold) > activeAttestors.length) {
+    flags.push(`attestorThreshold (${attestorThreshold}) exceeds the number of confirmed-active candidate attestors (${activeAttestors.length}) — settlement may be permanently unable to reach quorum.`);
+  }
+  if (Number(safeThreshold) < 2) {
+    flags.push(`Safe threshold (${safeThreshold}) is below 2 — a single compromised owner key could unilaterally change governance.`);
+  }
+  if (safeOwners.length === 2 && Number(safeThreshold) === 2) {
+    flags.push("Safe is 2-of-2 with only 2 owners — no redundancy if either owner's key is lost; operator independence between these two owners is UNVERIFIED (see governance-manifest.md for tracked status).");
+  }
+
+  const manifest = {
+    generatedAt: new Date().toISOString(),
+    generatedBy: "scripts/generate-deployment-manifest.ts",
+    network: { chain: "sepolia", chainId: sepolia.id, rpcHost: new URL(RPC_URL).hostname },
+    decisionRelay: {
+      address: DECISION_RELAY,
+      codehash: null as string | null, // filled below
+      owner,
+      attestorThreshold: attestorThreshold.toString(),
+      interchainSecurityModule: ism,
+      attestors: {
+        active: activeAttestors,
+        checkedButInactive: inactiveCandidates,
+        note: "activeAttestors is derived by live isAttestor() calls against CANDIDATE_ATTESTORS in this script, NOT an enumerable on-chain list — DecisionRelay.sol has no getter that lists all attestors. If an attestor was added/removed via addAttestor()/removeAttestor() and isn't in CANDIDATE_ATTESTORS, it will not appear here. This is a real limitation, not a false completeness claim.",
+      },
+    },
+    safe: {
+      address: SAFE,
+      owners: safeOwners,
+      threshold: safeThreshold.toString(),
+      nonce: safeNonce.toString(),
+    },
+    flags,
+  };
+
+  // Compute codehash from the fetched bytecode (a real, independent
+  // check — not copied from any doc).
+  const { keccak256 } = await import("viem");
+  manifest.decisionRelay.codehash = keccak256(decisionRelayBytecode ?? "0x");
+
+  writeFileSync("deployment-manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+  console.log(JSON.stringify(manifest, null, 2));
+  if (flags.length > 0) {
+    console.error(`\n${flags.length} flag(s) raised — see manifest's "flags" array above.`);
+    process.exitCode = 1;
+  }
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

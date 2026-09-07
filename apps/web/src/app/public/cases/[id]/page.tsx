@@ -158,7 +158,9 @@ export default function PublicCasePage() {
           {kase.respondentRef}
           <span className="mx-2 text-line dark:text-line-dark">·</span>
           <span className="font-mono tabular-nums">
-            {kase.amount} {kase.currency}
+            {/* Real settlement asset (ETH/SOL — see SettlementIntegration.assetSymbol), not the
+                Case.currency placeholder ("USD" by default) — settlement never moves a stablecoin. */}
+            {kase.amount} {kase.settlement?.assetSymbol ?? kase.currency}
           </span>
           <span className="mx-2 text-line dark:text-line-dark">·</span>
           <span className="font-mono text-xs">{kase.policyId}</span>

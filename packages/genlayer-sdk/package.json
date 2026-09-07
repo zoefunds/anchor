@@ -5,7 +5,7 @@
   "main": "index.ts",
   "types": "index.ts",
   "dependencies": {
-    "genlayer-js": "^1.1.8"
+    "genlayer-js": "^2.0.0-rc.1"
   },
   "peerDependencies": {
     "@anchor/types": "*"

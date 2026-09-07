@@ -15,7 +15,7 @@ const DECISION_RELAY_PROGRAM = "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN";
 
 const config = {
   originChain: "sepolia",
-  privateKey: "0x7de029f33d0cb1738c69e16f3f89839a9d8630d9017e93050084c4d30b898bce",
+  privateKey: (() => { if (!process.env.GENLAYER_PRIVATE_KEY) throw new Error("GENLAYER_PRIVATE_KEY env var is required"); return process.env.GENLAYER_PRIVATE_KEY; })(),
   rpcUrl: "https://ethereum-sepolia.publicnode.com",
 };
 

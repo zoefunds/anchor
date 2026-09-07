@@ -700,6 +700,19 @@ model Decision {
   // (see relayError).
   relayTxHash    String?
   relayMessageId String?
+  // For Solana settlements ONLY: the Sepolia transaction hash of the
+  // separate Hyperlane notification dispatch (Mailbox.dispatch() call),
+  // distinct from both relayTxHash (the real Solana attested_settle
+  // transaction that actually moved funds) and relayMessageId (the real
+  // Hyperlane message ID emitted by that dispatch's Dispatch event) -
+  // three genuinely different identifiers that a prior version of this
+  // code collapsed into one (relayMessageId was wrongly set equal to
+  // relayTxHash for Solana, since dispatchDecisionForCase's Solana
+  // branch never captured the real Hyperlane dispatch's own return
+  // value). Null for EVM settlements, where the Hyperlane-delivered
+  // message IS the settlement transaction, so there is no separate
+  // notification tx to record.
+  relayNotificationTxHash String?
   relayError     String?
   // How many dispatch attempts have been made (the first attempt, inline
   // in runAdjudicationJob/finalizeExpiredAppealWindows, plus any retries

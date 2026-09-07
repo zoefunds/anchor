@@ -1,0 +1,18 @@
+app = 'anc-hor-attestor2'
+primary_region = 'iad'
+
+# Reuses the worker's own image build (same repo, same npm workspaces) —
+# only the process command differs. This is deliberately its OWN Fly app,
+# not a process group on anc-hor-worker: the whole point of this signer
+# is that it lives in a separate secrets store / blast radius from the
+# worker that holds ATTESTOR_PRIVATE_KEYS and HYPERLANE_RELAY_PRIVATE_KEY.
+# See docs/mainnet-readiness-runbook.md's automated-attestor section.
+[build]
+  dockerfile = 'apps/web/Dockerfile.worker'
+
+[processes]
+  app = 'npx tsx scripts/auto-attestor-sign.ts'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'

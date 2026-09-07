@@ -541,8 +541,9 @@ is a summary grouped by concern:
 **File evidence (Cloudinary)**: `CLOUDINARY_CLOUD_NAME`,
 `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
 
-**GenLayer**: `GENLAYER_STUDIO_URL`, `GENLAYER_CHAIN_ID`,
-`GENLAYER_PRIVATE_KEY`, `GENLAYER_REGISTRY_ADDRESS`
+**GenLayer**: `GENLAYER_NETWORK` (defaults to `studioDevnet` — Studio Next
+/ Studio-dev, chain 61997; set to `studionet` for the old 61999 network),
+`GENLAYER_PRIVATE_KEY`
 
 **Hyperlane dispatch (EVM)**: `HYPERLANE_RELAY_PRIVATE_KEY`,
 `HYPERLANE_RELAY_RPC_URL`

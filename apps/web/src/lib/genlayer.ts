@@ -31,7 +31,11 @@ export function getGenLayerClient(): AnchorGenLayerClient {
     throw new Error("GENLAYER_PRIVATE_KEY is not set — see apps/web/.env.example");
   }
   const privateKey = (rawKey.startsWith("0x") ? rawKey : `0x${rawKey}`) as `0x${string}`;
-  const network = (process.env.GENLAYER_NETWORK ?? "studionet") as GenLayerNetwork;
+  // 2026-09-07: migrating off StudioNet (61999, stable) onto Studio Next
+  // / Studio-dev (61997, v0.6 RC fee stack) — see packages/genlayer-sdk's
+  // own header comment. GENLAYER_NETWORK=studionet targets the old
+  // network instead; do not treat one chain's evidence as proof for the other.
+  const network = (process.env.GENLAYER_NETWORK ?? "studioDevnet") as GenLayerNetwork;
 
   const client = createGenLayerClient({ network, privateKey });
 

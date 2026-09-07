@@ -220,7 +220,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
   const claimantBps = BigInt(decision.claimantShareBps ?? 0);
   const respondentBps = BigInt(decision.respondentShareBps ?? 0);
   try {
-    const { txHash, messageId } = await dispatchDecisionForCase({
+    const { txHash, messageId, notificationTxHash } = await dispatchDecisionForCase({
       caseId: kase.id,
       outcome: decision.outcome,
       claimantShareBps: decision.claimantShareBps ?? 0,
@@ -246,6 +246,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       data: {
         relayTxHash: txHash,
         relayMessageId: messageId,
+        relayNotificationTxHash: notificationTxHash ?? null,
         relayError: null,
         relayAttempts: { increment: 1 },
         pendingAttestationHash: null,

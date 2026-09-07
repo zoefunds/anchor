@@ -59,8 +59,18 @@ fi
 sed "s#__SEPOLIA_RPC_URL__#${RESOLVED_RPC_URL}#g" /config/config.json > /tmp/config.json
 export CONFIG_FILES=/tmp/config.json
 
+# One-off debug escape hatch: when set, skip starting the validator agent
+# entirely and just idle, so an operator can SSH in with a stable shell
+# (e.g. to inspect/clear a stuck reorg_flag.json using this container's
+# own scoped S3 credentials) without fighting its crash loop. Unset
+# DEBUG_SLEEP and redeploy to resume normal operation.
+if [ "$DEBUG_SLEEP" = "true" ]; then
+  echo "[debug] DEBUG_SLEEP=true, not starting the validator agent — idling."
+  exec sleep infinity
+fi
+
 exec ./validator \
-  --db /data \
+  --db /data/mailbox-345e7246 \
   --originChainName sepolia \
   --checkpointSyncer.type s3 \
   --checkpointSyncer.bucket "$S3_BUCKET" \

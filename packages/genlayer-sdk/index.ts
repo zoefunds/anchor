@@ -29,17 +29,23 @@
 //     `mode === "leader"` and check its `execution_result === "SUCCESS"`.
 
 import { createAccount, createClient } from "genlayer-js";
-import { localnet, studionet, testnetAsimov, testnetBradbury } from "genlayer-js/chains";
+import { localnet, studionet, studioDevnet, testnetAsimov, testnetBradbury } from "genlayer-js/chains";
 import type { GenLayerClient, TransactionHash } from "genlayer-js/types";
 import { TransactionStatus } from "genlayer-js/types";
 
 import type { Decision, Outcome, ReasonCode } from "@anchor/types";
 
-export type GenLayerNetwork = "localnet" | "studionet" | "testnetAsimov" | "testnetBradbury";
+// 2026-09-07: migrating off StudioNet (61999, stable) onto Studio Next /
+// Studio-dev (61997, v0.6 RC fee stack) — studionet is kept here
+// deliberately, not removed, since 61999 and 61997 are separate
+// deployments with separate evidence per GenLayer's own migration
+// guidance; do not treat one chain's history as proof for the other.
+export type GenLayerNetwork = "localnet" | "studionet" | "studioDevnet" | "testnetAsimov" | "testnetBradbury";
 
 const CHAINS = {
   localnet,
   studionet,
+  studioDevnet,
   testnetAsimov,
   testnetBradbury,
 } as const;
@@ -84,6 +90,58 @@ class GenVMExecutionError extends Error {
   }
 }
 
+// 2026-09-07 (Studio Next / v0.6 migration): deploys and writes are now
+// fee-funded — a transaction with no fee value reverts on-chain with
+// `FeeValueMustBeNonZero`, confirmed via a real deploy attempt against
+// Studio-dev. genlayer-js's OWN auto-estimation (used when `fees` is
+// omitted from deployContract/writeContract) also reverted the same way
+// in live testing — the SDK's estimator apparently can't derive a
+// working default on this network yet (an RC-environment gap, not
+// something to route around by hardcoding zero). The reliable path,
+// confirmed live: read `sim_getFeeConfig`'s own `defaultFees` and use it
+// directly. Even that undershoots for a real write (this contract's
+// `adjudicate()` needs real LLM/web execution budget) — a real deploy
+// with the raw defaultFees hit `out_of receipt message`; multiplying
+// `executionBudgetPerRound` (and the paired feeValue) by 6x was what
+// actually got a real adjudicate() call to FINISHED_WITH_RETURN in
+// testing. This is an empirically-tuned safety margin, not a documented
+// constant — if execution starts failing with budget-exhaustion errors
+// again as contracts grow, raise EXECUTION_BUDGET_MULTIPLIER, don't
+// silently catch and ignore the error.
+const EXECUTION_BUDGET_MULTIPLIER = 6n;
+
+/**
+ * Resolves the `fees` object to attach to a deploy/write call. Returns
+ * `undefined` on a chain that doesn't support `sim_getFeeConfig` (e.g.
+ * StudioNet 61999, which is gasless and predates the v0.6 fee model) —
+ * deployContract/writeContract treat an omitted `fees` as "no fee
+ * required," matching that chain's actual behavior. Never silently
+ * swallows a real fee-config error on a chain that DOES support it.
+ */
+async function resolveFees(client: GenLayerClient<any>): Promise<any | undefined> {
+  let config: any;
+  try {
+    config = await client.request({ method: "sim_getFeeConfig", params: [] });
+  } catch (err: any) {
+    const message = String(err?.message ?? err);
+    if (message.includes("Method not found") || message.includes("does not exist")) {
+      return undefined; // legacy, non-fee-funded chain
+    }
+    throw err;
+  }
+  if (!config?.defaultFees) return undefined;
+  const boostedExecutionBudget = BigInt(config.defaultFees.distribution.executionBudgetPerRound) * EXECUTION_BUDGET_MULTIPLIER;
+  const originalExecutionBudget = BigInt(config.defaultFees.distribution.executionBudgetPerRound);
+  return {
+    ...config.defaultFees,
+    distribution: {
+      ...config.defaultFees.distribution,
+      executionBudgetPerRound: boostedExecutionBudget.toString(),
+    },
+    feeValue: (BigInt(config.defaultFees.feeValue) + (boostedExecutionBudget - originalExecutionBudget)).toString(),
+  };
+}
+
 export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClient {
   const account = createAccount(config.privateKey);
   const client: GenLayerClient<any> = createClient({
@@ -101,9 +159,20 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
   // evidence) - the state change never committed, self.status stayed
   // "PENDING", but a check on execution_result alone would have reported
   // success. Both conditions are required.
+  //
+  // 2026-09-07: v0.6/Studio-dev receipts additionally carry a top-level
+  // `txExecutionResultName` (e.g. "FINISHED_WITH_RETURN" /
+  // "FINISHED_WITH_ERROR") — the officially documented field per
+  // GenLayer's own migration guide. Confirmed present on real Studio-dev
+  // receipts in live testing. Prefer it when present; fall back to the
+  // older consensus_data-shape check for StudioNet (61999), where this
+  // field is confirmed absent.
   const AGREED_RESULTS = new Set(["AGREE", "MAJORITY_AGREE"]);
 
   function leaderExecutionSucceeded(receipt: any): boolean {
+    if (typeof receipt?.txExecutionResultName === "string") {
+      return receipt.txExecutionResultName === "FINISHED_WITH_RETURN" && AGREED_RESULTS.has(receipt?.result_name);
+    }
     const leaderReceipts: any[] = receipt?.consensus_data?.leader_receipt ?? [];
     const leader = leaderReceipts.find((r) => r?.mode === "leader");
     return leader?.execution_result === "SUCCESS" && AGREED_RESULTS.has(receipt?.result_name);
@@ -138,9 +207,11 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
 
   return {
     async deployCase(params) {
+      const fees = await resolveFees(client);
       const txHash = (await client.deployContract({
         code: params.code,
         args: [params.caseId, params.claimantRef, params.respondentRef, params.attoAmount],
+        ...(fees ? { fees } : {}),
       })) as `0x${string}`;
 
       const receipt = await assertExecutionSucceeded(txHash);
@@ -165,11 +236,13 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
       // call goes through genlayer-js directly with an explicit string
       // arg, so it doesn't hit that CLI-specific behavior, but keep this
       // as a plain string on purpose.)
+      const fees = await resolveFees(client);
       const txHash = (await client.writeContract({
         address: contractAddress,
         functionName: "adjudicate",
         args: [params.policyId, JSON.stringify(params.evidence)],
         value: 0n,
+        ...(fees ? { fees } : {}),
       })) as `0x${string}`;
 
       const receipt = await assertExecutionSucceeded(txHash);
@@ -177,11 +250,13 @@ export function createGenLayerClient(config: GenLayerConfig): AnchorGenLayerClie
     },
 
     async appealCase(contractAddress) {
+      const fees = await resolveFees(client);
       const txHash = (await client.writeContract({
         address: contractAddress,
         functionName: "appeal",
         args: [],
         value: 0n,
+        ...(fees ? { fees } : {}),
       })) as `0x${string}`;
       await assertExecutionSucceeded(txHash);
       return { txHash };

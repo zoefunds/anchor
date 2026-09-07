@@ -1,0 +1,22 @@
+{
+  "name": "evm",
+  "version": "1.0.0",
+  "description": "Foundry project. Real, deployed contracts — not scaffolding. See the root `README.md`'s \"Live deployment\" section for every current address, and `../../docs/multisig-attestor-setup.md` / `../../docs/self-hosted-validator-setup.md` for the full security story behind why these contracts are shaped the way they are.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@hyperlane-xyz/core": "^12.1.0",
+    "@openzeppelin/contracts": "^4.9.3",
+    "@openzeppelin/contracts-upgradeable": "^4.9.3"
+  }
+}

@@ -6,8 +6,12 @@
       "protocol": "ethereum",
       "rpcUrls": [{ "http": "__SEPOLIA_RPC_URL__" }],
       "index": {
-        "chunk": 5000
-      }
+        "chunk": 5000,
+        "from": 11651800
+      },
+      "mailbox": "0x345E7246631ceb0300427caB75eacA10c326BB09",
+      "merkleTreeHook": "0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB",
+      "validatorAnnounce": "0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5"
     }
   }
 }

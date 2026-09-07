@@ -1,0 +1,12 @@
+app = 'anc-hor-attestor3'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'apps/web/Dockerfile.worker'
+
+[processes]
+  app = 'npx tsx scripts/auto-attestor-sign.ts'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
