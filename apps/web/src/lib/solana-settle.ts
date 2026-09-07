@@ -446,16 +446,26 @@ export async function submitAttestedSettle(
   const lookupTableAccounts: AddressLookupTableAccount[] = [];
   if (DECISION_RELAY_LOOKUP_TABLE) {
     const lookupTableAddress = new PublicKey(DECISION_RELAY_LOOKUP_TABLE);
-    // Dynamic per-case accounts (claimant/respondent) aren't part of the
-    // lookup table set up at deploy time — extend it with whichever of
-    // these this specific decision needs, so the transaction below is
-    // guaranteed to fit under the 1232-byte limit regardless of how many
-    // Ed25519 instructions M-of-N requires. See this function's own
-    // comment for why this only costs latency on a party's FIRST
-    // settlement, never repeat ones.
+    // Dynamic per-case accounts (claimant/respondent/casePda) aren't part
+    // of the lookup table set up at deploy time — extend it with
+    // whichever of these this specific decision needs, so the
+    // transaction below is guaranteed to fit under the 1232-byte limit
+    // regardless of how many Ed25519 instructions M-of-N requires. See
+    // this function's own comment for why this only costs latency on a
+    // party's FIRST settlement, never repeat ones.
+    //
+    // 2026-09-07: casePda was missing from this list — a real bug found
+    // live (an older stuck case still overflowed to 1247 raw bytes, 15
+    // over the limit, even after capping external attestations to
+    // threshold-1). Unlike claimant/respondent, casePda is unique per
+    // case and never reused, so adding it to a shared, permanent ALT is
+    // a one-way cost (the ALT is capped at 256 entries) — acceptable at
+    // today's volume, but worth revisiting (e.g. a rotating ALT) if this
+    // system processes hundreds of Solana cases.
     await ensureLookupTableHasAddresses(connection, payer, lookupTableAddress, [
       new PublicKey(params.claimant),
       new PublicKey(params.respondent),
+      casePda,
     ]);
     const lookupTable = await connection.getAddressLookupTable(lookupTableAddress);
     if (lookupTable.value) lookupTableAccounts.push(lookupTable.value);
