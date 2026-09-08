@@ -13,8 +13,12 @@ interface AnalyticsResult {
   outcomeDistribution: Record<string, number>;
   settlementFailureRate: number;
   avgSettlementDelayHours: number | null;
+  evidenceCompletionRate: number;
+  settlementRetryRate: number;
+  avgRelayAttempts: number | null;
   byPolicy: Record<string, { count: number; avgResolutionTimeHours: number | null }>;
   byAsset: Record<string, { count: number; settlementFailureRate: number }>;
+  byIntegration: Record<string, { count: number; settlementFailureRate: number; settlementRetryRate: number }>;
 }
 
 const WINDOWS = [30, 90, 180] as const;
@@ -90,6 +94,8 @@ export default function AnalyticsPage() {
             <Stat label="Reversal rate" value={pct(data.reversalRate)} />
             <Stat label="Settlement failure" value={pct(data.settlementFailureRate)} />
             <Stat label="Avg settlement delay" value={hours(data.avgSettlementDelayHours)} />
+            <Stat label="Evidence completion" value={pct(data.evidenceCompletionRate)} />
+            <Stat label="Settlement retry rate" value={pct(data.settlementRetryRate)} />
           </section>
 
           <section className="mt-12">

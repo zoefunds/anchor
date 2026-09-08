@@ -18,8 +18,26 @@ export interface AnalyticsResult {
   outcomeDistribution: Record<string, number>;
   settlementFailureRate: number;
   avgSettlementDelayHours: number | null;
+  // % of cases whose evidence deadline (createdAt + policy's
+  // evidenceDeadlineHours) has already passed, AND that received at
+  // least one Evidence row from BOTH claimant and respondent. Cases
+  // without a bound policy (no evidenceDeadlineHours) or still inside
+  // their deadline window are excluded from the denominator entirely —
+  // "not yet due" and "no deadline configured" are not evidence
+  // failures, so counting them would understate completion for no
+  // useful reason.
+  evidenceCompletionRate: number;
+  // Of cases with a settled (relayTxHash-bearing) final decision, the
+  // fraction whose relayAttempts (see Decision.relayAttempts /
+  // adjudication-service.ts's retry sweep) is > 1 — i.e. it did NOT
+  // settle on the first relay attempt. A single first-try relay is the
+  // expected/healthy path; needing a retry indicates transient RPC or
+  // nonce contention that the sweep had to paper over.
+  settlementRetryRate: number;
+  avgRelayAttempts: number | null;
   byPolicy: Record<string, { count: number; avgResolutionTimeHours: number | null }>;
   byAsset: Record<string, { count: number; settlementFailureRate: number }>;
+  byIntegration: Record<string, { count: number; settlementFailureRate: number; settlementRetryRate: number }>;
 }
 
 export async function computeOrgAnalytics(organizationId: string, sinceDays = 90): Promise<AnalyticsResult> {
@@ -30,6 +48,7 @@ export async function computeOrgAnalytics(organizationId: string, sinceDays = 90
       decisions: { orderBy: { createdAt: "asc" } },
       settlement: { include: { integration: true } },
       policyVersionRecord: { include: { policy: true } },
+      evidence: true,
     },
   });
 
@@ -45,6 +64,13 @@ export async function computeOrgAnalytics(organizationId: string, sinceDays = 90
   const settlementDelaysHours: number[] = [];
   const byPolicy: Record<string, { count: number; totalResolutionHours: number; resolvedCount: number }> = {};
   const byAsset: Record<string, { count: number; failures: number }> = {};
+  const byIntegration: Record<string, { count: number; failures: number; retries: number }> = {};
+
+  let evidenceDueCount = 0;
+  let evidenceCompleteCount = 0;
+  let settledCount = 0;
+  let settledWithRetryCount = 0;
+  const relayAttemptsForSettled: number[] = [];
 
   for (const kase of cases) {
     const finalDecision = kase.decisions[kase.decisions.length - 1];
@@ -82,6 +108,29 @@ export async function computeOrgAnalytics(organizationId: string, sinceDays = 90
       assetEntry.count++;
       if (!finalDecision.relayTxHash) assetEntry.failures++;
       byAsset[asset] = assetEntry;
+
+      const integrationKey = kase.settlement?.integrationId ?? "unknown";
+      const integrationEntry = byIntegration[integrationKey] ?? { count: 0, failures: 0, retries: 0 };
+      integrationEntry.count++;
+      if (!finalDecision.relayTxHash) integrationEntry.failures++;
+      if (finalDecision.relayTxHash && finalDecision.relayAttempts > 1) integrationEntry.retries++;
+      byIntegration[integrationKey] = integrationEntry;
+
+      if (finalDecision.relayTxHash) {
+        settledCount++;
+        relayAttemptsForSettled.push(finalDecision.relayAttempts);
+        if (finalDecision.relayAttempts > 1) settledWithRetryCount++;
+      }
+    }
+
+    if (kase.policyVersionRecord) {
+      const deadline = new Date(kase.createdAt.getTime() + kase.policyVersionRecord.evidenceDeadlineHours * 60 * 60 * 1000);
+      if (deadline.getTime() <= Date.now()) {
+        evidenceDueCount++;
+        const hasClaimant = kase.evidence.some((e) => e.submittedBy === "claimant");
+        const hasRespondent = kase.evidence.some((e) => e.submittedBy === "respondent");
+        if (hasClaimant && hasRespondent) evidenceCompleteCount++;
+      }
     }
   }
 
@@ -97,9 +146,18 @@ export async function computeOrgAnalytics(organizationId: string, sinceDays = 90
     outcomeDistribution,
     settlementFailureRate: settlementAttempts > 0 ? settlementFailures / settlementAttempts : 0,
     avgSettlementDelayHours: avg(settlementDelaysHours),
+    evidenceCompletionRate: evidenceDueCount > 0 ? evidenceCompleteCount / evidenceDueCount : 0,
+    settlementRetryRate: settledCount > 0 ? settledWithRetryCount / settledCount : 0,
+    avgRelayAttempts: avg(relayAttemptsForSettled),
     byPolicy: Object.fromEntries(
       Object.entries(byPolicy).map(([k, v]) => [k, { count: v.count, avgResolutionTimeHours: v.resolvedCount > 0 ? v.totalResolutionHours / v.resolvedCount : null }])
     ),
     byAsset: Object.fromEntries(Object.entries(byAsset).map(([k, v]) => [k, { count: v.count, settlementFailureRate: v.count > 0 ? v.failures / v.count : 0 }])),
+    byIntegration: Object.fromEntries(
+      Object.entries(byIntegration).map(([k, v]) => [
+        k,
+        { count: v.count, settlementFailureRate: v.count > 0 ? v.failures / v.count : 0, settlementRetryRate: v.count > 0 ? v.retries / v.count : 0 },
+      ])
+    ),
   };
 }
