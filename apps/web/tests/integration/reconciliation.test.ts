@@ -62,6 +62,20 @@ afterAll(async () => {
   await prisma.organization.delete({ where: { id: orgId } });
 });
 
+// checkGovernanceDrift's owner()/attestorThreshold() reads share this
+// same mocked readContract — tests that only care about the
+// settlement-target check must still answer those two calls with
+// values matching the real committed manifest, or every sweep raises a
+// spurious GOVERNANCE_DRIFT finding/alert alongside whatever the test is
+// actually asserting on.
+function mockSettlementTargetOnly(settlementTargetValue: string): void {
+  mockReadContract.mockImplementation(async (args: { functionName: string }) => {
+    if (args.functionName === "owner") return "0xc200534F7Debf2816C085c5a156AbD686FA19f4C";
+    if (args.functionName === "attestorThreshold") return 2n;
+    return settlementTargetValue;
+  });
+}
+
 async function makeIntegration(overrides: Record<string, unknown> = {}) {
   const integration = await prisma.settlementIntegration.create({
     data: { organizationId: orgId, chain: "sepolia", escrowContractAddress: ESCROW, assetSymbol: "ETH", assetDecimals: 18, createdByMemberId: "test-member", ...overrides },
@@ -96,7 +110,7 @@ describe("runReconciliationSweep — settlement target checks", () => {
     await prisma.caseSettlement.create({
       data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "PENDING_DEPOSIT", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
     });
-    mockReadContract.mockResolvedValue("0x0000000000000000000000000000000000000000");
+    mockSettlementTargetOnly("0x0000000000000000000000000000000000000000");
 
     await runReconciliationSweep();
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
@@ -121,7 +135,7 @@ describe("runReconciliationSweep — settlement target checks", () => {
     await prisma.caseSettlement.create({
       data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "PENDING_DEPOSIT", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
     });
-    mockReadContract.mockResolvedValue("0x0000000000000000000000000000000000000000");
+    mockSettlementTargetOnly("0x0000000000000000000000000000000000000000");
     mockSendOpsAlert.mockResolvedValueOnce(false); // simulates "not configured" / skipped delivery
 
     await runReconciliationSweep();
@@ -160,11 +174,11 @@ describe("runReconciliationSweep — settlement target checks", () => {
     await prisma.caseSettlement.create({
       data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "PENDING_DEPOSIT", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
     });
-    mockReadContract.mockResolvedValue("0x0000000000000000000000000000000000000000");
+    mockSettlementTargetOnly("0x0000000000000000000000000000000000000000");
     await runReconciliationSweep();
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
 
-    mockReadContract.mockResolvedValue(ESCROW); // now matches — fixed
+    mockSettlementTargetOnly(ESCROW); // now matches — fixed
     await runReconciliationSweep();
 
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });

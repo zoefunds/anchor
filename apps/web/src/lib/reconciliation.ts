@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 import { depositsAbiForVersion } from "@/lib/escrow-version";
 import { logAction } from "@/lib/audit";
+import { loadEvmDeploymentManifest } from "@/lib/deployment-manifest";
 
 // Item F's reconciliation half — the real chain: decision -> attestation
 // -> dispatch -> delivery -> processed -> settled -> payout ->
@@ -20,6 +21,20 @@ const OVERDUE_DEPOSIT_MS = Number(process.env.RECONCILIATION_OVERDUE_DEPOSIT_MS 
 // this module has no other reason to depend on the BullMQ scheduling
 // layer at all.
 const AUDIT_ANCHOR_STALE_MS = 2 * 30 * 60 * 1000;
+// A Decision that started co-signing (pendingAttestationHash /
+// pendingSolanaAttestationMessage set) and hasn't reached relayTxHash
+// within this window is treated as a stuck signer/quorum, not a
+// still-in-progress one — collecting an external attestor's signature
+// is a manual, human-timescale action, but leaving it open past a full
+// day with no operator visibility is itself the failure this exists to
+// catch.
+const STALE_PENDING_SIGNATURE_MS = Number(process.env.RECONCILIATION_STALE_SIGNATURE_MS ?? 24 * 60 * 60 * 1000);
+// Hyperlane's own validator/relayer SLA on Sepolia testnet is minutes,
+// not hours — see docs/hyperlane-integration.md. A dispatched decision
+// that hasn't reached DELIVERED within this window points at the
+// relayer or validator path, not at Anchor's own dispatch logic (which
+// already succeeded by the time relayTxHash is set).
+const HYPERLANE_DELIVERY_SLA_MS = Number(process.env.RECONCILIATION_HYPERLANE_DELIVERY_SLA_MS ?? 60 * 60 * 1000);
 
 // Priority 5, item 18/20: the single source of truth for how severe
 // each finding type is — used both here (the severity actually sent
@@ -33,6 +48,11 @@ export const FINDING_SEVERITY: Record<string, "info" | "warning" | "critical"> =
   OVERDUE_DEPOSIT: "warning",
   DISPATCHED_BUT_DB_STALE: "warning",
   AUDIT_ANCHOR_STALE: "warning",
+  RELAY_RETRIES_EXHAUSTED: "critical",
+  CANARY_SLA_BREACH: "critical",
+  STALE_PENDING_SIGNATURE: "critical",
+  LATE_HYPERLANE_DELIVERY: "warning",
+  GOVERNANCE_DRIFT: "critical",
 };
 
 const DECISION_RELAY_ABI = [
@@ -50,6 +70,8 @@ const DECISION_RELAY_ABI = [
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [{ name: "", type: "bool" }],
   },
+  { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "attestorThreshold", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ] as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -101,7 +123,10 @@ async function raiseFinding(params: {
     | "TARGET_INTEGRATION_MISMATCH"
     | "OVERDUE_DEPOSIT"
     | "DISPATCHED_BUT_DB_STALE"
-    | "AUDIT_ANCHOR_STALE";
+    | "AUDIT_ANCHOR_STALE"
+    | "STALE_PENDING_SIGNATURE"
+    | "LATE_HYPERLANE_DELIVERY"
+    | "GOVERNANCE_DRIFT";
   targetType: string;
   targetId: string;
   detail: Record<string, unknown>;
@@ -425,6 +450,213 @@ async function checkAuditAnchorStaleness(): Promise<void> {
   }
 }
 
+/**
+ * Signer-unavailable / quorum-unavailable, made queryable: a Decision
+ * whose co-signing workflow started (pendingAttestationHash for EVM, or
+ * pendingSolanaAttestationMessage for Solana) but which never reached
+ * relayTxHash within STALE_PENDING_SIGNATURE_MS. The count of collected
+ * signatures vs. the deployment manifest's own threshold distinguishes
+ * "no signer has responded at all" from "quorum is one signature short"
+ * in the alert text, since those need different operators paged.
+ */
+async function checkStalePendingSignatures(): Promise<void> {
+  const cutoff = new Date(Date.now() - STALE_PENDING_SIGNATURE_MS);
+
+  const evmStuck = await prisma.decision.findMany({
+    where: { pendingAttestationHash: { not: null }, relayTxHash: null, createdAt: { lt: cutoff } },
+  });
+  const solanaStuck = await prisma.decision.findMany({
+    where: { pendingSolanaAttestationMessage: { not: null }, relayTxHash: null, createdAt: { lt: cutoff } },
+  });
+
+  // Batched existing-finding lookup, same reasoning as
+  // checkLateHyperlaneDelivery: skip a write entirely for a decision
+  // that's still stuck but already has an open, already-alerted
+  // finding — nothing about it changed since the last tick.
+  const stuckIds = [...evmStuck, ...solanaStuck].map((d) => d.id);
+  const existingFindings = stuckIds.length
+    ? await prisma.reconciliationFinding.findMany({ where: { type: "STALE_PENDING_SIGNATURE", targetId: { in: stuckIds } } })
+    : [];
+  const existingByDecision = new Map(existingFindings.map((f) => [f.targetId, f]));
+
+  const evmManifest = (() => {
+    try {
+      return loadEvmDeploymentManifest();
+    } catch {
+      return null;
+    }
+  })();
+  for (const d of evmStuck) {
+    const existing = existingByDecision.get(d.id);
+    if (existing && !existing.resolvedAt && existing.alertedAt) continue;
+    const collected = d.pendingAttestationSignatures.length;
+    const threshold = evmManifest ? Number(evmManifest.decisionRelay.attestorThreshold) : null;
+    await raiseFinding({
+      type: "STALE_PENDING_SIGNATURE",
+      targetType: "Decision",
+      targetId: d.id,
+      detail: { chain: "sepolia", collected, threshold },
+      severity: "critical",
+      title: "EVM decision has been awaiting attestor co-signatures for too long",
+      alertDetail: `Decision ${d.id} (case ${d.caseId}) has ${collected}${threshold !== null ? `/${threshold}` : ""} attestor signature(s) collected but has not dispatched in over ${Math.round(STALE_PENDING_SIGNATURE_MS / 3_600_000)}h — check attestor pollers. See docs/runbooks/signer-failure.md.`,
+    });
+  }
+
+  for (const d of solanaStuck) {
+    const existing = existingByDecision.get(d.id);
+    if (existing && !existing.resolvedAt && existing.alertedAt) continue;
+    const attestations = Array.isArray(d.pendingSolanaAttestations) ? (d.pendingSolanaAttestations as unknown[]) : [];
+    await raiseFinding({
+      type: "STALE_PENDING_SIGNATURE",
+      targetType: "Decision",
+      targetId: d.id,
+      detail: { chain: "solanatestnet", collected: attestations.length },
+      severity: "critical",
+      title: "Solana decision has been awaiting attestor co-signatures for too long",
+      alertDetail: `Decision ${d.id} (case ${d.caseId}) has ${attestations.length} Solana attestor signature(s) collected but has not dispatched in over ${Math.round(STALE_PENDING_SIGNATURE_MS / 3_600_000)}h — check the Solana attestor poller. See docs/runbooks/signer-failure.md.`,
+    });
+  }
+
+  // Batched resolution too: one query for every currently-open finding's
+  // decision, instead of a findUnique per finding.
+  const openStale = await prisma.reconciliationFinding.findMany({ where: { type: "STALE_PENDING_SIGNATURE", resolvedAt: null } });
+  if (openStale.length > 0) {
+    const decisions = await prisma.decision.findMany({ where: { id: { in: openStale.map((f) => f.targetId) } } });
+    const decisionById = new Map(decisions.map((d) => [d.id, d]));
+    for (const finding of openStale) {
+      const d = decisionById.get(finding.targetId);
+      if (!d || d.relayTxHash) {
+        await resolveFinding("STALE_PENDING_SIGNATURE", finding.targetId, d ? "decision has since dispatched" : "decision no longer exists");
+      }
+    }
+  }
+}
+
+/**
+ * Late Hyperlane delivery: a Decision dispatched (relayTxHash set) but
+ * with no DELIVERED SignerLifecycleEvent recorded within
+ * HYPERLANE_DELIVERY_SLA_MS — the relayer/validator path between
+ * dispatch and destination-side processing appears stuck. Deliberately
+ * reads SignerLifecycleEvent rather than re-deriving delivery from
+ * on-chain processedDecisions() here: that's exactly what
+ * checkDispatchedButStale already does for the DB-staleness case, and
+ * duplicating it would race the same on-chain reads for two different
+ * findings.
+ */
+async function checkLateHyperlaneDelivery(): Promise<void> {
+  const cutoff = new Date(Date.now() - HYPERLANE_DELIVERY_SLA_MS);
+  const dispatched = await prisma.decision.findMany({
+    where: { relayTxHash: { not: null }, createdAt: { lt: cutoff } },
+    select: { id: true, caseId: true, relayTxHash: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+  if (dispatched.length === 0) return;
+
+  // Batched, not one findFirst per decision: this table is
+  // organization-global and this repo's own test config notes the
+  // shared dev DB has no per-test isolation — an N+1 loop here measured
+  // real multi-second-per-row latency against it, exceeding vitest's
+  // testTimeout. One IN-list query for every candidate decision instead.
+  const deliveredEvents = await prisma.signerLifecycleEvent.findMany({
+    where: { decisionId: { in: dispatched.map((d) => d.id) }, state: { in: ["DELIVERED", "SETTLED"] } },
+    orderBy: { createdAt: "asc" },
+  });
+  const deliveredByDecision = new Map<string, (typeof deliveredEvents)[number]>();
+  for (const ev of deliveredEvents) {
+    if (!deliveredByDecision.has(ev.decisionId)) deliveredByDecision.set(ev.decisionId, ev);
+  }
+
+  // A second batched lookup, same reasoning as deliveredEvents above:
+  // a decision that's still not delivered but ALREADY has an
+  // open+alerted finding needs no write at all on this tick — only a
+  // brand-new problem or a just-resolved one does. Without this, every
+  // sweep tick pays a full create/update round trip per still-open
+  // finding forever, not just once when it opens.
+  const existingFindings = await prisma.reconciliationFinding.findMany({
+    where: { type: "LATE_HYPERLANE_DELIVERY", targetId: { in: dispatched.map((d) => d.id) } },
+  });
+  const existingByDecision = new Map(existingFindings.map((f) => [f.targetId, f]));
+
+  for (const d of dispatched) {
+    const delivered = deliveredByDecision.get(d.id);
+    const existing = existingByDecision.get(d.id);
+    if (delivered) {
+      if (existing && !existing.resolvedAt) {
+        await resolveFinding("LATE_HYPERLANE_DELIVERY", d.id, `reached ${delivered.state} at ${delivered.createdAt.toISOString()}`);
+      }
+      continue;
+    }
+    if (existing && !existing.resolvedAt && existing.alertedAt) continue; // already open and already alerted — nothing changed
+    await raiseFinding({
+      type: "LATE_HYPERLANE_DELIVERY",
+      targetType: "Decision",
+      targetId: d.id,
+      detail: { caseId: d.caseId, relayTxHash: d.relayTxHash, dispatchedAt: d.createdAt },
+      severity: "warning",
+      title: "Dispatched decision has not reached DELIVERED within the Hyperlane SLA",
+      alertDetail: `Decision ${d.id} (case ${d.caseId}) dispatched via ${d.relayTxHash} but has no DELIVERED signer-lifecycle event after ${Math.round(HYPERLANE_DELIVERY_SLA_MS / 60_000)} minutes — check relayer/validator health. See docs/runbooks/relayer-failure.md and docs/runbooks/validator-lag.md.`,
+    });
+  }
+}
+
+/**
+ * Governance drift: live DecisionRelay.owner()/attestorThreshold vs.
+ * the committed deployment-manifest.json's expected values. Distinct
+ * from the manifest's own flags[] (a point-in-time snapshot recomputed
+ * by scripts/generate-deployment-manifest.ts on demand) — this is the
+ * periodic, unattended check that notices a change happened at all,
+ * between manual manifest regenerations.
+ */
+async function checkGovernanceDrift(): Promise<void> {
+  let manifest: ReturnType<typeof loadEvmDeploymentManifest>;
+  try {
+    manifest = loadEvmDeploymentManifest();
+  } catch (err) {
+    console.error("reconciliation: failed to load EVM deployment manifest for governance-drift check", err);
+    return;
+  }
+
+  const client = getClient();
+  const address = manifest.decisionRelay.address as Address;
+  // A bounded timeout, not just a try/catch: an RPC provider (or, in
+  // tests, an unmocked readContract call) that never resolves at all
+  // must not stall every OTHER reconciliation check behind it in the
+  // same sweep tick — this check's own failure mode is "skip this
+  // tick," never "block the sweep."
+  const withTimeout = <T>(p: Promise<T>): Promise<T> =>
+    Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("governance-drift read timed out")), 8000))]);
+  let owner: string;
+  let attestorThreshold: bigint;
+  try {
+    [owner, attestorThreshold] = await Promise.all([
+      withTimeout(client.readContract({ address, abi: DECISION_RELAY_ABI, functionName: "owner" })),
+      withTimeout(client.readContract({ address, abi: DECISION_RELAY_ABI, functionName: "attestorThreshold" })),
+    ]);
+  } catch (err) {
+    console.error(`reconciliation: failed to read live governance state for DecisionRelay ${address}`, err);
+    return;
+  }
+
+  const expectedOwner = manifest.decisionRelay.owner.toLowerCase();
+  const expectedThreshold = BigInt(manifest.decisionRelay.attestorThreshold);
+  const driftId = `decisionrelay:${address.toLowerCase()}`;
+
+  if (owner.toLowerCase() !== expectedOwner || attestorThreshold !== expectedThreshold) {
+    await raiseFinding({
+      type: "GOVERNANCE_DRIFT",
+      targetType: "DecisionRelay",
+      targetId: driftId,
+      detail: { address, liveOwner: owner, expectedOwner: manifest.decisionRelay.owner, liveAttestorThreshold: attestorThreshold.toString(), expectedAttestorThreshold: manifest.decisionRelay.attestorThreshold },
+      severity: "critical",
+      title: "DecisionRelay's live governance configuration no longer matches the committed deployment manifest",
+      alertDetail: `DecisionRelay ${address}: owner is ${owner} (expected ${manifest.decisionRelay.owner}), attestorThreshold is ${attestorThreshold} (expected ${manifest.decisionRelay.attestorThreshold}). Regenerate the manifest if this was authorized: scripts/generate-deployment-manifest.ts. See docs/runbooks/safe-governance-config-change.md.`,
+    });
+  } else {
+    await resolveFinding("GOVERNANCE_DRIFT", driftId, "live owner/attestorThreshold match the committed manifest again");
+  }
+}
+
 // Real auto-escalation: a critical finding that's real, alerted, and
 // still sitting unacknowledged past a threshold gets a repeated,
 // distinctly-labeled escalation alert on its own cadence — separate
@@ -499,6 +731,9 @@ export async function runReconciliationSweep(): Promise<{ openFindings: number; 
   await checkDispatchedButStale();
   await checkEmergencyRefundsSettled();
   await checkAuditAnchorStaleness();
+  await checkStalePendingSignatures();
+  await checkLateHyperlaneDelivery();
+  await checkGovernanceDrift();
   const escalated = await escalateUnacknowledgedCriticalFindings();
 
   const openFindings = await prisma.reconciliationFinding.count({ where: { resolvedAt: null } });

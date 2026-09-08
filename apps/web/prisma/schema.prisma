@@ -825,6 +825,27 @@ model SignerLifecycleEvent {
   @@index([chain, state])
 }
 
+// Phase 3 ops console: testnet-canary.ts's synthetic Case/Decision rows
+// are deleted in a `finally` block on every run (see its own doc
+// comment) so a crashed run never leaves stale isCanary data behind —
+// but that means nothing durable survives a SUCCESSFUL run either,
+// leaving "when did the canary last succeed" answerable only by
+// grepping process logs. This is the minimal persisted fact that makes
+// it a real, queryable dashboard fact instead: one row per run,
+// independent of whether its synthetic Case/Decision still exist.
+model CanaryRun {
+  id          String   @id @default(cuid())
+  runId       String   @unique
+  chain       String
+  outcome     String // "settled" | "sla_breach" | "error"
+  durationMs  Int
+  relayTxHash String?
+  detail      String?
+  createdAt   DateTime @default(now())
+
+  @@index([chain, createdAt])
+}
+
 // A short-lived exchange session for a party token — see
 // party-auth.ts's exchangePartyTokenForSession. The long-lived bearer
 // token (in claimantTokenHash/respondentTokenHash) is only ever meant
@@ -907,6 +928,25 @@ enum ReconciliationFindingType {
   // re-verified signal that the automated path is broken, independent
   // of whether any real case happens to be flowing through it right now.
   CANARY_SLA_BREACH
+  // Phase 3 ops console: a Decision has sat with pendingAttestationHash
+  // or pendingSolanaAttestationMessage set (co-signing has started) but
+  // never reached relayTxHash for longer than the sweep's stale-signing
+  // threshold — the operator-visible surface of "one signer down" (still
+  // short of quorum) or "no signer responding at all" that
+  // SignerLifecycleEvent's SIGNING state alone doesn't page anyone about.
+  STALE_PENDING_SIGNATURE
+  // A dispatched Decision (relayTxHash set, an EVM->Solana settlement
+  // whose Hyperlane message is DecisionRelay's own processedDecisions
+  // flag) never reached the DELIVERED SignerLifecycleEvent state within
+  // the configured SLA — the Hyperlane relayer/validator path appears
+  // stuck between dispatch and destination-side processing.
+  LATE_HYPERLANE_DELIVERY
+  // Live-read DecisionRelay.owner() / attestorThreshold no longer match
+  // the committed deployment-manifest.json's expected values — the
+  // deployed contract's governance configuration changed since the
+  // manifest was last regenerated (scripts/generate-deployment-manifest.ts),
+  // independent of whether that change was itself authorized.
+  GOVERNANCE_DRIFT
 }
 
 // Priority 2: the real, on-chain ABI shapes actually deployed. V1 is
