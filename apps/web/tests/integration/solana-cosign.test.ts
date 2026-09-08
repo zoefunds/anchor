@@ -148,6 +148,10 @@ describe("Solana M-of-N co-signing", () => {
   });
 
   it("resumes after a real offline signature arrives, and settles exactly once", async () => {
+    // retryFailedSettlements() sweeps ALL organizations' decisions in the
+    // shared dev Postgres (see vitest.config.ts's fileParallelism note) —
+    // under full-suite load this legitimately exceeds the global 15s
+    // default; bump locally rather than raising it for every test.
     const { decision } = await makeSolanaDecision();
     const messageHex = "0x" + "cd".repeat(40);
     await prisma.decision.update({ where: { id: decision.id }, data: { pendingSolanaAttestationMessage: messageHex } });
@@ -208,5 +212,5 @@ describe("Solana M-of-N co-signing", () => {
     submitAttestedSettle.mockClear();
     await retryFailedSettlements();
     expect(submitAttestedSettle).not.toHaveBeenCalled();
-  });
+  }, 45000);
 });
