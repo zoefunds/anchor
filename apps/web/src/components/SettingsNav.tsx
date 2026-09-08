@@ -10,6 +10,9 @@ import { usePathname } from "next/navigation";
 // settings/layout.tsx), rather than each page hand-rolling its own
 // partial set of links.
 const SETTINGS_LINKS = [
+  { href: "/settings/policies", label: "Policies" },
+  { href: "/settings/reviews", label: "Review queue" },
+  { href: "/settings/analytics", label: "Analytics" },
   { href: "/settings/settlement-integrations", label: "Settlement integrations" },
   { href: "/settings/webhooks", label: "Webhooks" },
   { href: "/settings/reconciliation-findings", label: "Reconciliation findings" },
@@ -18,6 +21,7 @@ const SETTINGS_LINKS = [
   { href: "/settings/audit-log", label: "Audit log" },
   { href: "/settings/members", label: "Members" },
   { href: "/settings/keys", label: "API keys" },
+  { href: "/settings/usage", label: "Usage & billing" },
 ] as const;
 
 export function SettingsNav() {

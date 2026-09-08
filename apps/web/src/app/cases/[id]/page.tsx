@@ -545,6 +545,28 @@ export default function CaseDetailPage() {
 
       {kase.decision && <SettlementPanel kase={kase} />}
 
+      <ReviewStatusPanel caseId={id} />
+
+      <section className="mt-10">
+        <p className="kicker mb-4">Documents</p>
+        <div className="dossier flex flex-wrap gap-4">
+          <a className="btn-secondary" href={`/api/cases/${id}/statement?type=statement`}>
+            Download case statement
+          </a>
+          <a className="btn-secondary" href={`/api/cases/${id}/statement?type=proof-bundle`}>
+            Download proof bundle
+          </a>
+          {kase.decision && (
+            <a className="btn-secondary" href={`/api/cases/${id}/receipt?type=settlement`}>
+              Download settlement receipt
+            </a>
+          )}
+          <a className="btn-secondary" href={`/api/cases/${id}/receipt?type=deposit`}>
+            Download deposit receipt
+          </a>
+        </div>
+      </section>
+
       {kase.canAppeal && (
         <section className="mt-10">
           <p className="kicker mb-4 text-status-adjudicating">Appeal window open</p>
@@ -896,6 +918,76 @@ function EscrowPanel({
               </Link>
             )}
           </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+interface CaseReviewApprovalSummary {
+  id: string;
+  memberId: string;
+  decision: "APPROVE" | "REJECT";
+  reason: string | null;
+  createdAt: string;
+}
+
+interface CaseReviewSummary {
+  id: string;
+  trigger: "HIGH_VALUE" | "FRAUD_RISK" | "MANUAL";
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  requiresDualApproval: boolean;
+  createdAt: string;
+  resolvedAt: string | null;
+  approvals: CaseReviewApprovalSummary[];
+}
+
+const REVIEW_TRIGGER_LABEL: Record<string, string> = {
+  HIGH_VALUE: "High value",
+  FRAUD_RISK: "Fraud risk",
+  MANUAL: "Manual",
+};
+
+// Surfaces the escalation status the settings/reviews queue manages —
+// this page previously had no indication a case was even under human
+// review at all. Read-only here; voting/notes happen on the queue page.
+function ReviewStatusPanel({ caseId }: { caseId: string }) {
+  const [review, setReview] = useState<CaseReviewSummary | null | undefined>(undefined);
+
+  useEffect(() => {
+    fetch(`/api/cases/${caseId}/review`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setReview)
+      .catch(() => setReview(null));
+  }, [caseId]);
+
+  if (!review) return null;
+
+  const approveCount = review.approvals.filter((a) => a.decision === "APPROVE").length;
+  const required = review.requiresDualApproval ? 2 : 1;
+
+  return (
+    <section className="mt-10">
+      <p className="kicker mb-4">Human review</p>
+      <div className="dossier">
+        <div className="flex items-baseline justify-between">
+          <p className="font-mono text-sm font-semibold text-ink-950 dark:text-ink">
+            {REVIEW_TRIGGER_LABEL[review.trigger] ?? review.trigger}
+          </p>
+          <span className="font-mono text-[11px] uppercase tracking-wide text-muted dark:text-muted-dark">{review.status}</span>
+        </div>
+        <p className="mt-2 text-sm text-muted dark:text-muted-dark">
+          Opened {new Date(review.createdAt).toLocaleString()}
+          {review.resolvedAt && ` · resolved ${new Date(review.resolvedAt).toLocaleString()}`}
+        </p>
+        {review.status === "PENDING" && (
+          <p className="mt-2 font-mono text-xs text-muted dark:text-muted-dark">
+            Approvals {approveCount}/{required}
+            {review.requiresDualApproval ? " (dual approval required)" : ""} —{" "}
+            <Link href="/settings/reviews" className="text-seal-500 hover:underline dark:text-seal-400">
+              act on it in the review queue
+            </Link>
+          </p>
         )}
       </div>
     </section>
