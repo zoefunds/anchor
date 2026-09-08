@@ -165,7 +165,9 @@ export interface SolanaAttestationRecord {
 // signers (anc-hor-attestor2/3, same Fly apps already automating the
 // EVM side) — must exactly mirror decision-relay's Rust ATTESTOR_PUBKEYS
 // const after its matching upgrade deploy.
-const ATTESTOR_PUBKEYS = [
+// Exported for lib/startup-checks.ts, which validates a Solana signer
+// process's own configured public key against this exact list at boot.
+export const ATTESTOR_PUBKEYS = [
   "4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq",
   "4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ",
   "9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1",
@@ -248,7 +250,7 @@ export class InsufficientSolanaAttestationsError extends Error {
  * an "external" attestation would otherwise silently NOT add a second
  * real signer).
  */
-function validateExternalAttestations(
+export function validateExternalAttestations(
   externalAttestations: ExternalSolanaAttestation[],
   backendPublicKey: Uint8Array
 ): ExternalSolanaAttestation[] {

@@ -9,6 +9,11 @@ import { InsufficientSolanaAttestationsError, type SolanaAttestationRecord } fro
 import type { Hex } from "viem";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 import { resolveEvidenceUri } from "@/lib/storage";
+import { recordSignerLifecycleEvent, escalateRelayRetriesExhausted, type SettlementChainLabel } from "@/lib/signer-lifecycle";
+
+function settlementChainLabel(chain: string): SettlementChainLabel {
+  return chain === "sepolia" ? "sepolia" : "solanatestnet";
+}
 
 // Real incident, 2026-09-07 (Studio Next migration E2E test): a genuine
 // GenLayer decision was computed (real fee spent, real consensus reached)
@@ -19,34 +24,14 @@ import { resolveEvidenceUri } from "@/lib/storage";
 // recovery write (marking the case UNDETERMINED) ALSO failed the same
 // way, leaving the case permanently stuck in ADJUDICATING with no
 // automatic path forward — BullMQ's 3 retries all landed inside the same
-// ~20s outage window. This helper retries only the narrow set of
-// Prisma "can't reach the database right now" error codes, never a real
-// application error, and only around the two writes where losing the
-// attempt is expensive (a real GenLayer call already happened) or
-// leaves the case permanently unrecoverable.
-const TRANSIENT_PRISMA_ERROR_CODES = new Set(["P1001", "P1002", "P1008", "P1017"]);
-
-function isTransientPrismaError(err: unknown): boolean {
-  const code = (err as { code?: string } | null)?.code;
-  return typeof code === "string" && TRANSIENT_PRISMA_ERROR_CODES.has(code);
-}
-
-async function withDbRetry<T>(fn: () => Promise<T>, attempts = 5): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (!isTransientPrismaError(err)) throw err;
-      const delayMs = 1000 * 2 ** i; // 1s, 2s, 4s, 8s, 16s
-      // eslint-disable-next-line no-console
-      console.error(`withDbRetry: transient DB error (attempt ${i + 1}/${attempts}), retrying in ${delayMs}ms:`, (err as Error).message);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-  throw lastErr;
-}
+// ~20s outage window. withDbRetry (lib/db-retry.ts) retries only the
+// narrow set of Prisma "can't reach the database right now" error codes,
+// never a real application error. Re-exported here so every existing
+// importer of adjudication-service.ts's withDbRetry keeps working
+// unchanged — moved to its own module purely to break a circular import
+// with lib/signer-lifecycle.ts (which this file also imports).
+import { withDbRetry } from "@/lib/db-retry";
+export { withDbRetry };
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
 // GenVM fetches evidence URLs itself, independent of this backend, and
@@ -308,6 +293,18 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       event: "case.relay_dispatched",
       data: { caseId: kase.id, txHash, messageId },
     });
+    await recordSignerLifecycleEvent({
+      decisionId: decision.id,
+      chain: settlementChainLabel(kase.settlementChain),
+      state: notificationTxHash ? "DELIVERED" : "DISPATCHED",
+      reason: txHash,
+    });
+    await recordSignerLifecycleEvent({
+      decisionId: decision.id,
+      chain: settlementChainLabel(kase.settlementChain),
+      state: "SETTLED",
+      reason: txHash,
+    });
   } catch (relayErr) {
     if (relayErr instanceof DecisionAlreadySettledError) {
       // Reconciliation caught what a lost local record would otherwise
@@ -356,6 +353,12 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
           },
         })
       );
+      await recordSignerLifecycleEvent({
+        decisionId: decision.id,
+        chain: "sepolia",
+        state: "SIGNING",
+        reason: `${relayErr.collectedCount}/${relayErr.threshold} signatures collected`,
+      });
       return;
     }
     if (relayErr instanceof InsufficientSolanaAttestationsError) {
@@ -380,6 +383,12 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
           },
         })
       );
+      await recordSignerLifecycleEvent({
+        decisionId: decision.id,
+        chain: "solanatestnet",
+        state: "SIGNING",
+        reason: `${relayErr.collectedCount}/${relayErr.threshold} signatures collected`,
+      });
       return;
     }
     // A failed relay dispatch doesn't undo the decision itself — the
@@ -392,12 +401,17 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
     // eslint-disable-next-line no-console
     console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
-    await withDbRetry(() =>
+    const updatedDecision = await withDbRetry(() =>
       prisma.decision.update({
         where: { id: decision.id },
         data: { relayError: relayMessage, relayAttempts: { increment: 1 } },
       })
     );
+    const chainLabel = settlementChainLabel(kase.settlementChain);
+    await recordSignerLifecycleEvent({ decisionId: decision.id, chain: chainLabel, state: "FAILED", reason: relayMessage });
+    if (updatedDecision.relayAttempts >= MAX_RELAY_ATTEMPTS) {
+      await escalateRelayRetriesExhausted(decision.id, chainLabel, relayMessage);
+    }
   }
 }
 

@@ -3,7 +3,8 @@ import { PublicKey } from "@solana/web3.js";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { checkInternalSecret } from "@/lib/internal-auth";
-import { isRegisteredSolanaAttestor, verifySolanaAttestationSignature, type SolanaAttestationRecord } from "@/lib/solana-settle";
+import { isRegisteredSolanaAttestor, verifySolanaAttestationSignature, getSolanaAttestorThreshold, type SolanaAttestationRecord } from "@/lib/solana-settle";
+import { recordSignerLifecycleEvent } from "@/lib/signer-lifecycle";
 
 // POST /api/internal/pending-solana-attestations/[decisionId]/sign
 // Body: { publicKey: "<base58>", signature: "0x..." (or bare hex) } —
@@ -74,6 +75,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dec
   await prisma.decision.update({
     where: { id: decisionId },
     data: { pendingSolanaAttestations: updatedList as unknown as Prisma.InputJsonValue },
+  });
+
+  const threshold = getSolanaAttestorThreshold();
+  await recordSignerLifecycleEvent({
+    decisionId,
+    chain: "solanatestnet",
+    // +1 accounts for the backend's own key, which isn't stored in
+    // pendingSolanaAttestations but always contributes one signature at
+    // dispatch time — see solana-settle.ts's submitAttestedSettle.
+    state: updatedList.length + 1 >= threshold ? "QUORUM_REACHED" : "SIGNING",
+    signerAddress: publicKey,
+    reason: `${updatedList.length}/${threshold - 1} external signatures collected`,
   });
 
   return NextResponse.json({

@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-09-08T00:00:00.000Z",
+  "generatedBy": "scripts/generate-solana-deployment-manifest.ts",
+  "network": {
+    "cluster": "testnet",
+    "rpcHost": "api.testnet.solana.com",
+    "genesisHash": "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+  },
+  "decisionRelay": {
+    "attestors": {
+      "expected": [
+        "4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq",
+        "4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ",
+        "9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1"
+      ],
+      "threshold": 2,
+      "note": "Mirrors chains/solana/programs/decision-relay/src/lib.rs's ATTESTOR_PUBKEYS/ATTESTOR_THRESHOLD consts exactly — decision-relay has no on-chain enumerable attestor list or governance account the way EVM's DecisionRelay.sol does (see that file's own doc comment), so unlike the EVM manifest this cannot be verified against a live on-chain read; it is a source-controlled mirror of the deployed program's hardcoded consts, kept in sync by hand whenever the Rust consts are rotated and re-deployed."
+    }
+  },
+  "flags": []
+}

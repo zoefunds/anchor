@@ -509,6 +509,14 @@ model Case {
   restricted Boolean      @default(false)
   caseAccess CaseAccess[]
 
+  // Phase 1 reliability work: marks a case created by
+  // scripts/testnet-canary.ts's synthetic end-to-end signing/settlement
+  // probe. Never set by any real case-creation route. Lets the canary's
+  // own cleanup step (and any future ops-console filtering) identify
+  // and remove its synthetic rows without relying on a naming
+  // convention on claimantRef/respondentRef alone.
+  isCanary Boolean @default(false)
+
   evidence   Evidence[]
   // One-to-many, not one-to-one: an appeal produces a fresh Decision
   // rather than overwriting the first, so the full history (original
@@ -773,6 +781,50 @@ model Decision {
   @@index([caseId])
 }
 
+// Phase 1 reliability work: the signer/settlement lifecycle a Decision's
+// automated settlement path moves through, tracked as an explicit,
+// queryable state machine rather than only being inferable after the
+// fact from Decision.relayError/relayTxHash. Distinct states matter
+// because "one signer down" (still SIGNING, quorum not yet reached) and
+// "two signers down" (stuck in SIGNING indefinitely — a human-visible
+// pending-quorum state) look identical if all that's recorded is
+// pass/fail; a dashboard or alert built only on relayTxHash-is-null
+// can't tell those apart.
+enum SignerLifecycleState {
+  SIGNING
+  QUORUM_REACHED
+  DISPATCHED
+  DELIVERED
+  SETTLED
+  FAILED
+  ESCALATED
+}
+
+// Append-only — never updated or deleted (except by the canary's own
+// cleanup of its synthetic decisionId rows) — one row per lifecycle
+// transition. This is the durable trail "which signer signed, when,
+// and what happened" that a startup-check failure, a stuck 1-of-3
+// quorum, or an ops console needs, without ever persisting private key
+// material (signerAddress is a public EVM address or Solana base58
+// pubkey — never a key or raw signature).
+model SignerLifecycleEvent {
+  id            String               @id @default(cuid())
+  decisionId    String
+  // "sepolia" | "solanatestnet" — same vocabulary as Case.settlementChain.
+  chain         String
+  state         SignerLifecycleState
+  signerAddress String?
+  // Free-form context for FAILED/ESCALATED (the exact relayError or
+  // exception message) and for SIGNING/QUORUM_REACHED (collected vs.
+  // required signature counts) — never a private key, signature byte
+  // string, or other secret material.
+  reason        String?
+  createdAt     DateTime             @default(now())
+
+  @@index([decisionId])
+  @@index([chain, state])
+}
+
 // A short-lived exchange session for a party token — see
 // party-auth.ts's exchangePartyTokenForSession. The long-lived bearer
 // token (in claimantTokenHash/respondentTokenHash) is only ever meant
@@ -843,6 +895,18 @@ enum ReconciliationFindingType {
   // not a benign event. Fails closed: every read this catches refuses
   // to decode with a possibly-wrong ABI rather than guessing.
   ESCROW_VERSION_MISMATCH
+  // Phase 1 reliability work: a Decision's relayAttempts hit
+  // MAX_RELAY_ATTEMPTS (see adjudication-service.ts) without ever
+  // reaching relayTxHash — the bounded-retry ceiling was real and was
+  // hit, so this is a human-needed case, not a transient blip the next
+  // sweep tick will quietly clear.
+  RELAY_RETRIES_EXHAUSTED
+  // The periodic testnet canary (scripts/testnet-canary.ts) took longer
+  // than its configured SLA to complete signing+settlement+delivery for
+  // its synthetic decision, or failed outright — a live, continuously
+  // re-verified signal that the automated path is broken, independent
+  // of whether any real case happens to be flowing through it right now.
+  CANARY_SLA_BREACH
 }
 
 // Priority 2: the real, on-chain ABI shapes actually deployed. V1 is

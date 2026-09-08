@@ -7,6 +7,10 @@ import { anchorAuditChains } from "@/lib/audit-anchor";
 import { runReconciliationSweep } from "@/lib/reconciliation";
 import { runReliabilityObservation } from "@/lib/reliability-monitor";
 import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
+import { getAttestorAccounts } from "@/lib/hyperlane";
+import { assertWorkerKeyCountBelowThreshold, StartupCheckError } from "@/lib/startup-checks";
+import { sendOpsAlert } from "@/lib/alerts";
+import { Keypair } from "@solana/web3.js";
 
 // The actual BullMQ job processor — separate from src/worker.ts (the
 // standalone process entrypoint) because this module is also imported
@@ -27,6 +31,37 @@ const RECONCILIATION_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes — sever
 const RELIABILITY_OBSERVATION_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 let worker: Worker | null = null;
+
+/**
+ * Phase 1, item 1: run once at worker startup, before a single job is
+ * pulled off the queue. Deliberately tolerant of ATTESTOR_PRIVATE_KEYS /
+ * SOLANA_ATTESTOR_PRIVATE_KEY being entirely unset — that's the normal,
+ * unchanged shape of a web-only deployment (e.g. Vercel, or the
+ * in-process worker started by lib/jobs.ts's ensureJobWorker on a
+ * developer machine) that was never going to attempt a real dispatch in
+ * the first place; dispatchSettlementForDecision already throws
+ * downstream if it's actually called without these configured. This
+ * check exists to fail closed on a MISCONFIGURED signer identity (the
+ * keys ARE present but violate threshold/registration expectations),
+ * not to require every worker-capable process to be a settlement
+ * signer.
+ */
+function assertWorkerStartupInvariants(): void {
+  let evmSignerAddresses: string[] = [];
+  try {
+    evmSignerAddresses = getAttestorAccounts().map((a) => a.address);
+  } catch {
+    // ATTESTOR_PRIVATE_KEYS/ATTESTOR_PRIVATE_KEY not set — see doc comment above.
+  }
+  let solanaSignerPublicKey: string | null = null;
+  if (process.env.SOLANA_ATTESTOR_PRIVATE_KEY) {
+    const secretKey = Uint8Array.from(JSON.parse(process.env.SOLANA_ATTESTOR_PRIVATE_KEY));
+    solanaSignerPublicKey = Keypair.fromSecretKey(secretKey).publicKey.toBase58();
+  }
+
+  if (evmSignerAddresses.length === 0 && solanaSignerPublicKey === null) return;
+  assertWorkerKeyCountBelowThreshold({ evmSignerAddresses, solanaSignerPublicKey });
+}
 
 async function processJob(job: Job): Promise<void> {
   assertJobEnvMatches(job);
@@ -235,8 +270,27 @@ export async function startAdjudicationWorker(): Promise<Worker> {
 
   try {
     await assertDatabaseMatchesAppEnv();
+    assertWorkerStartupInvariants();
   } catch (err) {
     await w.close();
+    // Signer-unavailable / quorum-unavailable at boot: this process is
+    // about to exit before signing anything, which is exactly the
+    // moment nobody would otherwise hear about it — there's no
+    // ReconciliationFinding row possible yet (no decision to key one to)
+    // and the process crash itself carries no operator-visible reason.
+    // Best-effort: a failed alert delivery must not mask the real
+    // startup failure below.
+    if (err instanceof StartupCheckError) {
+      try {
+        await sendOpsAlert({
+          severity: "critical",
+          title: "Worker refused to start: signer/quorum invariant violated",
+          detail: `${err.message}\nSee docs/runbooks/signer-failure.md.`,
+        });
+      } catch (alertErr) {
+        console.error("worker: failed to deliver startup-check-failure alert", alertErr);
+      }
+    }
     throw err;
   }
 

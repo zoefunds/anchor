@@ -1,0 +1,96 @@
+import { loadEvmDeploymentManifest, loadSolanaDeploymentManifest } from "@/lib/deployment-manifest";
+
+// Phase 1, item 1: startup checks every signing/worker process runs
+// BEFORE it signs or dispatches anything. Every function here either
+// returns normally or throws — there is no "warn and continue" path.
+// Callers (scripts/auto-attestor-sign*.ts, lib/worker.ts) are expected
+// to let the throw propagate to process exit / worker-start failure,
+// never catch-and-continue. See lib/deployment-manifest.ts's own doc
+// comment for why this checks a COMMITTED manifest, not a live RPC read.
+
+export class StartupCheckError extends Error {}
+
+/**
+ * The EVM signer/worker check: this process's configured attestor
+ * address must be a registered attestor in the expected manifest, and
+ * the manifest itself must carry no unresolved governance-drift flags
+ * (see scripts/generate-deployment-manifest.ts's flags[] — e.g. owner
+ * reassigned away from the Safe, threshold exceeding active attestors).
+ * A flagged manifest means the committed expectation is itself known to
+ * be in a bad state, so failing closed on ANY flag — not just ones
+ * related to this specific address — is deliberate: a process that
+ * signs while the deployed relay's own governance is in a flagged state
+ * has no way to know whether the specific mismatch also compromises the
+ * property this check exists to protect.
+ */
+export function assertEvmSignerRegistered(signerAddress: string): void {
+  const manifest = loadEvmDeploymentManifest();
+  if (manifest.flags.length > 0) {
+    throw new StartupCheckError(
+      `EVM deployment manifest has unresolved flags — refusing to start: ${manifest.flags.join(" | ")}`
+    );
+  }
+  const active = manifest.decisionRelay.attestors.active.map((a) => a.toLowerCase());
+  if (!active.includes(signerAddress.toLowerCase())) {
+    throw new StartupCheckError(
+      `configured EVM signer address ${signerAddress} is not in the expected deployment manifest's active attestor set (${active.join(", ")}) — refusing to start`
+    );
+  }
+}
+
+/** Solana equivalent of assertEvmSignerRegistered — see deployment-manifest.solana.json's own note on why this can only check against a source-controlled mirror of the Rust program's consts, not a live on-chain read. */
+export function assertSolanaSignerRegistered(signerPublicKey: string): void {
+  const manifest = loadSolanaDeploymentManifest();
+  if (manifest.flags.length > 0) {
+    throw new StartupCheckError(
+      `Solana deployment manifest has unresolved flags — refusing to start: ${manifest.flags.join(" | ")}`
+    );
+  }
+  if (!manifest.decisionRelay.attestors.expected.includes(signerPublicKey)) {
+    throw new StartupCheckError(
+      `configured Solana signer public key ${signerPublicKey} is not in the expected deployment manifest's attestor set (${manifest.decisionRelay.attestors.expected.join(", ")}) — refusing to start`
+    );
+  }
+}
+
+/**
+ * The worker's own check: it must hold STRICTLY FEWER attestor keys
+ * than the deployed threshold on both chains — a worker holding
+ * threshold-or-more keys unilaterally could dispatch settlements without
+ * ever needing an independent external attestor's signature, defeating
+ * the entire point of M-of-N custody being split across separate
+ * holders (see docs/multisig-attestor-setup.md). Every held key must
+ * also itself be a registered attestor (assertEvmSignerRegistered /
+ * assertSolanaSignerRegistered per-key) — a worker holding an
+ * unregistered/stale key is a misconfiguration, not a soft warning.
+ */
+export function assertWorkerKeyCountBelowThreshold(params: {
+  evmSignerAddresses: string[];
+  solanaSignerPublicKey: string | null;
+}): void {
+  const evmManifest = loadEvmDeploymentManifest();
+  const evmThreshold = Number(evmManifest.decisionRelay.attestorThreshold);
+  if (params.evmSignerAddresses.length >= evmThreshold) {
+    throw new StartupCheckError(
+      `worker holds ${params.evmSignerAddresses.length} EVM attestor key(s), which is >= the deployed threshold (${evmThreshold}) — this worker could unilaterally reach quorum, defeating M-of-N custody separation; refusing to start`
+    );
+  }
+  for (const addr of params.evmSignerAddresses) {
+    assertEvmSignerRegistered(addr);
+  }
+
+  if (params.solanaSignerPublicKey) {
+    const solanaManifest = loadSolanaDeploymentManifest();
+    const solanaThreshold = solanaManifest.decisionRelay.attestors.threshold;
+    // The worker holds exactly one Solana key by construction (a single
+    // SOLANA_ATTESTOR_PRIVATE_KEY env var, not a comma list like the EVM
+    // side) — checked as 1 against the threshold rather than a variable
+    // count for that reason.
+    if (1 >= solanaThreshold) {
+      throw new StartupCheckError(
+        `Solana attestor threshold (${solanaThreshold}) is <= 1 — the worker's single held key could unilaterally reach quorum; refusing to start`
+      );
+    }
+    assertSolanaSignerRegistered(params.solanaSignerPublicKey);
+  }
+}

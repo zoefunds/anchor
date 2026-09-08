@@ -27,6 +27,8 @@ import { createGcpKmsSigner } from "@/lib/auto-attestor/gcp-kms-signer";
 import { createEnvKeySigner } from "@/lib/auto-attestor/env-key-signer";
 import type { KmsSigner } from "@/lib/auto-attestor/kms-signer";
 import { recoverAddress, isHex, type Hex } from "viem";
+import { assertEvmSignerRegistered, StartupCheckError } from "@/lib/startup-checks";
+import { sendOpsAlert } from "@/lib/alerts";
 
 async function createSigner(): Promise<KmsSigner> {
   const backend = process.env.AUTO_ATTESTOR_BACKEND;
@@ -102,6 +104,13 @@ async function main() {
   if (!cosignSecret) throw new Error("ATTESTOR_COSIGN_SECRET is required");
 
   const signer = await createSigner();
+
+  // Phase 1, item 1: fail closed before this process ever signs
+  // anything if its own configured address isn't a registered attestor
+  // in the expected deployment manifest, or that manifest itself has
+  // unresolved governance-drift flags. See lib/startup-checks.ts.
+  assertEvmSignerRegistered(signer.address);
+
   console.log(`[auto-attestor] started — signing as ${signer.address} (backend: ${process.env.AUTO_ATTESTOR_BACKEND})`);
 
   const intervalMs = Number(process.env.POLL_INTERVAL_MS ?? 60000);
@@ -115,7 +124,18 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error(err);
+  if (err instanceof StartupCheckError) {
+    // This attestor is one leg of the M-of-N quorum — losing it silently
+    // is exactly the "one signer down" state signer-lifecycle.ts's own
+    // SIGNING state can't distinguish from a slow-but-fine quorum. Alert
+    // is best-effort; the process must still exit non-zero regardless.
+    await sendOpsAlert({
+      severity: "critical",
+      title: "EVM attestor refused to start: signer/quorum invariant violated",
+      detail: `${err.message}\nSee docs/runbooks/signer-failure.md.`,
+    }).catch((alertErr) => console.error("[auto-attestor] failed to deliver startup-check-failure alert", alertErr));
+  }
   process.exit(1);
 });

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { recoverAddress, isHex, type Address, type Hex } from "viem";
 import { prisma } from "@/lib/prisma";
 import { checkInternalSecret } from "@/lib/internal-auth";
-import { isRegisteredAttestor, countValidDistinctSigners } from "@/lib/hyperlane";
+import { isRegisteredAttestor, countValidDistinctSigners, getAttestorThreshold } from "@/lib/hyperlane";
+import { recordSignerLifecycleEvent } from "@/lib/signer-lifecycle";
 
 // POST /api/internal/pending-attestations/[decisionId]/sign
 // Body: { signature: "0x..." } — a 65-byte ECDSA signature over the
@@ -100,6 +101,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dec
   // means a signature from an attestor governance has since removed
   // stops counting immediately, without needing any cleanup step here.
   const { validCount } = await countValidDistinctSigners(relayAddress, attestationHash, updated.pendingAttestationSignatures as Hex[]);
+
+  const threshold = await getAttestorThreshold(relayAddress);
+  await recordSignerLifecycleEvent({
+    decisionId,
+    chain: "sepolia",
+    state: validCount >= threshold ? "QUORUM_REACHED" : "SIGNING",
+    signerAddress: recovered,
+    reason: `${validCount}/${threshold} signatures collected`,
+  });
 
   return NextResponse.json({
     signerAddress: recovered,

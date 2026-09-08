@@ -39,8 +39,18 @@ const ATTESTOR_THRESHOLD_ABI = [
   },
 ] as const;
 
+// viem's http() transport has no default timeout — an RPC that hangs
+// (rather than erroring) would hang settlement dispatch indefinitely.
+// `retryCount: 0` because withDbRetry/retryFailedSettlements already own
+// retry semantics at the call-site level; retrying here too would hide
+// the real duration of an RPC failure from that layer.
+const EVM_RPC_TIMEOUT_MS = 15_000;
+
 export function getEvmPublicClient() {
-  return createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
+  return createPublicClient({
+    chain: sepolia,
+    transport: http(process.env.HYPERLANE_RELAY_RPC_URL, { timeout: EVM_RPC_TIMEOUT_MS, retryCount: 0 }),
+  });
 }
 
 // --- Approved settlement targets ---
@@ -206,7 +216,12 @@ function getRelayConfig() {
 // singular ATTESTOR_PRIVATE_KEY is still read as a one-key fallback so a
 // deployment that hasn't rotated to the multisig contract yet keeps
 // working unchanged.
-function getAttestorAccounts() {
+// Exported for lib/startup-checks.ts — the worker startup check needs
+// to count how many attestor keys THIS process holds (must be strictly
+// fewer than the deployed threshold — see runWorkerStartupCheck) and
+// confirm each one is a registered attestor, without duplicating
+// ATTESTOR_PRIVATE_KEYS/ATTESTOR_PRIVATE_KEY parsing a second time.
+export function getAttestorAccounts() {
   const list = process.env.ATTESTOR_PRIVATE_KEYS;
   const single = process.env.ATTESTOR_PRIVATE_KEY;
   const raw = list
@@ -317,7 +332,7 @@ export class InsufficientAttestorSignaturesError extends Error {
  * revert, and gives the caller a clean signal to stop retrying.
  */
 async function isDecisionSettledOnSepolia(settlementContract: Address, decisionHashBytes32: Hex): Promise<boolean> {
-  const client = createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
+  const client = getEvmPublicClient();
   return client.readContract({
     address: settlementContract,
     abi: PROCESSED_DECISIONS_ABI,

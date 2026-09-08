@@ -22,6 +22,8 @@ import { createPrivateKey, createPublicKey, sign as cryptoSign } from "crypto";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { prisma } from "@/lib/prisma";
 import { checkAutoSignEligibility } from "@/lib/auto-attestor/policy";
+import { assertSolanaSignerRegistered, StartupCheckError } from "@/lib/startup-checks";
+import { sendOpsAlert } from "@/lib/alerts";
 
 const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -83,6 +85,10 @@ async function main() {
   if (!cosignSecret) throw new Error("ATTESTOR_COSIGN_SECRET is required");
 
   const signer = loadKeypair();
+
+  // Phase 1, item 1 — see lib/startup-checks.ts.
+  assertSolanaSignerRegistered(signer.publicKeyBase58);
+
   console.log(`[auto-attestor-solana] started — signing as ${signer.publicKeyBase58}`);
 
   const intervalMs = Number(process.env.POLL_INTERVAL_MS ?? 60000);
@@ -96,7 +102,14 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error(err);
+  if (err instanceof StartupCheckError) {
+    await sendOpsAlert({
+      severity: "critical",
+      title: "Solana attestor refused to start: signer/quorum invariant violated",
+      detail: `${err.message}\nSee docs/runbooks/signer-failure.md.`,
+    }).catch((alertErr) => console.error("[auto-attestor-solana] failed to deliver startup-check-failure alert", alertErr));
+  }
   process.exit(1);
 });
