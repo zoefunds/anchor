@@ -5,6 +5,13 @@ edition = "2021"
 
 [features]
 no-entrypoint = []
+# Swaps ATTESTOR_PUBKEYS/ATTESTOR_THRESHOLD for a throwaway localnet-only
+# key set (chains/solana/tests/fixtures/test-attestors/) so the on-chain
+# Ed25519/quorum logic can be exercised on solana-test-validator without
+# the real production attestor private keys ever existing outside their
+# custody signing service. Default (feature OFF) build is untouched byte
+# for byte — see chains/solana/tests/README-localnet-tests.md.
+test-attestors = []
 
 [dependencies]
 # Pinned to match Hyperlane's own workspace exactly (rust/sealevel/Cargo.toml

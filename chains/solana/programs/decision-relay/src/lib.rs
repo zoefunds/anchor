@@ -103,6 +103,7 @@ const REAL_MULTISIG_ISM: Pubkey = solana_program::pubkey!("5DLNSFtzEJBTipvvSvNPz
 // anc-hor-attestor3 (the same two Fly apps already automating the EVM
 // side), each gated by the same per-case amount-cap policy check
 // before co-signing — see apps/web/src/lib/auto-attestor/policy.ts.
+#[cfg(not(feature = "test-attestors"))]
 const ATTESTOR_PUBKEYS: [Pubkey; 3] = [
     // Backend-held (SOLANA_ATTESTOR_PRIVATE_KEY on anc-hor-worker) — unchanged.
     solana_program::pubkey!("4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq"),
@@ -112,6 +113,21 @@ const ATTESTOR_PUBKEYS: [Pubkey; 3] = [
     // Automated signer on anc-hor-attestor3 (Fly, env-key custody).
     solana_program::pubkey!("9uKHpvMk9tijzwXFicojZ5z4RnNdcLfqaDxDfjNGGMn1"),
 ];
+
+// Throwaway keys, private keys checked into
+// chains/solana/tests/fixtures/localnet-test-attestors/*.json — never
+// used anywhere but solana-test-validator, so plaintext checkin is fine.
+// Built and deployed only via `cargo-build-sbf --features test-attestors`
+// for the localnet E2E suite; the production ATTESTOR_PUBKEYS above is
+// compiled in for every other build, so the real deployed program never
+// contains these.
+#[cfg(feature = "test-attestors")]
+const ATTESTOR_PUBKEYS: [Pubkey; 3] = [
+    solana_program::pubkey!("3wr8vttN1KLKzkMPccLPiUeiJeNfAy3iBw1BC1mgM5Pv"),
+    solana_program::pubkey!("DZvBwPXCJCVnEG3crawAun78PAhdhqL788wVMAYCCMDX"),
+    solana_program::pubkey!("3FEfg9cau5XR5N5eaRjg3gWLgCLeAoXrzhQ9F5aJ5bCv"),
+];
+
 const ATTESTOR_THRESHOLD: usize = 2;
 
 #[macro_export]

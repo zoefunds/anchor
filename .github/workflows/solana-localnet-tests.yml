@@ -1,0 +1,93 @@
+name: Solana decision-relay localnet tests
+
+# Separate job/workflow from any real decision-relay build or deploy —
+# this ONLY ever builds decision-relay with the `test-attestors` Cargo
+# feature (chains/solana/programs/decision-relay/Cargo.toml), which
+# swaps ATTESTOR_PUBKEYS/ATTESTOR_THRESHOLD for throwaway keys checked
+# into chains/solana/tests/fixtures/localnet-test-attestors/. The real
+# production attestor keys never appear here, and nothing in this
+# workflow ever runs `solana program deploy` against testnet/mainnet —
+# only a `solana-test-validator` started and torn down within the job.
+# See chains/solana/tests/README-localnet-tests.md for the full
+# reasoning and how to run this suite locally.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  solana-localnet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+
+      - name: Install Solana CLI (includes cargo-build-sbf, solana-test-validator)
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor CLI
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/avm" install 0.32.1
+          "$HOME/.cargo/bin/avm" use 0.32.1
+
+      - name: Install JS deps
+        working-directory: chains/solana
+        run: npm install --no-save @solana/web3.js@1 tsx typescript
+
+      - name: Build escrow
+        working-directory: chains/solana
+        run: cargo-build-sbf -- -p escrow
+
+      - name: Build decision-relay with test-only attestor keys
+        working-directory: chains/solana
+        # NEVER remove `--features test-attestors` here — without it this
+        # would build with the real production ATTESTOR_PUBKEYS, which
+        # this workflow has no valid signatures for anyway (it would just
+        # make every test in the suite fail), but more importantly that
+        # is not this job's purpose: the real program is built/deployed
+        # by a completely separate, manual process (see chains/solana/README.md).
+        run: |
+          cargo-build-sbf --features test-attestors -- -p decision-relay
+          mkdir -p target/deploy-test-attestors
+          cp target/deploy/decision_relay.so target/deploy-test-attestors/decision_relay.so
+          solana-keygen new --no-bip39-passphrase --silent \
+            --outfile target/deploy-test-attestors/decision_relay_localnet-keypair.json
+
+      - name: Start solana-test-validator
+        run: |
+          solana-test-validator --reset --quiet > /tmp/validator.log 2>&1 &
+          for i in $(seq 1 30); do
+            solana cluster-version --url http://127.0.0.1:8899 && break
+            sleep 1
+          done
+
+      - name: Configure CLI and airdrop
+        run: |
+          solana config set --url http://127.0.0.1:8899
+          solana airdrop 50
+
+      - name: Deploy escrow + decision-relay (test-attestors build) to the local validator
+        working-directory: chains/solana
+        run: |
+          solana program deploy target/deploy/escrow.so --program-id target/deploy/escrow-keypair.json
+          solana program deploy target/deploy-test-attestors/decision_relay.so \
+            --program-id target/deploy-test-attestors/decision_relay_localnet-keypair.json
+
+      - name: Run localnet E2E suite
+        working-directory: chains/solana
+        run: npx tsx tests/run-decision-relay-localnet-e2e.ts
+
+      - name: Dump validator log on failure
+        if: failure()
+        run: tail -n 300 /tmp/validator.log || true
