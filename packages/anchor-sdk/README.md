@@ -16,7 +16,10 @@ reconciliation-findings. These routes exist and work — this SDK's first
 pass wraps the case lifecycle + reporting surface a typical integrator
 needs first. See `apps/web/src/app/api/` for the full route list.
 
-**No Python SDK.** Out of scope for this pass — TypeScript only.
+**Python SDK:** see `packages/anchor-sdk-python/` — a 1:1 method mirror
+of this client's coverage, same honesty about idempotency/pagination
+gaps. Its README carries an explicit parity table against this
+package.
 
 ## Quickstart
 

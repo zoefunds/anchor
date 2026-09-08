@@ -44,3 +44,23 @@ scopes recorded default to full access, as documented in
   up/degraded/down, latest canary outcome, global incident history).
   Not part of `@anchor/sdk` — it carries no API surface an integrator
   authenticates against, just a status page backing endpoint.
+
+## 2026-09-08 (developer experience)
+
+- Added `packages/anchor-sdk-python` — a Python client mirroring
+  `@anchor/sdk`'s route coverage 1:1 (cases, evidence, adjudication
+  requests, org policies read, analytics, receipts/statements, org
+  settlement export, webhook signature verification). Same honesty
+  discipline as the TypeScript SDK: no fabricated idempotency or
+  pagination. Depends on `requests`.
+- Extended this file's neighbor, `docs/api/README.md`, with: a real
+  webhook event-schema table (cited against
+  `apps/web/src/lib/webhooks.ts`), an expanded error-code reference
+  with real example bodies (cited against actual route handlers), an
+  explicit idempotency-guidance section, and an embeddable widget
+  quickstart matching `apps/web/src/app/public/widget/[id]/page.tsx`'s
+  current `postMessage` behavior exactly.
+- Added `docs/api/versioning-policy.md` — the API is currently
+  unversioned (no `/v1/` prefix, no version header); the doc states
+  that honestly and describes the intended policy for when versioning
+  is introduced, rather than pretending it already exists.
