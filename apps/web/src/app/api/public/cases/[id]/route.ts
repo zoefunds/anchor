@@ -36,6 +36,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       decisions: { orderBy: { createdAt: "desc" } },
       settlement: { include: { integration: true } },
       review: true,
+      policyVersionRecord: true,
     },
   });
   if (!kase) {
@@ -52,6 +53,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     claimantRef: kase.claimantRef,
     respondentRef: kase.respondentRef,
     createdAt: kase.createdAt,
+    // Phase 5, item 2 — surfaced so the public case page can render an
+    // evidence-submission deadline and appeal-window countdown without
+    // exposing the rest of the policy (allowedOutcomes, velocity limits,
+    // etc are org-internal and stay out of this response).
+    policy: kase.policyVersionRecord
+      ? {
+          evidenceDeadlineHours: kase.policyVersionRecord.evidenceDeadlineHours,
+          appealWindowHours: kase.policyVersionRecord.appealWindowHours,
+        }
+      : null,
     // The resolving party's own role — lets the page render "set YOUR
     // payout address" without a second round trip, and without ever
     // exposing which role a caller resolved to anyone who didn't
