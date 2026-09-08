@@ -395,6 +395,13 @@ export async function dispatchDecisionForCase(
   const { assertKycRequirementMet } = await import("@/lib/settlement-kyc");
   await assertKycRequirementMet(params.caseId);
 
+  // Track 3 — separate, additive gate keyed off the case's own bound
+  // PolicyVersion.kycRequired (see lib/kyc/kyc-gate.ts's header comment
+  // for why this is not the same check as assertKycRequirementMet
+  // above). Either gate throwing is enough to stop settlement.
+  const { assertKycPolicyRequirementMet } = await import("@/lib/kyc/kyc-gate");
+  await assertKycPolicyRequirementMet(params.caseId);
+
   const config = getRelayConfig();
 
   if (params.settlementChain === "sepolia") {

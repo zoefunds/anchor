@@ -620,8 +620,74 @@ model PartyVerification {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // --- KYC policy-gate track (lib/kyc/*) additions below ---
+  // Which lib/kyc provider-adapter produced this row. Existing rows
+  // predate this column and default to "didit" (the only provider that
+  // has ever written a PartyVerification), so the default is not a
+  // guess — it is this table's entire real history.
+  provider           String    @default("didit")
+  // A provider reference distinct from sessionId for adapters (e.g. a
+  // future Persona inquiry-id) whose session identifier and stable
+  // reference are different fields; null for Didit, which has only one.
+  providerReference  String?
+  // Bound immutably at verification time, mirroring Case.policyVersionRecordId:
+  // once a party is verified against policy version N's rules
+  // (jurisdiction/provider requirements), that verification stays valid
+  // against version N even if the org later publishes version N+1 with
+  // different KYC requirements — re-verification only happens if the
+  // party's own status needs it, never retroactively because policy text
+  // changed. Nullable because rows written before this column existed
+  // have no such binding on record.
+  policyVersion      PolicyVersion? @relation(fields: [policyVersionId], references: [id])
+  policyVersionId    String?
+  jurisdiction       String?
+  expiresAt          DateTime?
+
+  events PartyVerificationEvent[]
+
   @@index([caseId])
+  @@index([policyVersionId])
   @@unique([caseId, role])
+}
+
+// Append-only lifecycle trail for one PartyVerification, same discipline
+// as SignerLifecycleEvent (see lib/signer-lifecycle.ts's header comment
+// for why an inferred-after-the-fact history is not good enough): a
+// verification that bounced APPROVED -> IN_REVIEW -> APPROVED via two
+// separate webhooks, versus one that was manually overridden, look
+// identical from PartyVerification's current row alone.
+model PartyVerificationEvent {
+  id                  String            @id @default(cuid())
+  partyVerification   PartyVerification @relation(fields: [partyVerificationId], references: [id])
+  partyVerificationId String
+  fromStatus          PartyVerificationStatus?
+  toStatus            PartyVerificationStatus
+  // "webhook" for a provider-driven transition, "manual_override" for an
+  // operator action recorded via settings/kyc — see kyc-gate.ts's
+  // recordManualOverride, the only writer of the latter.
+  source              String
+  reason              String?
+  actingMemberId      String?
+  createdAt           DateTime          @default(now())
+
+  @@index([partyVerificationId])
+}
+
+// Replay-defense ledger for /api/kyc/webhook, the same purpose
+// Webhook.secret's HMAC-over-timestamp serves for outbound deliveries
+// (see lib/webhooks.ts's header comment) but for INBOUND provider
+// webhooks: a (provider, dedupeKey) pair is accepted at most once, ever.
+// Checked and inserted inside the same transaction that would otherwise
+// transition a PartyVerification's status, so a replayed webhook can
+// never cause a second transition even if the first one already
+// happened outside any transaction lifetime this table could race with.
+model KycWebhookDelivery {
+  id         String   @id @default(cuid())
+  provider   String
+  dedupeKey  String
+  receivedAt DateTime @default(now())
+
+  @@unique([provider, dedupeKey])
 }
 
 enum PartyVerificationStatus {
@@ -1246,6 +1312,7 @@ model PolicyVersion {
   humanReviewTriggers   Json
 
   cases Case[]
+  partyVerifications PartyVerification[]
 
   @@unique([policyId, version])
   @@index([policyId])
