@@ -45,12 +45,14 @@ flowchart TB
         S2 -.-> SameOp1
     end
 
-    subgraph AttestorLayer["Attestors (2-of-2 dispatch signing) — 🔴 NOT verified independent"]
-        A1["Attestor 1<br/>0x3261...8b70"]
-        A2["Attestor 2<br/>0x229d...6f732"]
-        Unverified["Distinct keys, but operator<br/>independence never checked"]
-        A1 -.-> Unverified
-        A2 -.-> Unverified
+    subgraph AttestorLayer["Attestors (2-of-3 dispatch signing, fully automated) — 🔴 NOT independent"]
+        A1["Backend<br/>0x3261...8b70"]
+        A2["attestor2 (Fly)<br/>0xfFC9...2130B"]
+        A3["attestor3 (Fly)<br/>0x6F1A...Efc043"]
+        SameOp2["Same Fly account/org as backend;<br/>env-key custody, not KMS/HSM"]
+        A1 -.-> SameOp2
+        A2 -.-> SameOp2
+        A3 -.-> SameOp2
     end
 
     subgraph ValidatorLayer["Validators (2-of-3 ISM) — 🟡 partially independent"]
