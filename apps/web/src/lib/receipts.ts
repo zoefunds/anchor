@@ -214,6 +214,77 @@ export async function buildSettlementReceipt(caseId: string, organizationId: str
   };
 }
 
+/** A single decision's own record — the original adjudication (decisions[0] unless a later decisionId is given). Distinct from buildProofBundle: this includes the outcome/shares/reasonCodes narrative, not just the hash manifest. */
+export async function buildDecisionRecord(caseId: string, organizationId: string, decisionId?: string) {
+  const kase = await loadCaseForReceipt(caseId, organizationId);
+  const decision = decisionId ? kase.decisions.find((d) => d.id === decisionId) : kase.decisions[0];
+  if (!decision) {
+    throw new ReceiptError("no decision exists for this case");
+  }
+  return {
+    documentType: "decision_record",
+    generatedAt: new Date().toISOString(),
+    caseId: kase.id,
+    policyVersionId: kase.policyVersionRecord?.id ?? null,
+    policyVersion: decision.policyVersion,
+    decision: {
+      id: decision.id,
+      outcome: decision.outcome,
+      consensus: decision.consensus,
+      confidence: decision.confidence,
+      claimantShareBps: decision.claimantShareBps,
+      respondentShareBps: decision.respondentShareBps,
+      reasonCodes: decision.reasonCodes,
+      explanation: decision.explanation,
+      decisionHash: decision.decisionHash,
+      proofHash: decision.proofHash,
+      contractCodeHash: decision.contractCodeHash,
+      adjudicateTxHash: decision.adjudicateTxHash,
+      appealWindowClosesAt: decision.appealWindowClosesAt?.toISOString() ?? null,
+      createdAt: decision.createdAt.toISOString(),
+    },
+  };
+}
+
+/** The appeal record: the case's re-adjudication decision (any decisions[] entry after the first), alongside the original outcome it superseded, so a reader can see what changed. Anchor has no separate Appeal table — an appeal is modeled as an additional Decision row (see schema.prisma) — this is the "appeal" view over that same data. */
+export async function buildAppealRecord(caseId: string, organizationId: string) {
+  const kase = await loadCaseForReceipt(caseId, organizationId);
+  if (kase.decisions.length < 2) {
+    throw new ReceiptError("this case has not been appealed — no re-adjudication decision exists");
+  }
+  const original = kase.decisions[0];
+  const appealDecision = kase.decisions[kase.decisions.length - 1];
+  return {
+    documentType: "appeal_record",
+    generatedAt: new Date().toISOString(),
+    caseId: kase.id,
+    policyVersionId: kase.policyVersionRecord?.id ?? null,
+    caseStatus: kase.status,
+    originalDecision: {
+      id: original.id,
+      outcome: original.outcome,
+      claimantShareBps: original.claimantShareBps,
+      respondentShareBps: original.respondentShareBps,
+      decisionHash: original.decisionHash,
+      createdAt: original.createdAt.toISOString(),
+    },
+    appealDecision: {
+      id: appealDecision.id,
+      outcome: appealDecision.outcome,
+      consensus: appealDecision.consensus,
+      claimantShareBps: appealDecision.claimantShareBps,
+      respondentShareBps: appealDecision.respondentShareBps,
+      reasonCodes: appealDecision.reasonCodes,
+      explanation: appealDecision.explanation,
+      decisionHash: appealDecision.decisionHash,
+      proofHash: appealDecision.proofHash,
+      contractCodeHash: appealDecision.contractCodeHash,
+      adjudicateTxHash: appealDecision.adjudicateTxHash,
+      createdAt: appealDecision.createdAt.toISOString(),
+    },
+  };
+}
+
 function csvEscape(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
