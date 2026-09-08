@@ -1,0 +1,81 @@
+name: Solana escrow IDL consistency
+
+# Guards PHASE 3.5's checked-in Anchor client (packages/solana-escrow-client)
+# against silent drift: if programs/escrow/src/lib.rs changes shape
+# (an instruction's args, accounts, or discriminator) without someone
+# regenerating and re-committing idl/escrow.json + idl/escrow.ts, this
+# fails the build instead of leaving a stale IDL that would let the app's
+# typed client compile against a shape the real program no longer has.
+#
+# This ONLY rebuilds escrow (the one Anchor-based program with an IDL).
+# decision-relay is a native, non-Anchor program (see its own lib.rs
+# header) and has no IDL to check — this workflow does not touch it.
+#
+# The checked-in IDL corresponds to escrow's real, non-test build: this
+# program has no test/prod Cargo feature split at all (unlike
+# decision-relay's `test-attestors`, which never appears here).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "chains/solana/programs/escrow/**"
+      - "packages/solana-escrow-client/**"
+      - ".github/workflows/solana-idl-consistency.yml"
+  pull_request:
+    paths:
+      - "chains/solana/programs/escrow/**"
+      - "packages/solana-escrow-client/**"
+      - ".github/workflows/solana-idl-consistency.yml"
+
+jobs:
+  idl-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+
+      - name: Install Solana CLI (includes cargo-build-sbf)
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor CLI
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/avm" install 0.32.1
+          "$HOME/.cargo/bin/avm" use 0.32.1
+
+      - name: Rebuild escrow's IDL from current source
+        working-directory: chains/solana
+        run: anchor build -p escrow
+
+      - name: Verify declared program id matches the checked-in client
+        run: |
+          DECLARED_ID=$(python3 -c "import json; print(json.load(open('chains/solana/target/idl/escrow.json'))['address'])")
+          CHECKED_IN_ID=$(python3 -c "import json; print(json.load(open('packages/solana-escrow-client/idl/escrow.json'))['address'])")
+          echo "fresh build declare_id!: $DECLARED_ID"
+          echo "checked-in idl address:  $CHECKED_IN_ID"
+          if [ "$DECLARED_ID" != "$CHECKED_IN_ID" ]; then
+            echo "::error::escrow's declare_id! ($DECLARED_ID) no longer matches packages/solana-escrow-client/idl/escrow.json ($CHECKED_IN_ID) — regenerate and commit the IDL (see packages/solana-escrow-client/README.md)."
+            exit 1
+          fi
+
+      - name: Diff fresh IDL/types against the checked-in copies
+        run: |
+          if ! diff -u packages/solana-escrow-client/idl/escrow.json chains/solana/target/idl/escrow.json; then
+            echo "::error::packages/solana-escrow-client/idl/escrow.json is stale relative to a fresh 'anchor build -p escrow' of the current programs/escrow source. Regenerate it (see packages/solana-escrow-client/README.md) and commit the update in the same PR as the program source change."
+            exit 1
+          fi
+          if ! diff -u packages/solana-escrow-client/idl/escrow.ts chains/solana/target/types/escrow.ts; then
+            echo "::error::packages/solana-escrow-client/idl/escrow.ts (generated TS types) is stale relative to a fresh build. Regenerate it alongside escrow.json."
+            exit 1
+          fi
+          echo "checked-in IDL and generated types match the current escrow program source."

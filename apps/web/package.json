@@ -15,7 +15,9 @@
   "dependencies": {
     "@anchor/genlayer-sdk": "*",
     "@anchor/hyperlane-relay": "*",
+    "@anchor/solana-escrow-client": "*",
     "@aws-sdk/client-kms": "^3.1127.0",
+    "@coral-xyz/anchor": "^0.32.1",
     "@google-cloud/kms": "^6.0.0",
     "@prisma/client": "^5.20.0",
     "@solana/web3.js": "^1.98.4",

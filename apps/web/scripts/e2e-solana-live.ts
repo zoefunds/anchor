@@ -7,21 +7,11 @@
 // (submitAttestedSettle, lib/solana-settle.ts) settle it plus a
 // separate Hyperlane notification dispatch on Sepolia.
 //
-// GAP this script had to fill itself (see final report): apps/web has
-// no existing helper that calls escrow.initialize_case() — the app only
-// ever READS the escrow's case PDA (lib/solana-escrow.ts) or SETTLES it
-// (lib/solana-settle.ts); the actual deposit has always been a party's
-// own out-of-band Anchor-client call. There is no Anchor IDL checked
-// into apps/web to build this from, so the instruction below is
-// hand-built from chains/solana/programs/escrow/src/lib.rs directly:
-// Anchor's standard 8-byte sighash discriminator
-// (sha256("global:initialize_case")[0:8]) followed by Borsh-encoded
-// args (case_id: String, respondent: Pubkey, adjudicator: Pubkey,
-// amount_lamports: u64-LE), against accounts [claimant(signer,w),
-// case PDA seeds=["case", case_id](w), system_program]. If that Rust
-// instruction signature ever changes, this encoding silently breaks —
-// exactly the kind of drift a real Anchor TS client (typed from the
-// program's own IDL) would catch at compile time and this cannot.
+// PHASE 3.5: the deposit itself is now executed via
+// lib/deposit-execution.ts's executeSolanaDeposit, which in turn uses
+// the real, checked-in Anchor IDL/typed client at
+// @anchor/solana-escrow-client (packages/solana-escrow-client) — no
+// hand-encoded sighash/Borsh instruction bytes remain in this script.
 //
 // Usage:
 //   npx tsx apps/web/scripts/e2e-solana-live.ts --help
@@ -47,22 +37,14 @@
 //
 // Never pass private keys as CLI flags — env only.
 import { randomUUID, createHash } from "crypto";
-import {
-  Connection,
-  Keypair,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  TransactionInstruction,
-  sendAndConfirmTransaction,
-} from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import { prisma } from "@/lib/prisma";
 import { runAdjudicationJob, dispatchSettlementForDecision, finalizeExpiredAppealWindows } from "@/lib/adjudication-service";
 import { isApprovedSolanaEscrowProgram } from "@/lib/hyperlane";
-import { normalizeSolanaAddress, assertSolanaEscrowBoundToDecisionRelay, checkAndConfirmSolanaDeposit } from "@/lib/solana-escrow";
+import { normalizeSolanaAddress, assertSolanaEscrowBoundToDecisionRelay } from "@/lib/solana-escrow";
+import { executeSolanaDeposit } from "@/lib/deposit-execution";
+import { deriveCasePda } from "@anchor/solana-escrow-client";
 
-const CASE_SEED_PREFIX = Buffer.from("case");
-const ESCROW_AUTHORITY_SEEDS = [Buffer.from("decision_relay"), Buffer.from("-"), Buffer.from("escrow_authority")];
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
 interface Args {
@@ -120,65 +102,6 @@ Never pass private keys as flags; env only.`);
 
 function sha256Hex(input: string): string {
   return createHash("sha256").update(input).digest("hex");
-}
-
-function anchorDiscriminator(name: string): Buffer {
-  return createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
-}
-
-function borshString(value: string): Buffer {
-  const bytes = Buffer.from(value, "utf8");
-  const len = Buffer.alloc(4);
-  len.writeUInt32LE(bytes.length, 0);
-  return Buffer.concat([len, bytes]);
-}
-
-function borshU64LE(value: bigint): Buffer {
-  const buf = Buffer.alloc(8);
-  buf.writeBigUInt64LE(value, 0);
-  return buf;
-}
-
-function deriveEscrowCasePda(escrowProgramId: PublicKey, onChainCaseId: string): PublicKey {
-  const [pda] = PublicKey.findProgramAddressSync([CASE_SEED_PREFIX, Buffer.from(onChainCaseId, "utf8")], escrowProgramId);
-  return pda;
-}
-
-function deriveDecisionRelayEscrowAuthority(decisionRelayProgramId: PublicKey): PublicKey {
-  const [pda] = PublicKey.findProgramAddressSync(ESCROW_AUTHORITY_SEEDS, decisionRelayProgramId);
-  return pda;
-}
-
-/**
- * Hand-built initialize_case instruction — see this file's header
- * comment for why apps/web has no existing helper for this and the
- * real risk of hand-encoding it this way.
- */
-function buildInitializeCaseInstruction(params: {
-  escrowProgramId: PublicKey;
-  claimant: PublicKey;
-  casePda: PublicKey;
-  onChainCaseId: string;
-  respondent: PublicKey;
-  adjudicator: PublicKey;
-  amountLamports: bigint;
-}): TransactionInstruction {
-  const data = Buffer.concat([
-    anchorDiscriminator("initialize_case"),
-    borshString(params.onChainCaseId),
-    params.respondent.toBuffer(),
-    params.adjudicator.toBuffer(),
-    borshU64LE(params.amountLamports),
-  ]);
-  return new TransactionInstruction({
-    programId: params.escrowProgramId,
-    keys: [
-      { pubkey: params.claimant, isSigner: true, isWritable: true },
-      { pubkey: params.casePda, isSigner: false, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    ],
-    data,
-  });
 }
 
 function requireEnv(name: string): string {
@@ -247,8 +170,7 @@ async function main(): Promise<void> {
 
   const runId = `e2e-solana-${randomUUID()}`;
   const startedAt = Date.now();
-  const rpcUrl = requireEnv("SOLANA_RPC_URL");
-  const connection = new Connection(rpcUrl, "confirmed");
+  requireEnv("SOLANA_RPC_URL"); // consumed internally by executeSolanaDeposit / checkAndConfirmSolanaDeposit's own getConnection()
 
   const escrowProgramId = new PublicKey(args.escrowProgram!);
   const decisionRelayProgramId = new PublicKey(args.decisionRelayProgram!);
@@ -256,8 +178,6 @@ async function main(): Promise<void> {
   const respondentPubkey = process.env.E2E_SOLANA_RESPONDENT_PUBKEY
     ? new PublicKey(process.env.E2E_SOLANA_RESPONDENT_PUBKEY)
     : depositor.publicKey;
-  const adjudicatorPda = deriveDecisionRelayEscrowAuthority(decisionRelayProgramId);
-
   console.log(
     `[e2e-solana] ${runId}: starting — claimant=${depositor.publicKey.toBase58()}, respondent=${respondentPubkey.toBase58()}, deposit=${args.depositAmountSol} SOL`
   );
@@ -316,7 +236,7 @@ async function main(): Promise<void> {
   console.log(`[e2e-solana] case created: ${kase.id} (on-chain case_id=${onChainCaseId})`);
 
   const depositAmountLamports = BigInt(Math.round(Number(args.depositAmountSol) * LAMPORTS_PER_SOL));
-  const casePda = deriveEscrowCasePda(escrowProgramId, onChainCaseId);
+  const casePda = deriveCasePda(escrowProgramId, onChainCaseId);
 
   const caseSettlement = await prisma.caseSettlement.create({
     data: {
@@ -332,34 +252,14 @@ async function main(): Promise<void> {
   });
   console.log(`[e2e-solana] CaseSettlement ${caseSettlement.id} created (casePda=${casePda.toBase58()})`);
 
-  logStep(3, `depositing ${args.depositAmountSol} SOL via escrow.initialize_case (claimant=${depositor.publicKey.toBase58()})`);
-  const initializeCaseIx = buildInitializeCaseInstruction({
-    escrowProgramId,
-    claimant: depositor.publicKey,
-    casePda,
-    onChainCaseId,
-    respondent: respondentPubkey,
-    adjudicator: adjudicatorPda,
-    amountLamports: depositAmountLamports,
+  logStep(3, `executing deposit of ${args.depositAmountSol} SOL via the shared deposit-execution helper's typed escrow.initializeCase call (claimant=${depositor.publicKey.toBase58()})`);
+  const depositReceipt = await executeSolanaDeposit({
+    caseSettlementId: caseSettlement.id,
+    depositorSecretKeyJson: requireEnv("E2E_SOLANA_DEPOSITOR_SECRET_KEY"),
+    timeoutMs: args.timeoutMs,
   });
-  const tx = new Transaction().add(initializeCaseIx);
-  const depositTxHash = await sendAndConfirmTransaction(connection, tx, [depositor], { commitment: "confirmed" });
-  console.log(`[e2e-solana] deposit tx confirmed: ${depositTxHash}`);
-  await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { depositTxHash } });
-
-  logStep(4, "confirming deposit against the escrow's own on-chain case account");
-  const confirmResult = await pollUntil("deposit confirmation", args.timeoutMs, 5_000, async () => {
-    const result = await checkAndConfirmSolanaDeposit({
-      escrowProgramId: escrowProgramId.toBase58(),
-      onChainCaseId,
-      expectedClaimant: depositor.publicKey.toBase58(),
-      expectedRespondent: respondentPubkey.toBase58(),
-      expectedAmountLamports: depositAmountLamports,
-    });
-    return result.outcome === "confirmed" ? result : null;
-  });
-  await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { status: "DEPOSITED", depositConfirmedAt: new Date() } });
-  console.log(`[e2e-solana] deposit confirmed: ${JSON.stringify(confirmResult)}`);
+  const depositTxHash = depositReceipt.txHash;
+  console.log(`[e2e-solana] deposit confirmed: ${JSON.stringify(depositReceipt)}`);
 
   logStep(5, "filing minimum required evidence for policy agent_data_task_v1");
   const evidenceContents: Record<string, string> = {

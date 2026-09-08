@@ -18,7 +18,8 @@
       "@/*": ["./src/*"],
       "@anchor/types": ["../../packages/types/index.ts"],
       "@anchor/types/*": ["../../packages/types/*"],
-      "@anchor/genlayer-sdk": ["../../packages/genlayer-sdk/index.ts"]
+      "@anchor/genlayer-sdk": ["../../packages/genlayer-sdk/index.ts"],
+      "@anchor/solana-escrow-client": ["../../packages/solana-escrow-client/index.ts"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

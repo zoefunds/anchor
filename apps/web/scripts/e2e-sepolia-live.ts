@@ -35,45 +35,15 @@
 // Never pass private keys as CLI flags — env only. --deposit-amount and
 // the other flags below are non-secret config only.
 import { randomUUID, createHash } from "crypto";
-import {
-  createPublicClient,
-  createWalletClient,
-  http,
-  parseEther,
-  isAddress,
-  getAddress,
-  type Address,
-  type Hex,
-} from "viem";
+import { createPublicClient, http, parseEther, isAddress, getAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
 import { runAdjudicationJob, dispatchSettlementForDecision, finalizeExpiredAppealWindows } from "@/lib/adjudication-service";
 import { isApprovedSettlementContract } from "@/lib/hyperlane";
-import {
-  deriveEscrowId,
-  assertEscrowBoundToDecisionRelay,
-  authorizeDepositOnChain,
-  checkAndConfirmDeposit,
-  normalizeEvmAddress,
-} from "@/lib/case-settlement";
+import { deriveEscrowId, assertEscrowBoundToDecisionRelay, normalizeEvmAddress } from "@/lib/case-settlement";
+import { executeEvmDeposit } from "@/lib/deposit-execution";
 import { detectEscrowVersion } from "@/lib/escrow-version";
-import { caseIdToBytes32 } from "@/lib/emergency-refund";
-
-const DEPOSIT_ABI = [
-  {
-    type: "function",
-    name: "deposit",
-    stateMutability: "payable",
-    inputs: [
-      { name: "caseId", type: "bytes32" },
-      { name: "escrowId", type: "bytes32" },
-      { name: "claimant", type: "address" },
-      { name: "respondent", type: "address" },
-    ],
-    outputs: [],
-  },
-] as const;
 
 interface Args {
   organizationId?: string;
@@ -198,7 +168,6 @@ async function main(): Promise<void> {
   const depositorAccount = privateKeyToAccount((depositorPrivateKey.startsWith("0x") ? depositorPrivateKey : `0x${depositorPrivateKey}`) as Hex);
   const respondentAddress = normalizeEvmAddress(process.env.E2E_SEPOLIA_RESPONDENT_ADDRESS) ?? depositorAccount.address;
   const publicClient = createPublicClient({ chain: sepolia, transport: http(rpcUrl) });
-  const depositorWalletClient = createWalletClient({ account: depositorAccount, chain: sepolia, transport: http(rpcUrl) });
 
   console.log(`[e2e-sepolia] ${runId}: starting — claimant=${depositorAccount.address}, respondent=${respondentAddress}, deposit=${args.depositAmountEth} ETH`);
 
@@ -263,7 +232,6 @@ async function main(): Promise<void> {
 
   const depositAmountWei = parseEther(args.depositAmountEth);
   const escrowIdBytes32 = deriveEscrowId(kase.id);
-  const caseIdBytes32 = caseIdToBytes32(kase.id);
 
   const caseSettlement = await prisma.caseSettlement.create({
     data: {
@@ -279,28 +247,14 @@ async function main(): Promise<void> {
   });
   console.log(`[e2e-sepolia] CaseSettlement ${caseSettlement.id} created (escrowId=${escrowIdBytes32})`);
 
-  logStep(3, "authorizing deposit on-chain (V2 escrows only; no-op otherwise)");
-  const authResult = await authorizeDepositOnChain(caseSettlement.id);
-  console.log(`[e2e-sepolia] authorizeDepositOnChain -> ${authResult.outcome}`);
-
-  logStep(4, `depositing ${args.depositAmountEth} ETH into ${settlementContract} from ${depositorAccount.address}`);
-  const depositTxHash = await depositorWalletClient.writeContract({
-    address: settlementContract,
-    abi: DEPOSIT_ABI,
-    functionName: "deposit",
-    args: [caseIdBytes32, escrowIdBytes32 as Hex, depositorAccount.address, respondentAddress as Address],
-    value: depositAmountWei,
+  logStep(3, `executing deposit of ${args.depositAmountEth} ETH into ${settlementContract} via the shared deposit-execution helper (authorize + deposit + re-verify)`);
+  const depositReceipt = await executeEvmDeposit({
+    caseSettlementId: caseSettlement.id,
+    depositorPrivateKey: depositorPrivateKey,
+    timeoutMs: args.timeoutMs,
   });
-  console.log(`[e2e-sepolia] deposit tx submitted: ${depositTxHash} — waiting for confirmation`);
-  await publicClient.waitForTransactionReceipt({ hash: depositTxHash });
-  await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { depositTxHash } });
-
-  logStep(5, "confirming deposit against the escrow's own on-chain state");
-  const confirmResult = await pollUntil("deposit confirmation", args.timeoutMs, 5_000, async () => {
-    const result = await checkAndConfirmDeposit(caseSettlement.id);
-    return result.outcome === "confirmed" || result.outcome === "already_confirmed" ? result : null;
-  });
-  console.log(`[e2e-sepolia] deposit confirmed: ${JSON.stringify(confirmResult)}`);
+  const depositTxHash = depositReceipt.txHash as Hex;
+  console.log(`[e2e-sepolia] deposit confirmed: ${JSON.stringify(depositReceipt)}`);
 
   logStep(6, "filing minimum required evidence for policy agent_data_task_v1");
   const evidenceContents: Record<string, string> = {
