@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireScope } from "@/lib/auth";
 import { buildSettlementsCsv, buildReconciliationExport } from "@/lib/receipts";
 
 // GET /api/organizations/settlements/export?format=csv|json — normalized
@@ -8,6 +8,8 @@ import { buildSettlementsCsv, buildReconciliationExport } from "@/lib/receipts";
 export async function GET(req: NextRequest) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
+  const scopeError = requireScope(auth, "settlements:export");
+  if (scopeError) return scopeError;
 
   const format = req.nextUrl.searchParams.get("format") ?? "csv";
   if (format === "json") {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess, requireScope } from "@/lib/auth";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { uploadEvidenceFile, deleteEvidenceFile } from "@/lib/storage";
 import { canAccessCase } from "@/lib/case-access";
@@ -23,6 +23,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
   const writeError = requireWriteAccess(auth);
   if (writeError) return writeError;
+  const scopeError = requireScope(auth, "evidence:write");
+  if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
     where: { id: params.id },

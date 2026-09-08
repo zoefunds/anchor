@@ -67,6 +67,13 @@ model Organization {
   lastAnchoredAt   DateTime?
   lastAnchorTxHash String?
 
+  // Phase 5 RBAC: requests/minute ceiling applied to every API key on
+  // this org by checkApiKeyRateLimit (lib/auth.ts), replacing the old
+  // hardcoded flat 120/min for everyone. Default matches that prior
+  // flat value, so an org that never touches this field sees no
+  // behavior change.
+  apiRateLimitPerMinute Int @default(120)
+
   members                Member[]
   apiKeys                ApiKey[]
   cases                  Case[]
@@ -75,6 +82,31 @@ model Organization {
   auditLogs              AuditLog[]
   settlementIntegrations SettlementIntegration[]
   policies               Policy[]
+  incidents              Incident[]
+}
+
+// Phase 5, item C: manually-appended status-page incident history — no
+// auto-detection, an operator creates/updates these directly (e.g. via
+// psql or a future admin route). Deliberately minimal: title + status +
+// timestamps + a short description, nothing that could leak case data.
+enum IncidentStatus {
+  INVESTIGATING
+  MONITORING
+  RESOLVED
+}
+
+model Incident {
+  id             String         @id @default(cuid())
+  organization   Organization?  @relation(fields: [organizationId], references: [id])
+  organizationId String?
+  title          String
+  description    String
+  status         IncidentStatus @default(INVESTIGATING)
+  startedAt      DateTime       @default(now())
+  resolvedAt     DateTime?
+  createdAt      DateTime       @default(now())
+
+  @@index([startedAt])
 }
 
 enum MemberRole {
@@ -300,6 +332,17 @@ model ApiKey {
   // this key to exactly these case IDs, checked in case-access.ts
   // alongside the existing CaseAccess-for-members mechanism.
   restrictedToCaseIds String[]     @default([])
+  // Phase 5 RBAC: empty array (the default) = full access to every
+  // scope in lib/api-scopes.ts. This is a deliberate backward-compat
+  // choice, not an oversight — every key minted before this column
+  // existed has scopes=[] and must keep working exactly as before, so
+  // "no scopes recorded" reads as "no restriction" rather than "no
+  // access." A non-empty array is an allowlist of exactly those scopes,
+  // enforced in lib/auth.ts's requireScope().
+  scopes              String[]     @default([])
+  // Which key this one replaced via the rotate endpoint, if any — purely
+  // an audit trail, not consulted by any auth check.
+  rotatedFromKeyId    String?
 }
 
 // Real P0 fix in progress (external audit finding, raised across every

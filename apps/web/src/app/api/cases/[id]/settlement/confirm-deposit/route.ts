@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess, requireScope } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { checkAndConfirmDeposit } from "@/lib/case-settlement";
 
@@ -15,6 +15,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if ("error" in auth) return authErrorResponse(auth);
   const writeError = requireWriteAccess(auth);
   if (writeError) return writeError;
+  const scopeError = requireScope(auth, "settlements:write");
+  if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {

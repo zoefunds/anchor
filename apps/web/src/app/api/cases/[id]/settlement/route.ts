@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireOwner } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireOwner, requireScope } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { logAction } from "@/lib/audit";
 import { toAttoAmount } from "@/lib/genlayer";
@@ -12,6 +12,8 @@ import { assertSolanaEscrowBoundToDecisionRelay, toLamports, SolanaEscrowError }
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
+  const scopeError = requireScope(auth, "settlements:read");
+  if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: { include: { integration: true } } } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {

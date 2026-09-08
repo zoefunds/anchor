@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireOwner, generateApiKey } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
+import { isValidScope } from "@/lib/api-scopes";
 
 // API keys can only be managed via a dashboard session, not another API
 // key — otherwise a leaked key could mint itself unlimited replacements.
@@ -33,6 +34,8 @@ export async function GET() {
       creatorMemberId: true,
       expiresAt: true,
       restrictedToCaseIds: true,
+      scopes: true,
+      rotatedFromKeyId: true,
     },
   });
   return NextResponse.json(keys);
@@ -54,7 +57,7 @@ export async function POST(req: NextRequest) {
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
-  const { name, expiresInDays, restrictedToCaseIds } = await req.json();
+  const { name, expiresInDays, restrictedToCaseIds, scopes } = await req.json();
   if (!name) {
     return NextResponse.json({ error: "name is required" }, { status: 400 });
   }
@@ -89,6 +92,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // scopes omitted or [] = full access — see ApiKey.scopes' schema
+  // comment. Explicit is validated against the real vocabulary so a
+  // typo'd scope fails loudly at creation time, not silently at
+  // enforcement time.
+  let keyScopes: string[] = [];
+  if (scopes !== undefined) {
+    if (!Array.isArray(scopes) || scopes.some((s) => typeof s !== "string")) {
+      return NextResponse.json({ error: "scopes must be an array of scope strings" }, { status: 400 });
+    }
+    keyScopes = [...new Set(scopes)];
+    const invalid = keyScopes.filter((s) => !isValidScope(s));
+    if (invalid.length > 0) {
+      return NextResponse.json({ error: `unknown scope(s): ${invalid.join(", ")}` }, { status: 400 });
+    }
+  }
+
   // Real audit-completeness gap fixed here (external audit finding):
   // API-key creation — a genuinely security-sensitive action, now
   // OWNER-only for exactly that reason — was never audited at all.
@@ -107,6 +126,7 @@ export async function POST(req: NextRequest) {
         creatorMemberId: member.memberId,
         expiresAt,
         restrictedToCaseIds: caseIds,
+        scopes: keyScopes,
       },
     });
     await logAction(
@@ -116,7 +136,7 @@ export async function POST(req: NextRequest) {
         action: "api_key.created",
         targetType: "apiKey",
         targetId: created.id,
-        metadata: { name, keyPrefix: prefix, expiresAt, restrictedToCaseIds: caseIds },
+        metadata: { name, keyPrefix: prefix, expiresAt, restrictedToCaseIds: caseIds, scopes: keyScopes },
       },
       tx
     );
@@ -134,6 +154,7 @@ export async function POST(req: NextRequest) {
       createdAt: key.createdAt,
       expiresAt: key.expiresAt,
       restrictedToCaseIds: key.restrictedToCaseIds,
+      scopes: key.scopes,
     },
     { status: 201 }
   );

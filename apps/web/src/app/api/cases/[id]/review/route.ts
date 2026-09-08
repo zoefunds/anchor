@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess, requireScope } from "@/lib/auth";
 import { castReviewApproval, addReviewNote, openManualReview, EscalationError } from "@/lib/escalation";
 import { logAction } from "@/lib/audit";
 
@@ -11,6 +11,8 @@ import { logAction } from "@/lib/audit";
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
+  const scopeError = requireScope(auth, "cases:read");
+  if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({ where: { id: params.id } });
   if (!kase || kase.organizationId !== auth.organizationId) {
@@ -33,6 +35,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if ("error" in auth) return authErrorResponse(auth);
   const writeError = requireWriteAccess(auth);
   if (writeError) return writeError;
+  const scopeError = requireScope(auth, "cases:write");
+  if (scopeError) return scopeError;
   if (!auth.memberId) {
     return NextResponse.json({ error: "review actions require a dashboard session, not an API key" }, { status: 403 });
   }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireScope } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { resolveEvidenceUri } from "@/lib/storage";
 
@@ -15,6 +15,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if ("error" in auth) {
     return authErrorResponse(auth);
   }
+  const scopeError = requireScope(auth, "cases:read");
+  if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
     where: { id: params.id },

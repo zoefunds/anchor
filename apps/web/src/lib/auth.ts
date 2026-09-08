@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import IORedis from "ioredis";
 import { prisma } from "@/lib/prisma";
+import { ApiScope } from "@/lib/api-scopes";
 
 const SESSION_COOKIE = "anchor_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -146,6 +147,11 @@ export interface AuthedApiKey {
   organizationId: string;
   apiKeyId: string;
   restrictedToCaseIds: string[];
+  // Empty = full access (see ApiKey.scopes' schema comment for the
+  // backward-compat rationale) — resolved to an actual allowlist check
+  // only in requireScope().
+  scopes: string[];
+  rateLimitPerMinute: number;
 }
 
 // --- API key rate limiting ---
@@ -156,9 +162,23 @@ export interface AuthedApiKey {
 // land on a different serverless invocation with its own fresh memory, so
 // an in-memory counter there wouldn't actually limit anything.
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 120;
+// Fallback only for a key whose org row somehow has no value (shouldn't
+// happen — the column is NOT NULL with a default — but a literal
+// constant beats a silent `undefined * x`).
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 120;
 
-export async function checkApiKeyRateLimit(apiKeyId: string): Promise<{ allowed: boolean; retryAfterSeconds?: number }> {
+/**
+ * Per-org rate-limit tier: Organization.apiRateLimitPerMinute
+ * (lib/auth.ts callers pass it through from getApiKeyAuth, which reads
+ * it once per request via the ApiKey->Organization relation) replaces
+ * what used to be a single hardcoded 120/min for every org on the
+ * platform. `maxRequests` defaults to the old flat value so a caller
+ * that doesn't know about tiers yet behaves exactly as before.
+ */
+export async function checkApiKeyRateLimit(
+  apiKeyId: string,
+  maxRequests: number = DEFAULT_RATE_LIMIT_MAX_REQUESTS
+): Promise<{ allowed: boolean; retryAfterSeconds?: number }> {
   const redis = getRateLimitRedis();
   const bucket = Math.floor(Date.now() / RATE_LIMIT_WINDOW_MS);
   const key = `apikey_rl:${apiKeyId}:${bucket}`;
@@ -168,7 +188,7 @@ export async function checkApiKeyRateLimit(apiKeyId: string): Promise<{ allowed:
     await redis.expire(key, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000) + 5);
   }
 
-  if (count > RATE_LIMIT_MAX_REQUESTS) {
+  if (count > maxRequests) {
     const windowEnd = (bucket + 1) * RATE_LIMIT_WINDOW_MS;
     return { allowed: false, retryAfterSeconds: Math.ceil((windowEnd - Date.now()) / 1000) };
   }
@@ -187,14 +207,23 @@ export async function getApiKeyAuth(authHeader: string | null): Promise<AuthedAp
   const raw = authHeader.slice("Bearer ".length).trim();
   if (!raw) return null;
 
-  const key = await prisma.apiKey.findUnique({ where: { keyHash: hashToken(raw) } });
+  const key = await prisma.apiKey.findUnique({
+    where: { keyHash: hashToken(raw) },
+    include: { organization: { select: { apiRateLimitPerMinute: true } } },
+  });
   if (!key || key.revokedAt) return null;
   if (key.expiresAt && key.expiresAt < new Date()) return null;
 
   // Fire-and-forget last-used update — not on the critical path.
   void prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
 
-  return { organizationId: key.organizationId, apiKeyId: key.id, restrictedToCaseIds: key.restrictedToCaseIds };
+  return {
+    organizationId: key.organizationId,
+    apiKeyId: key.id,
+    restrictedToCaseIds: key.restrictedToCaseIds,
+    scopes: key.scopes,
+    rateLimitPerMinute: key.organization.apiRateLimitPerMinute,
+  };
 }
 
 export type OrgAuthResult =
@@ -207,6 +236,10 @@ export type OrgAuthResult =
       // behavior. Only ever set for API-key callers — a session member's
       // case scope is governed by CaseAccess instead (see case-access.ts).
       restrictedToCaseIds?: string[];
+      // Only ever set for API-key callers — undefined for a session
+      // member means "not scope-gated at all" (see requireScope), not
+      // "no access."
+      scopes?: string[];
     }
   | { error: "unauthorized" }
   | { error: "rate_limited"; retryAfterSeconds: number };
@@ -224,11 +257,16 @@ export type OrgAuthResult =
 export async function resolveOrgFromRequest(req: Request): Promise<OrgAuthResult> {
   const apiKeyAuth = await getApiKeyAuth(req.headers.get("authorization"));
   if (apiKeyAuth) {
-    const rateLimit = await checkApiKeyRateLimit(apiKeyAuth.apiKeyId);
+    const rateLimit = await checkApiKeyRateLimit(apiKeyAuth.apiKeyId, apiKeyAuth.rateLimitPerMinute);
     if (!rateLimit.allowed) {
       return { error: "rate_limited", retryAfterSeconds: rateLimit.retryAfterSeconds! };
     }
-    return { organizationId: apiKeyAuth.organizationId, apiKeyId: apiKeyAuth.apiKeyId, restrictedToCaseIds: apiKeyAuth.restrictedToCaseIds };
+    return {
+      organizationId: apiKeyAuth.organizationId,
+      apiKeyId: apiKeyAuth.apiKeyId,
+      restrictedToCaseIds: apiKeyAuth.restrictedToCaseIds,
+      scopes: apiKeyAuth.scopes,
+    };
   }
 
   const member = await getSessionMember();
@@ -277,6 +315,27 @@ export async function requirePlatformAdmin(): Promise<AuthedMember | { error: "u
 export function requireWriteAccess(auth: Extract<OrgAuthResult, { organizationId: string }>): NextResponse | null {
   if (auth.role === "VIEWER") {
     return NextResponse.json({ error: "read-only members cannot perform this action" }, { status: 403 });
+  }
+  return null;
+}
+
+/**
+ * Enforces API-key scopes on a route. Call after resolveOrgFromRequest
+ * succeeds (and, for mutating routes, after requireWriteAccess), before
+ * doing the work — same call-site shape as requireWriteAccess.
+ *
+ * A session-cookie caller (`auth.scopes === undefined`) is never
+ * scope-gated — scopes are an API-key concept only, a human's access is
+ * already governed by their MemberRole. An API-key caller with
+ * `scopes.length === 0` is the explicit backward-compat default: every
+ * key minted before this column existed (and any new key that doesn't
+ * ask for a restriction) keeps full access, matching its pre-scopes
+ * behavior exactly. A non-empty array is a real allowlist.
+ */
+export function requireScope(auth: Extract<OrgAuthResult, { organizationId: string }>, scope: ApiScope): NextResponse | null {
+  if (auth.scopes === undefined || auth.scopes.length === 0) return null;
+  if (!auth.scopes.includes(scope)) {
+    return NextResponse.json({ error: `this API key is missing the required scope: ${scope}` }, { status: 403 });
   }
   return null;
 }

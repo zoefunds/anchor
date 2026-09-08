@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireScope } from "@/lib/auth";
 import { POLICIES } from "@/lib/policies";
 
 // GET /api/policies — lists available adjudication policies, so a caller
@@ -13,5 +13,7 @@ export async function GET(req: NextRequest) {
   if ("error" in auth) {
     return authErrorResponse(auth);
   }
+  const scopeError = requireScope(auth, "policies:read");
+  if (scopeError) return scopeError;
   return NextResponse.json(Object.values(POLICIES));
 }

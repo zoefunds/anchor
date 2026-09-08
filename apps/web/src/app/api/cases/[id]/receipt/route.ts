@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireScope } from "@/lib/auth";
 import { buildDepositReceipt, buildSettlementReceipt, ReceiptError } from "@/lib/receipts";
 
 // GET /api/cases/:id/receipt?type=deposit|settlement — downloadable
@@ -7,6 +7,8 @@ import { buildDepositReceipt, buildSettlementReceipt, ReceiptError } from "@/lib
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
+  const scopeError = requireScope(auth, "cases:read");
+  if (scopeError) return scopeError;
 
   const type = req.nextUrl.searchParams.get("type") ?? "settlement";
   try {

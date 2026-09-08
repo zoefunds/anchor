@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess, requireScope } from "@/lib/auth";
 import { getPolicy, DEFAULT_POLICY_ID, POLICIES } from "@/lib/policies";
 import { logAction } from "@/lib/audit";
 import { caseVisibilityWhere } from "@/lib/case-access";
@@ -34,6 +34,8 @@ export async function POST(req: NextRequest) {
   }
   const writeError = requireWriteAccess(auth);
   if (writeError) return writeError;
+  const scopeError = requireScope(auth, "cases:write");
+  if (scopeError) return scopeError;
 
   const body = await req.json();
   const {
@@ -294,6 +296,8 @@ export async function GET(req: NextRequest) {
   if ("error" in auth) {
     return authErrorResponse(auth);
   }
+  const scopeError = requireScope(auth, "cases:read");
+  if (scopeError) return scopeError;
 
   const cases = await prisma.case.findMany({
     where: { organizationId: auth.organizationId, ...caseVisibilityWhere(auth) },

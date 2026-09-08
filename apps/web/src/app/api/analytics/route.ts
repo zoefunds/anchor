@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveOrgFromRequest, authErrorResponse } from "@/lib/auth";
+import { resolveOrgFromRequest, authErrorResponse, requireScope } from "@/lib/auth";
 import { computeOrgAnalytics } from "@/lib/analytics";
 
 // GET /api/analytics?sinceDays=90 — this org's own dispute/settlement
@@ -9,6 +9,8 @@ import { computeOrgAnalytics } from "@/lib/analytics";
 export async function GET(req: NextRequest) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
+  const scopeError = requireScope(auth, "analytics:read");
+  if (scopeError) return scopeError;
 
   const sinceDaysParam = req.nextUrl.searchParams.get("sinceDays");
   const sinceDays = sinceDaysParam ? Number(sinceDaysParam) : 90;
