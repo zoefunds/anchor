@@ -1,0 +1,95 @@
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { checkDb, checkRedis, checkSepoliaRpc, checkSolanaRpc } from "@/lib/system-health";
+
+// Phase 5, last item: a PUBLIC, unauthenticated status page/route. No
+// auth gate at all — unlike ops-console (platform-admin-only), this is
+// meant to be linked from marketing/docs. That means the response
+// shape below is deliberately much smaller than ops-console's: no
+// connection strings, no hostnames, no case/decision ids, no signer
+// addresses, no tx hashes, no stack traces. Every field is either a
+// boolean/enum or a value already safe to publish (a title, a
+// timestamp, a canary outcome string). Build the payload defensively —
+// each section computed from `ok`/`status`/small enum fields, never by
+// spreading a raw health-check or Prisma row into the response.
+
+type ComponentStatus = "up" | "degraded" | "down";
+
+function componentStatus(ok: boolean): ComponentStatus {
+  return ok ? "up" : "down";
+}
+
+export async function GET() {
+  try {
+    const [db, redis, sepoliaRpc, solanaRpc] = await Promise.all([
+      checkDb(),
+      checkRedis(),
+      checkSepoliaRpc(),
+      checkSolanaRpc(),
+    ]);
+
+    // "worker/relayer" has no independent health probe of its own (see
+    // ops-console's own note: this process can't attest to the
+    // standalone worker being alive) — its public status is derived
+    // from whether canary runs are still landing, which is exactly what
+    // a canary is for.
+    const latestCanary = await prisma.canaryRun.findFirst({
+      orderBy: { createdAt: "desc" },
+      select: { outcome: true, createdAt: true },
+    });
+    const CANARY_STALE_MS = 2 * 60 * 60 * 1000;
+    const canaryFresh = !!latestCanary && Date.now() - latestCanary.createdAt.getTime() < CANARY_STALE_MS;
+    const workerRelayerStatus: ComponentStatus = !latestCanary
+      ? "degraded"
+      : canaryFresh && latestCanary.outcome === "settled"
+        ? "up"
+        : canaryFresh
+          ? "degraded"
+          : "down";
+
+    const incidentRows = await prisma.incident.findMany({
+      where: {
+        organizationId: null,
+        OR: [{ status: { not: "RESOLVED" } }, { resolvedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } }],
+      },
+      orderBy: { startedAt: "desc" },
+      take: 50,
+      select: { title: true, description: true, status: true, startedAt: true, resolvedAt: true },
+    });
+
+    const incidents = incidentRows.map((i) => ({
+      title: i.title,
+      description: i.description,
+      status: i.status,
+      startedAt: i.startedAt.toISOString(),
+      resolvedAt: i.resolvedAt ? i.resolvedAt.toISOString() : null,
+    }));
+
+    return NextResponse.json({
+      environment: "TESTNET — no real value",
+      generatedAt: new Date().toISOString(),
+      components: {
+        database: componentStatus(db.ok),
+        redis: componentStatus(redis.ok),
+        evmRpc: componentStatus(sepoliaRpc.ok),
+        solanaRpc: componentStatus(solanaRpc.ok),
+        workerRelayer: workerRelayerStatus,
+      },
+      canary: latestCanary
+        ? { lastRunAt: latestCanary.createdAt.toISOString(), outcome: latestCanary.outcome }
+        : null,
+      incidents,
+    });
+  } catch {
+    // Deliberately no error detail in the body — an unhandled exception
+    // here (DB down mid-query, etc.) must not leak a stack trace or
+    // connection error string to an unauthenticated caller. Any real
+    // outage is already visible via the down/degraded component
+    // statuses in the success path; this branch only guards against
+    // something unexpected blowing up before that payload is built.
+    return NextResponse.json(
+      { environment: "TESTNET — no real value", generatedAt: new Date().toISOString(), error: "status temporarily unavailable" },
+      { status: 503 }
+    );
+  }
+}

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import IORedis from "ioredis";
 import { createPublicClient, http, formatEther } from "viem";
 import { sepolia } from "viem/chains";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -8,6 +7,7 @@ import { requirePlatformAdmin } from "@/lib/auth";
 import { FINDING_SEVERITY } from "@/lib/reconciliation";
 import { loadEvmDeploymentManifest, loadSolanaDeploymentManifest } from "@/lib/deployment-manifest";
 import { getAttestorAccounts } from "@/lib/hyperlane";
+import { checkDb, checkRedis, checkSepoliaRpc, checkSolanaRpc } from "@/lib/system-health";
 
 // Phase 3, item 1: the real operations console — every section below
 // queries live Prisma data or makes a real RPC call, nothing here is
@@ -44,54 +44,6 @@ const RUNBOOK_LINKS: Record<string, string> = {
 const RELAY_CLAIM_TTL_MS = 5 * 60 * 1000; // mirrors adjudication-service.ts's own constant
 const SETTLEMENT_RETRY_INTERVAL_MS = 10 * 60 * 1000; // mirrors worker.ts's own constant
 const CANARY_STALE_MS = 2 * 60 * 60 * 1000; // no successful canary run in 2h is itself worth flagging
-
-async function checkDb(): Promise<{ ok: boolean; latencyMs: number | null; error?: string }> {
-  const start = Date.now();
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    return { ok: true, latencyMs: Date.now() - start };
-  } catch (err) {
-    return { ok: false, latencyMs: null, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-async function checkRedis(): Promise<{ ok: boolean; latencyMs: number | null; error?: string }> {
-  const url = process.env.REDIS_URL;
-  if (!url) return { ok: false, latencyMs: null, error: "REDIS_URL not set" };
-  const client = new IORedis(url, { maxRetriesPerRequest: 1, connectTimeout: 3000, lazyConnect: true });
-  const start = Date.now();
-  try {
-    await client.connect();
-    await client.ping();
-    return { ok: true, latencyMs: Date.now() - start };
-  } catch (err) {
-    return { ok: false, latencyMs: null, error: err instanceof Error ? err.message : String(err) };
-  } finally {
-    client.disconnect();
-  }
-}
-
-async function checkSepoliaRpc(): Promise<{ ok: boolean; blockNumber: string | null; error?: string }> {
-  try {
-    const client = createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
-    const block = await client.getBlockNumber();
-    return { ok: true, blockNumber: block.toString() };
-  } catch (err) {
-    return { ok: false, blockNumber: null, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-async function checkSolanaRpc(): Promise<{ ok: boolean; slot: number | null; error?: string }> {
-  const rpcUrl = process.env.SOLANA_RPC_URL;
-  if (!rpcUrl) return { ok: false, slot: null, error: "SOLANA_RPC_URL not set" };
-  try {
-    const connection = new Connection(rpcUrl, "confirmed");
-    const slot = await connection.getSlot();
-    return { ok: true, slot };
-  } catch (err) {
-    return { ok: false, slot: null, error: err instanceof Error ? err.message : String(err) };
-  }
-}
 
 async function evmAttestorBalances(): Promise<Array<{ address: string; balanceEth: string }>> {
   let accounts: ReturnType<typeof getAttestorAccounts>;
@@ -135,7 +87,7 @@ export async function GET() {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const [db, redis, sepoliaRpc, solanaRpc, evmBalances, solanaBalance] = await Promise.all([
+  const [db, redis, sepoliaRpcRaw, solanaRpcRaw, evmBalances, solanaBalance] = await Promise.all([
     checkDb(),
     checkRedis(),
     checkSepoliaRpc(),
@@ -143,6 +95,11 @@ export async function GET() {
     evmAttestorBalances(),
     solanaAttestorBalance(),
   ]);
+  // ops-console's response shape predates the shared module's generic
+  // RpcCheckResult<T> — remap field names here so this route's existing
+  // consumers (settings/ops/page.tsx) don't need to change.
+  const sepoliaRpc = { ok: sepoliaRpcRaw.ok, blockNumber: sepoliaRpcRaw.value, error: sepoliaRpcRaw.error };
+  const solanaRpc = { ok: solanaRpcRaw.ok, slot: solanaRpcRaw.value, error: solanaRpcRaw.error };
 
   // Pending signatures + age: decisions whose co-signing workflow
   // started but haven't dispatched — the live version of
