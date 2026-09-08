@@ -1,4 +1,70 @@
 import { prisma } from "@/lib/prisma";
+import { getUsdcBinding } from "@/lib/environment-registry";
+
+// Track 2, item 3 — receipts must show, for a USDC settlement: symbol,
+// token address, decimals, atomic amount, human-readable amount, and a
+// fiat reference amount. `expectedAmountAtto` is always a decimal
+// string of ATOMIC units (never a JS Number — see lib/genlayer.ts's own
+// toAttoAmount discipline this field already follows), so every
+// conversion below stays in BigInt until the very last, display-only
+// division.
+export interface AssetDisplay {
+  assetSymbol: string;
+  tokenAddress: string | null;
+  decimals: number;
+  atomicAmount: string;
+  humanAmount: string;
+  /**
+   * USDC ≈ 1:1 USD is an honestly-labeled ASSUMPTION, not a live price
+   * feed — there is no oracle wired up here. null for any non-USDC
+   * asset (native ETH/SOL have no such simple peg to assume).
+   */
+  fiatReferenceUsd: string | null;
+  fiatReferenceNote: string | null;
+  testnetNotice: string | null;
+}
+
+function formatAtomicAsHuman(atomicAmount: string, decimals: number): string {
+  const value = BigInt(atomicAmount);
+  if (decimals === 0) return value.toString();
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(decimals);
+  const whole = abs / divisor;
+  const fraction = (abs % divisor).toString().padStart(decimals, "0").replace(/0+$/, "");
+  const sign = negative ? "-" : "";
+  return fraction.length > 0 ? `${sign}${whole}.${fraction}` : `${sign}${whole}`;
+}
+
+/** The one place that turns (assetSymbol, atomic amount) into a full display record — every receipt/CSV row below should call this rather than re-deriving decimals/labels inline. */
+export function describeAssetForDisplay(assetSymbol: string, atomicAmount: string): AssetDisplay {
+  if (assetSymbol.toUpperCase() === "USDC") {
+    const binding = getUsdcBinding("sepolia");
+    const decimals = binding?.decimals ?? 6;
+    const humanAmount = formatAtomicAsHuman(atomicAmount, decimals);
+    return {
+      assetSymbol,
+      tokenAddress: binding?.tokenAddress ?? null,
+      decimals,
+      atomicAmount,
+      humanAmount,
+      fiatReferenceUsd: humanAmount,
+      fiatReferenceNote: "Assumes USDC ≈ 1:1 USD — not a live price feed, and this is Sepolia TESTNET USDC with no real value.",
+      testnetNotice: binding?.label ?? "USDC (Sepolia testnet — no real value)",
+    };
+  }
+  const decimals = 18;
+  return {
+    assetSymbol,
+    tokenAddress: null,
+    decimals,
+    atomicAmount,
+    humanAmount: formatAtomicAsHuman(atomicAmount, decimals),
+    fiatReferenceUsd: null,
+    fiatReferenceNote: null,
+    testnetNotice: null,
+  };
+}
 
 // Phase 4, item 4 — customer-facing financial records. Deliberately
 // plain, well-formed JSON (and an HTML rendering of the same data) —
@@ -74,8 +140,7 @@ export async function buildCaseStatement(caseId: string, organizationId: string)
       ? {
           status: kase.settlement.status,
           chain: kase.settlement.integration.chain,
-          assetSymbol: kase.settlement.integration.assetSymbol,
-          expectedAmountAtto: kase.settlement.expectedAmountAtto,
+          asset: describeAssetForDisplay(kase.settlement.integration.assetSymbol, kase.settlement.expectedAmountAtto),
           depositTxHash: kase.settlement.depositTxHash,
           settledTxHash: kase.settlement.settledTxHash,
           settledAt: kase.settlement.settledAt?.toISOString() ?? null,
@@ -120,8 +185,7 @@ export async function buildDepositReceipt(caseId: string, organizationId: string
     policyVersionId: kase.policyVersionRecord?.id ?? null,
     chain: kase.settlement.integration.chain,
     escrowContractAddress: kase.settlement.integration.escrowContractAddress,
-    assetSymbol: kase.settlement.integration.assetSymbol,
-    expectedAmountAtto: kase.settlement.expectedAmountAtto,
+    asset: describeAssetForDisplay(kase.settlement.integration.assetSymbol, kase.settlement.expectedAmountAtto),
     depositTxHash: kase.settlement.depositTxHash,
     depositConfirmedAt: kase.settlement.depositConfirmedAt?.toISOString() ?? null,
   };
@@ -169,7 +233,11 @@ export async function buildSettlementsCsv(organizationId: string): Promise<strin
     "status",
     "chain",
     "asset_symbol",
+    "asset_is_token", // Track 2, item 3 — distinguishes a token settlement (USDC) from a native-asset one (ETH/SOL); summing "expected_amount_atto" raw across rows with different asset_symbol values is meaningless (different decimals, different units) — consumers must group by asset_symbol first, this column makes that obvious rather than implicit.
+    "token_address",
+    "asset_decimals",
     "expected_amount_atto",
+    "expected_amount_human",
     "deposit_tx_hash",
     "deposit_confirmed_at",
     "settled_tx_hash",
@@ -177,14 +245,19 @@ export async function buildSettlementsCsv(organizationId: string): Promise<strin
     "case_amount",
     "case_currency",
   ];
-  const rows = settlements.map((s) =>
-    [
+  const rows = settlements.map((s) => {
+    const asset = describeAssetForDisplay(s.integration.assetSymbol, s.expectedAmountAtto);
+    return [
       s.caseId,
       s.case.policyVersionRecord?.id ?? "",
       s.status,
       s.integration.chain,
       s.integration.assetSymbol,
+      asset.tokenAddress !== null ? "true" : "false",
+      asset.tokenAddress ?? "",
+      asset.decimals,
       s.expectedAmountAtto,
+      asset.humanAmount,
       s.depositTxHash ?? "",
       s.depositConfirmedAt?.toISOString() ?? "",
       s.settledTxHash ?? "",
@@ -193,8 +266,8 @@ export async function buildSettlementsCsv(organizationId: string): Promise<strin
       s.case.currency,
     ]
       .map((v) => csvEscape(String(v)))
-      .join(",")
-  );
+      .join(",");
+  });
   return [header.join(","), ...rows].join("\n") + "\n";
 }
 
@@ -217,8 +290,7 @@ export async function buildReconciliationExport(organizationId: string) {
       policyVersionId: s.case.policyVersionRecord?.id ?? null,
       status: s.status,
       chain: s.integration.chain,
-      assetSymbol: s.integration.assetSymbol,
-      expectedAmountAtto: s.expectedAmountAtto,
+      asset: describeAssetForDisplay(s.integration.assetSymbol, s.expectedAmountAtto),
       depositTxHash: s.depositTxHash,
       settledTxHash: s.settledTxHash,
       settledAt: s.settledAt?.toISOString() ?? null,

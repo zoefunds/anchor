@@ -35,6 +35,21 @@ export interface AnchorEnvironment {
     interchainSecurityModule?: string;
     decisionRelay?: string;
     escrowProgram?: string;
+    /** Track 2 — the ONE allowlisted USDC-settlement escrow contract for this environment, if any. Separate from decisionRelay (the notification/attestation contract) — this is the ISettlementTarget that actually moves USDC. */
+    escrowUsdc?: string;
+  };
+  /**
+   * Track 2 — the single, explicitly-bound USDC deployment this
+   * environment accepts, if any. Deliberately not a list: this repo
+   * supports exactly one testnet USDC deployment per environment, not
+   * arbitrary ERC-20 tokens (see hyperlane.ts's isApprovedUsdcEscrow,
+   * the only code path allowed to read this field for allowlisting).
+   */
+  usdc?: {
+    tokenAddress: string;
+    decimals: number;
+    /** A human label for what this token actually is — surfaced in receipts/UI so nobody mistakes it for real USD-backed value. */
+    label: string;
   };
   /**
    * Whether this environment corresponds to a real, live, already-deployed
@@ -75,6 +90,22 @@ export const ANCHOR_ENVIRONMENTS: Record<AnchorEnvironmentId, AnchorEnvironment>
     addresses: {
       decisionRelay: "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
       interchainSecurityModule: "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0",
+      // Track 2 — not yet deployed (see chains/evm/deploy/DeployEscrowUSDC.s.sol,
+      // which has NOT been broadcast). Left unset here on purpose:
+      // isApprovedUsdcEscrow must reject every address until a real
+      // deployment's address is filled in here deliberately, never
+      // guessed or left implicit.
+      escrowUsdc: undefined,
+    },
+    // Circle's official Sepolia testnet USDC deployment. NOT
+    // independently re-verified via a live RPC call in this sandbox (no
+    // Sepolia RPC access available here) — re-confirm symbol()=="USDC"
+    // and decimals()==6 against this address before relying on it for
+    // anything beyond this prepare-only registry entry.
+    usdc: {
+      tokenAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+      decimals: 6,
+      label: "USDC (Sepolia testnet — no real value)",
     },
     live: true,
     settlementPaused: false,
@@ -154,4 +185,25 @@ export function isApprovedForEnvironment(envId: AnchorEnvironmentId, address: st
   const candidates = Object.values(env.addresses).filter((a): a is string => Boolean(a));
   const normalize = env.chainFamily === "solana" ? (s: string) => s : (s: string) => s.toLowerCase();
   return candidates.map(normalize).includes(normalize(address));
+}
+
+/**
+ * The single asset key a Policy's `allowedAssets` must list before a
+ * case may settle in Track 2's USDC path. A stable string (not the raw
+ * token address) so policy documents stay readable and don't need
+ * updating if this environment's `usdc.tokenAddress` ever legitimately
+ * changes to a new deployment.
+ */
+export const USDC_SEPOLIA_ASSET_KEY = "USDC-sepolia";
+
+/**
+ * Track 2, item 1 — "reject arbitrary ERC-20 token addresses." Returns
+ * the bound (tokenAddress, decimals) pair for an environment's ONE
+ * allowlisted USDC deployment, or null if this environment has none
+ * configured. The only legitimate way to widen what counts as USDC for
+ * an environment is editing THIS registry entry — never an API
+ * parameter, env var override, or caller-supplied address.
+ */
+export function getUsdcBinding(envId: AnchorEnvironmentId): { tokenAddress: string; decimals: number; label: string } | null {
+  return getAnchorEnvironment(envId).usdc ?? null;
 }
