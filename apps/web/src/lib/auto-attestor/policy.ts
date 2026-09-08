@@ -31,29 +31,51 @@ export interface AutoSignEligibility {
   reason: string;
 }
 
-/** Whether the automated signer is allowed to sign this decision's pending attestation hash — the amount-cap gate, on top of everything dispatchDecisionForCase already enforced before this hash existed. */
+/**
+ * Whether the automated signer is allowed to sign this decision's
+ * pending attestation hash — the amount-cap gate, on top of everything
+ * dispatchDecisionForCase already enforced before this hash existed.
+ *
+ * Phase 4, item 1: generalizes the single global
+ * AUTO_ATTESTOR_MAX_AMOUNT_USD env cap into a per-org/per-policy one —
+ * a case bound to a PolicyVersion with autoSettlementCapUsd set uses
+ * THAT value instead of the env cap; a case with no bound policy (or a
+ * policy that leaves autoSettlementCapUsd null) falls back to the
+ * original env-var behavior unchanged, so existing deployments keep
+ * working exactly as before this generalization.
+ */
 export async function checkAutoSignEligibility(decisionId: string): Promise<AutoSignEligibility> {
-  const maxUsd = getMaxAutoSettleAmountUsd();
-  if (maxUsd === null) {
-    return { eligible: false, reason: "AUTO_ATTESTOR_MAX_AMOUNT_USD is not set — auto-signing is disabled by default, fail closed" };
-  }
-
   const decision = await prisma.decision.findUnique({
     where: { id: decisionId },
-    select: { case: { select: { amount: true, currency: true } } },
+    select: {
+      case: {
+        select: {
+          amount: true,
+          currency: true,
+          policyVersionRecord: { select: { autoSettlementCapUsd: true } },
+        },
+      },
+    },
   });
   if (!decision) {
     return { eligible: false, reason: "decision not found" };
   }
+
+  const policyCapUsd = decision.case.policyVersionRecord?.autoSettlementCapUsd;
+  const maxUsd = policyCapUsd != null ? Number(policyCapUsd) : getMaxAutoSettleAmountUsd();
+  if (maxUsd === null) {
+    return { eligible: false, reason: "no per-policy autoSettlementCapUsd is bound and AUTO_ATTESTOR_MAX_AMOUNT_USD is not set — auto-signing is disabled by default, fail closed" };
+  }
+
   if (decision.case.currency !== "USD") {
     // The cap is expressed in USD; refuse rather than silently comparing
     // a raw numeric amount in an unknown currency against a USD limit.
-    return { eligible: false, reason: `case currency is ${decision.case.currency}, not USD — cannot compare against AUTO_ATTESTOR_MAX_AMOUNT_USD` };
+    return { eligible: false, reason: `case currency is ${decision.case.currency}, not USD — cannot compare against the configured USD auto-settle cap` };
   }
 
   const amountUsd = Number(decision.case.amount);
   if (amountUsd > maxUsd) {
-    return { eligible: false, reason: `case amount $${amountUsd} exceeds AUTO_ATTESTOR_MAX_AMOUNT_USD ($${maxUsd}) — requires human review` };
+    return { eligible: false, reason: `case amount $${amountUsd} exceeds the configured auto-settle cap ($${maxUsd}) — requires human review` };
   }
 
   return { eligible: true, reason: `case amount $${amountUsd} is within the $${maxUsd} auto-settle cap` };

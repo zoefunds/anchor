@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { resolveEvidenceUri } from "@/lib/storage";
+import { toPartyVisibleReviewStatus } from "@/lib/escalation";
 
 const PUBLIC_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 
@@ -34,6 +35,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       evidence: { orderBy: { createdAt: "asc" } },
       decisions: { orderBy: { createdAt: "desc" } },
       settlement: { include: { integration: true } },
+      review: true,
     },
   });
   if (!kase) {
@@ -55,6 +57,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     // exposing which role a caller resolved to anyone who didn't
     // already prove it via their own token/session.
     role: resolved.role,
+    // Phase 4, item 3 — party-visible escalation/appeal status. Never
+    // exposes reviewer identities or CaseReviewNote content, only
+    // whether the case is currently under human review and why in
+    // coarse terms.
+    review: toPartyVisibleReviewStatus(kase.review),
     settlement: kase.settlement
       ? {
           status: kase.settlement.status,

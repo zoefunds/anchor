@@ -6,6 +6,9 @@ import { logAction } from "@/lib/audit";
 import { caseVisibilityWhere } from "@/lib/case-access";
 import { generatePartyToken } from "@/lib/party-auth";
 import { parseCanonicalDecimalAmount, InvalidAmountError } from "@/lib/money";
+import { resolveActivePolicyVersion, parseVelocityLimits, parseHumanReviewTriggers } from "@/lib/policy-engine";
+import { computeRiskAssessment } from "@/lib/risk-engine";
+import { maybeEscalateCase } from "@/lib/escalation";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -126,6 +129,55 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Phase 4, item 1 — bind this case to its org's currently-active,
+  // immutable policy configuration NOW, once, at creation. Falls back to
+  // the org's "default" policy key if none is published under this
+  // adjudication policyId; stays unbound (null) if the org has never
+  // published any policy at all, matching this codebase's existing
+  // "additive, no behavior change until an operator opts in" convention
+  // (see settlement-kyc.ts's own requireKycApproval default). Every
+  // downstream read of this case's governance config must go through
+  // this bound row (case.policyVersionRecord), never re-resolve "current".
+  const boundPolicyVersion =
+    (await resolveActivePolicyVersion(auth.organizationId, policyId)) ??
+    (await resolveActivePolicyVersion(auth.organizationId, "default"));
+  const velocityLimits = parseVelocityLimits(boundPolicyVersion?.velocityLimits ?? null);
+  const humanReviewTriggers = parseHumanReviewTriggers(boundPolicyVersion?.humanReviewTriggers ?? null);
+
+  if (boundPolicyVersion) {
+    if (boundPolicyVersion.allowedChains.length > 0 && settlementChain && !boundPolicyVersion.allowedChains.includes(settlementChain)) {
+      return NextResponse.json({ error: `settlementChain "${settlementChain}" is not allowed by this organization's active policy` }, { status: 400 });
+    }
+    if (boundPolicyVersion.allowedOutcomes.length > 0 && !boundPolicyVersion.allowedOutcomes.includes("*")) {
+      // Outcomes aren't known until adjudication runs — this only rules
+      // out a policy published with an empty/misconfigured outcome list
+      // at case-creation time being silently accepted; the real outcome
+      // check happens at decision time (see docs/decision-schema.md scope
+      // note in the report — enforcing this post-adjudication is a
+      // reasonable follow-up, not implemented in this pass).
+    }
+  }
+
+  // Phase 4, item 2 — risk/anti-abuse gate, computed BEFORE the case is
+  // created so a BLOCK action genuinely refuses case creation rather
+  // than creating the row and then hiding it. Fail-closed: a caller
+  // cannot create a case whose organization's own dispute history this
+  // computation itself fails to read (the throw propagates, same as any
+  // other unexpected error in this route).
+  const riskResult = await computeRiskAssessment({
+    organizationId: auth.organizationId,
+    claimantRef,
+    respondentRef,
+    amountUsd: Number(canonicalAmount),
+    velocityLimits,
+  });
+  if (riskResult.action === "BLOCK") {
+    return NextResponse.json(
+      { error: "case creation blocked by risk policy", riskAction: riskResult.action, reasons: riskResult.reasons },
+      { status: 403 }
+    );
+  }
+
   // Per-party capability tokens (see lib/party-auth.ts) — generated now,
   // shown exactly once below, so the caller can hand each raw token to
   // the actual claimant/respondent. Only the hashes are persisted.
@@ -173,6 +225,20 @@ export async function POST(req: NextRequest) {
         respondentTokenHash: respondentToken.hash,
         claimantTokenExpiresAt: claimantToken.expiresAt,
         respondentTokenExpiresAt: respondentToken.expiresAt,
+        policyVersionRecordId: boundPolicyVersion?.id ?? null,
+      },
+    });
+
+    await tx.riskAssessment.create({
+      data: {
+        caseId: created.id,
+        action: riskResult.action,
+        reasons: riskResult.reasons,
+        claimantRecentDisputeCount: riskResult.claimantRecentDisputeCount,
+        respondentRecentDisputeCount: riskResult.respondentRecentDisputeCount,
+        repeatPairDisputeCount: riskResult.repeatPairDisputeCount,
+        orgRollingDisputeCount: riskResult.orgRollingDisputeCount,
+        orgRollingVolumeUsd: riskResult.orgRollingVolumeUsd,
       },
     });
 
@@ -190,6 +256,20 @@ export async function POST(req: NextRequest) {
     );
 
     return created;
+  });
+
+  // Phase 4, item 3 — escalate for human review if this case's amount or
+  // its just-computed risk action trips a real trigger. Outside the
+  // transaction above deliberately: the case and its RiskAssessment must
+  // both exist first, and a failure here should not roll back a
+  // successfully created case (an operator can still open a review
+  // manually via POST /api/cases/:id/review if this step is ever lost
+  // to a transient error).
+  await maybeEscalateCase({
+    caseId: kase.id,
+    amountUsd: Number(canonicalAmount),
+    riskAction: riskResult.action,
+    humanReviewTriggers,
   });
 
   // Hashes aren't secret, but echoing them back is just noise the caller

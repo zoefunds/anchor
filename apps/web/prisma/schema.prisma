@@ -74,6 +74,7 @@ model Organization {
   webhooks               Webhook[]
   auditLogs              AuditLog[]
   settlementIntegrations SettlementIntegration[]
+  policies               Policy[]
 }
 
 enum MemberRole {
@@ -526,11 +527,30 @@ model Case {
   settlement CaseSettlement?
   partyVerifications PartyVerification[]
 
+  // Phase 4, item 1 (policy engine): the exact immutable PolicyVersion
+  // this case was bound to at creation time — set once, in the same
+  // transaction as case creation, and NEVER re-resolved. Every
+  // downstream read (adjudication, risk gating, settlement dispatch,
+  // receipts, analytics) must join through THIS field, not re-look-up
+  // "whatever the org's Policy currently publishes" — editing a Policy
+  // after this case exists creates a new PolicyVersion row and leaves
+  // this pointer untouched, which is what makes editing non-retroactive.
+  // Nullable only for cases created before this migration (unknown
+  // policy binding) and for any case whose organization has never
+  // published a Policy — see lib/policy-engine.ts's resolvePolicyForCaseCreation
+  // for the fallback behavior in that case.
+  policyVersionRecordId String?
+  policyVersionRecord   PolicyVersion? @relation(fields: [policyVersionRecordId], references: [id])
+
+  riskAssessment RiskAssessment?
+  review         CaseReview?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([organizationId])
+  @@index([policyVersionRecordId])
 }
 
 // One Didit KYC session per (case, party role) — a claimant or
@@ -1065,4 +1085,189 @@ model ReconciliationFindingEvent {
   createdAt  DateTime                        @default(now())
 
   @@index([findingId])
+}
+
+// ============================================================
+// Phase 4, item 1 — configurable, versioned policy engine.
+//
+// Policy is the organization-scoped, mutable "named slot" (e.g. "US
+// consumer disputes") — it has no behavior of its own. PolicyVersion is
+// the actual immutable, published configuration; "editing a policy"
+// means publishing a new PolicyVersion row under the same Policy, never
+// mutating an existing version's fields. A Case binds to exactly one
+// PolicyVersion at creation time (see Case.policyVersionRecordId) and
+// that binding never moves, even after a newer version is published —
+// this is what "never let editing a policy retroactively change a live
+// case" means concretely: there is no code path that re-resolves
+// "current policy" for an existing case.
+// ============================================================
+
+model Policy {
+  id             String       @id @default(cuid())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  organizationId String
+  // Stable machine key within the org (e.g. "default", "us-consumer") —
+  // distinct from a PolicyVersion's own auto-incrementing integer
+  // version number.
+  key            String
+  name           String
+  createdAt      DateTime     @default(now())
+
+  versions PolicyVersion[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+}
+
+// One immutable, published configuration snapshot. `version` is a
+// simple per-Policy incrementing integer (1, 2, 3, ...) — publishing
+// never edits an existing row, it inserts a new one with version+1 and
+// flips `active` on the old row to false via publishPolicyVersion (see
+// lib/policy-engine.ts). Rows here are never updated after creation
+// except for the single `active` boolean, which only affects which
+// version NEW cases bind to — it has zero effect on any case that
+// already bound to an earlier version's id.
+model PolicyVersion {
+  id                    String   @id @default(cuid())
+  policy                Policy   @relation(fields: [policyId], references: [id])
+  policyId              String
+  version               Int
+  active                Boolean  @default(true)
+  publishedAt           DateTime @default(now())
+  publishedByMemberId   String?
+
+  // --- The actual configuration surface (Phase 4 acceptance list) ---
+  evidenceDeadlineHours Int
+  appealWindowHours     Int
+  allowedOutcomes       String[]
+  // Null = no cap configured for this policy version (falls back to the
+  // global AUTO_ATTESTOR_MAX_AMOUNT_USD env cap in
+  // auto-attestor/policy.ts). Non-null generalizes that single global
+  // env var into a per-org/per-policy value — see
+  // checkAutoSignEligibility's Phase 4 update.
+  autoSettlementCapUsd  Decimal?
+  allowedAssets         String[]
+  allowedChains         String[]
+  kycRequired           Boolean  @default(false)
+  // Shape: { maxDisputesPerPartyPerWindow, maxDisputesPerOrgPerWindow,
+  //          rollingWindowDays, maxVolumeUsdPerPartyPerWindow }
+  // Free-form JSON (not typed columns) since this is exactly the kind
+  // of config a customer should be able to tune without a migration —
+  // see lib/risk-engine.ts's VelocityLimitsSchema for the validated shape.
+  velocityLimits        Json
+  // Shape: { highValueUsdThreshold, dualApprovalUsdThreshold }.
+  // lowConfidenceThreshold is deliberately NOT a field here — GenLayer's
+  // adjudicator.py never populates Decision.confidence today (verified:
+  // no writer of that column exists anywhere in this codebase), so a
+  // policy-configurable low-confidence route would have nothing real to
+  // compare against. See lib/escalation.ts's header comment.
+  humanReviewTriggers   Json
+
+  cases Case[]
+
+  @@unique([policyId, version])
+  @@index([policyId])
+}
+
+enum RiskAction {
+  ALLOW
+  REQUIRE_KYC
+  REQUIRE_REVIEW
+  BLOCK
+}
+
+// Phase 4, item 2 — computed once at case creation (fail-closed: a
+// caller cannot create a case for which this computation itself
+// errors), and re-checked at settlement-dispatch time for velocity
+// drift that happened after case creation (e.g. the same claimant filed
+// three more disputes elsewhere while this one was being adjudicated).
+// One row per case; a settlement-time recheck updates the SAME row
+// (recheckedAt/action can change) rather than creating a second one, so
+// "what does the risk engine currently say about this case" is always
+// a single unambiguous read.
+model RiskAssessment {
+  id             String     @id @default(cuid())
+  case           Case       @relation(fields: [caseId], references: [id])
+  caseId         String     @unique
+  action         RiskAction
+  reasons        String[]
+  claimantRecentDisputeCount   Int
+  respondentRecentDisputeCount Int
+  repeatPairDisputeCount       Int
+  orgRollingDisputeCount       Int
+  orgRollingVolumeUsd          Decimal
+  computedAt     DateTime   @default(now())
+  recheckedAt    DateTime?
+  recheckAction  RiskAction?
+  recheckReasons String[]
+
+  @@index([action])
+}
+
+enum ReviewTrigger {
+  // Case amount (in USD) meets or exceeds the binding policy version's
+  // humanReviewTriggers.highValueUsdThreshold.
+  HIGH_VALUE
+  // The bound RiskAssessment's action was REQUIRE_REVIEW.
+  FRAUD_RISK
+  // A human explicitly requested review through the dashboard, outside
+  // any automatic trigger.
+  MANUAL
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Phase 4, item 3 — human escalation. One row per case that has ever
+// been escalated. requiresDualApproval is set once, at creation, from
+// the binding policy version's humanReviewTriggers.dualApprovalUsdThreshold
+// compared against the case amount — never recomputed afterward, for
+// the same immutability reasoning as the policy binding itself.
+model CaseReview {
+  id                   String       @id @default(cuid())
+  case                 Case         @relation(fields: [caseId], references: [id])
+  caseId               String       @unique
+  trigger              ReviewTrigger
+  status               ReviewStatus @default(PENDING)
+  requiresDualApproval Boolean      @default(false)
+  createdAt            DateTime     @default(now())
+  resolvedAt           DateTime?
+
+  approvals CaseReviewApproval[]
+  notes     CaseReviewNote[]
+
+  @@index([status])
+}
+
+// One member's approve/reject vote. Unique per (review, member) so the
+// same reviewer can't be counted twice toward a dual-approval
+// requirement — a real second, independent reviewer is required.
+model CaseReviewApproval {
+  id        String     @id @default(cuid())
+  review    CaseReview @relation(fields: [reviewId], references: [id])
+  reviewId  String
+  memberId  String
+  decision  String // "APPROVE" | "REJECT"
+  reason    String?
+  createdAt DateTime   @default(now())
+
+  @@unique([reviewId, memberId])
+  @@index([reviewId])
+}
+
+// Append-only reviewer notes — no update/delete path exists anywhere in
+// application code, by design (immutable audit trail of what a human
+// reviewer actually observed and said, same discipline as AuditLog).
+model CaseReviewNote {
+  id        String     @id @default(cuid())
+  review    CaseReview @relation(fields: [reviewId], references: [id])
+  reviewId  String
+  memberId  String
+  note      String
+  createdAt DateTime   @default(now())
+
+  @@index([reviewId])
 }

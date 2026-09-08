@@ -10,6 +10,9 @@ import type { Hex } from "viem";
 import { redactPii, REDACTED_EVIDENCE_TYPES } from "@/lib/pii-redaction";
 import { resolveEvidenceUri } from "@/lib/storage";
 import { recordSignerLifecycleEvent, escalateRelayRetriesExhausted, type SettlementChainLabel } from "@/lib/signer-lifecycle";
+import { parseVelocityLimits, parseHumanReviewTriggers } from "@/lib/policy-engine";
+import { recheckRiskAssessmentForSettlement, RiskGateBlockedError } from "@/lib/risk-engine";
+import { maybeEscalateCase, assertNoPendingReviewBlocksSettlement, EscalationError } from "@/lib/escalation";
 
 function settlementChainLabel(chain: string): SettlementChainLabel {
   return chain === "sepolia" ? "sepolia" : "solanatestnet";
@@ -218,6 +221,40 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     // eslint-disable-next-line no-console
     console.error(`decision ${decision.id} for case ${kase.id} has no proofHash/decisionHash — refusing to dispatch settlement`);
     return;
+  }
+
+  // Phase 4, items 2 & 3 — risk-velocity recheck and human-review gate,
+  // both fail-closed in the same style as checkAutoSignEligibility's
+  // amount cap: a thrown error here durably records relayError (via the
+  // catch block below) and leaves relayTxHash null, so
+  // retryFailedSettlements' periodic sweep picks the decision back up
+  // once a human resolves the review or the velocity condition clears,
+  // rather than either silently blocking forever or silently settling
+  // through an unresolved risk/review state.
+  try {
+    const policyVersion = kase.policyVersionRecordId
+      ? await prisma.policyVersion.findUnique({ where: { id: kase.policyVersionRecordId } })
+      : null;
+    const velocityLimits = parseVelocityLimits(policyVersion?.velocityLimits ?? null);
+    const humanReviewTriggers = parseHumanReviewTriggers(policyVersion?.humanReviewTriggers ?? null);
+    await recheckRiskAssessmentForSettlement(kase.id, velocityLimits);
+    const currentRisk = await prisma.riskAssessment.findUnique({ where: { caseId: kase.id } });
+    await maybeEscalateCase({
+      caseId: kase.id,
+      amountUsd: Number(kase.amount),
+      riskAction: currentRisk?.recheckAction ?? currentRisk?.action ?? "ALLOW",
+      humanReviewTriggers,
+    });
+    await assertNoPendingReviewBlocksSettlement(kase.id);
+  } catch (gateErr) {
+    if (gateErr instanceof RiskGateBlockedError || gateErr instanceof EscalationError) {
+      const message = gateErr.message;
+      // eslint-disable-next-line no-console
+      console.error(`settlement dispatch blocked by Phase 4 gate for decision ${decision.id} (case ${kase.id}): ${message}`);
+      await withDbRetry(() => prisma.decision.update({ where: { id: decision.id }, data: { relayError: message } }));
+      return;
+    }
+    throw gateErr;
   }
 
   // Atomic claim/lease (see Decision.relayClaimedAt's schema comment) —
