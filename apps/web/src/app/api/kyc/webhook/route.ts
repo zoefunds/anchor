@@ -108,5 +108,15 @@ export async function POST(req: NextRequest) {
     }
   });
 
+  // Track 5, item 5 — deterministic human-escalation trigger: a real
+  // KYC/sanctions decline from the actual provider adapter (Track 3),
+  // not a fabricated confidence score. See docs/api/csv-export-schema.md
+  // sibling comment in webhooks/didit/route.ts for the same trigger on
+  // the legacy Didit-specific webhook path.
+  if (toStatus === "DECLINED") {
+    const { escalateForKycSanctions } = await import("@/lib/escalation");
+    await escalateForKycSanctions(existing.caseId);
+  }
+
   return NextResponse.json({ ok: true });
 }

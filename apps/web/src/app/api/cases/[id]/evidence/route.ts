@@ -5,6 +5,7 @@ import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess, requireSc
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
 import { canAccessCase } from "@/lib/case-access";
 import { logAction } from "@/lib/audit";
+import { recordBillableEventTx, BillableEventType } from "@/lib/billing-events";
 
 // POST /api/cases/:id/evidence — inline text/JSON evidence (task specs,
 // statements, delivery payloads). For images/PDFs, see
@@ -76,6 +77,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       },
       tx
     );
+    await recordBillableEventTx(tx, {
+      organizationId: auth.organizationId,
+      eventType: BillableEventType.EVIDENCE_STORAGE_MB,
+      subjectId: created.id,
+      quantity: Buffer.byteLength(content, "utf-8") / (1024 * 1024),
+      metadata: { caseId: kase.id, type },
+    });
     return created;
   });
 

@@ -60,8 +60,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (body.decision !== "APPROVE" && body.decision !== "REJECT") {
         return NextResponse.json({ error: "decision must be APPROVE or REJECT" }, { status: 400 });
       }
-      const review = await castReviewApproval(existing.id, auth.memberId, body.decision, body.reason);
-      await logAction({ organizationId: auth.organizationId, memberId: auth.memberId, action: "case.review_voted", targetType: "case_review", targetId: existing.id, metadata: { decision: body.decision } });
+      const review = await castReviewApproval(existing.id, auth.memberId, body.decision, body.reason, auth.organizationId);
       return NextResponse.json(review);
     }
     if (body.action === "note") {

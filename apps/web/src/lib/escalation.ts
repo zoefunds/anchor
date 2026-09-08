@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { withDbRetry } from "@/lib/db-retry";
 import type { ReviewTrigger, RiskAction } from "@prisma/client";
 import type { HumanReviewTriggers } from "@/lib/policy-engine";
+import { logAction } from "@/lib/audit";
 
 // Phase 4, item 3 — human escalation.
 //
@@ -63,6 +64,36 @@ export async function maybeEscalateCase(input: EscalationCheckInput) {
   );
 }
 
+/**
+ * Track 5, item 5 — the shared idempotent-create path behind every
+ * deterministic escalation trigger (HIGH_VALUE/FRAUD_RISK via
+ * maybeEscalateCase above, and APPEAL_FILED/KYC_SANCTIONS/
+ * SETTLEMENT_FAILED below). A case with an existing review is left
+ * alone — this never overwrites an already-open or resolved review's
+ * trigger, matching CaseReview.caseId's unique constraint and
+ * maybeEscalateCase's existing idempotency.
+ */
+async function escalateForTrigger(caseId: string, trigger: ReviewTrigger, requiresDualApproval = false) {
+  const existing = await prisma.caseReview.findUnique({ where: { caseId } });
+  if (existing) return existing;
+  return withDbRetry(() => prisma.caseReview.create({ data: { caseId, trigger, requiresDualApproval } }));
+}
+
+/** Track 5, item 5: a party filed an appeal — deterministic, no risk-score input needed. */
+export async function escalateForAppeal(caseId: string) {
+  return escalateForTrigger(caseId, "APPEAL_FILED");
+}
+
+/** Track 5, item 5: a party's KYC/sanctions check came back DECLINED on a case whose policy requires KYC. */
+export async function escalateForKycSanctions(caseId: string) {
+  return escalateForTrigger(caseId, "KYC_SANCTIONS");
+}
+
+/** Track 5, item 5: automated settlement dispatch exhausted MAX_RELAY_ATTEMPTS without ever settling. */
+export async function escalateForSettlementFailure(caseId: string) {
+  return escalateForTrigger(caseId, "SETTLEMENT_FAILED");
+}
+
 /** Manually opens a review outside any automatic trigger (dashboard-initiated). */
 export async function openManualReview(caseId: string, requiresDualApproval: boolean) {
   const existing = await prisma.caseReview.findUnique({ where: { caseId } });
@@ -77,7 +108,13 @@ export async function openManualReview(caseId: string, requiresDualApproval: boo
  * dual approval means two independent yeses are required to move
  * forward, not that two independent noes are required to stop it.
  */
-export async function castReviewApproval(reviewId: string, memberId: string, decision: "APPROVE" | "REJECT", reason?: string) {
+export async function castReviewApproval(
+  reviewId: string,
+  memberId: string,
+  decision: "APPROVE" | "REJECT",
+  reason: string | undefined,
+  organizationId: string
+) {
   return withDbRetry(() =>
     prisma.$transaction(async (tx) => {
       const review = await tx.caseReview.findUniqueOrThrow({ where: { id: reviewId } });
@@ -90,6 +127,26 @@ export async function castReviewApproval(reviewId: string, memberId: string, dec
         update: { decision, reason },
         create: { reviewId, memberId, decision, reason },
       });
+
+      // Track 5, item 5 — this human decision is now recorded in the
+      // same transaction as the vote it audits, not as a separate call
+      // from the route handler after this function returns. Every
+      // reviewer vote is a real, attributable human decision on a case
+      // (who, when, approve/reject, and why) and must never be able to
+      // commit without a matching AuditLog row, the same atomicity
+      // discipline case creation/evidence/appeal already apply to their
+      // own mutation + audit pairs.
+      await logAction(
+        {
+          organizationId,
+          memberId,
+          action: "case.review_voted",
+          targetType: "case_review",
+          targetId: reviewId,
+          metadata: { decision, reason: reason ?? null, caseId: review.caseId },
+        },
+        tx
+      );
 
       if (decision === "REJECT") {
         return tx.caseReview.update({ where: { id: reviewId }, data: { status: "REJECTED", resolvedAt: new Date() } });
@@ -116,7 +173,18 @@ export function toPartyVisibleReviewStatus(review: { trigger: ReviewTrigger; sta
   return {
     underReview: review.status === "PENDING",
     status: review.status,
-    reason: review.trigger === "HIGH_VALUE" ? "high_value_review" : review.trigger === "FRAUD_RISK" ? "risk_review" : "manual_review",
+    reason:
+      review.trigger === "HIGH_VALUE"
+        ? "high_value_review"
+        : review.trigger === "FRAUD_RISK"
+          ? "risk_review"
+          : review.trigger === "APPEAL_FILED"
+            ? "appeal_review"
+            : review.trigger === "KYC_SANCTIONS"
+              ? "kyc_review"
+              : review.trigger === "SETTLEMENT_FAILED"
+                ? "settlement_failure_review"
+                : "manual_review",
     openedAt: review.createdAt,
     resolvedAt: review.resolvedAt,
   };

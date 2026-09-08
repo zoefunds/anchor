@@ -9,6 +9,7 @@ import { parseCanonicalDecimalAmount, InvalidAmountError } from "@/lib/money";
 import { resolveActivePolicyVersion, parseVelocityLimits, parseHumanReviewTriggers } from "@/lib/policy-engine";
 import { computeRiskAssessment } from "@/lib/risk-engine";
 import { maybeEscalateCase } from "@/lib/escalation";
+import { recordBillableEventTx, BillableEventType } from "@/lib/billing-events";
 
 // POST /api/cases — create a case under a named policy (defaults to
 // agent_data_task_v1 if omitted, for backward compatibility with existing
@@ -256,6 +257,12 @@ export async function POST(req: NextRequest) {
       },
       tx
     );
+
+    await recordBillableEventTx(tx, {
+      organizationId: auth.organizationId,
+      eventType: BillableEventType.CASE_OPENED,
+      subjectId: created.id,
+    });
 
     return created;
   });

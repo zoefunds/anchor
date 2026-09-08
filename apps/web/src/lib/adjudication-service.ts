@@ -12,7 +12,7 @@ import { resolveEvidenceUri } from "@/lib/storage";
 import { recordSignerLifecycleEvent, escalateRelayRetriesExhausted, type SettlementChainLabel } from "@/lib/signer-lifecycle";
 import { parseVelocityLimits, parseHumanReviewTriggers } from "@/lib/policy-engine";
 import { recheckRiskAssessmentForSettlement, RiskGateBlockedError } from "@/lib/risk-engine";
-import { maybeEscalateCase, assertNoPendingReviewBlocksSettlement, EscalationError } from "@/lib/escalation";
+import { maybeEscalateCase, assertNoPendingReviewBlocksSettlement, EscalationError, escalateForSettlementFailure } from "@/lib/escalation";
 
 function settlementChainLabel(chain: string): SettlementChainLabel {
   return chain === "sepolia" ? "sepolia" : "solanatestnet";
@@ -34,6 +34,7 @@ function settlementChainLabel(chain: string): SettlementChainLabel {
 // unchanged — moved to its own module purely to break a circular import
 // with lib/signer-lifecycle.ts (which this file also imports).
 import { withDbRetry } from "@/lib/db-retry";
+import { recordBillableEvent, BillableEventType } from "@/lib/billing-events";
 export { withDbRetry };
 
 const APPEAL_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours
@@ -342,6 +343,12 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       state: "SETTLED",
       reason: txHash,
     });
+    await recordBillableEvent({
+      organizationId: kase.organizationId,
+      eventType: BillableEventType.SETTLEMENT_COMPLETED,
+      subjectId: decision.id,
+      metadata: { caseId: kase.id, chain: kase.settlementChain, txHash },
+    });
   } catch (relayErr) {
     if (relayErr instanceof DecisionAlreadySettledError) {
       // Reconciliation caught what a lost local record would otherwise
@@ -364,6 +371,12 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
           data: { relayTxHash: "reconciled:onchain", relayError: null, relayAttempts: { increment: 1 } },
         })
       );
+      await recordBillableEvent({
+        organizationId: kase.organizationId,
+        eventType: BillableEventType.SETTLEMENT_COMPLETED,
+        subjectId: decision.id,
+        metadata: { caseId: kase.id, chain: kase.settlementChain, txHash: "reconciled:onchain" },
+      });
       return;
     }
     if (relayErr instanceof InsufficientAttestorSignaturesError) {
@@ -448,6 +461,13 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     await recordSignerLifecycleEvent({ decisionId: decision.id, chain: chainLabel, state: "FAILED", reason: relayMessage });
     if (updatedDecision.relayAttempts >= MAX_RELAY_ATTEMPTS) {
       await escalateRelayRetriesExhausted(decision.id, chainLabel, relayMessage);
+      // Track 5, item 5 — a permanently-stuck settlement is a
+      // deterministic human-escalation trigger in its own right, not
+      // just an ops alert: a FINALIZED decision that can never
+      // automatically settle needs a human decision (retry manually,
+      // change the settlement target, or resolve the case another way),
+      // the same way HIGH_VALUE/FRAUD_RISK/APPEAL_FILED do.
+      await escalateForSettlementFailure(kase.id);
     }
   }
 }
@@ -776,6 +796,13 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       }),
       prisma.case.update({ where: { id: kase.id }, data: { status: nextStatus } }),
     ]));
+
+    await recordBillableEvent({
+      organizationId: kase.organizationId,
+      eventType: BillableEventType.ADJUDICATION_RUN,
+      subjectId: createdDecision.id,
+      metadata: { caseId: kase.id, isAppeal, consensus: decision.consensus },
+    });
 
     dispatchWebhookEvent({
       organizationId: kase.organizationId,

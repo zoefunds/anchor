@@ -134,6 +134,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         },
         tx
       );
+      const { recordBillableEventTx, BillableEventType } = await import("@/lib/billing-events");
+      await recordBillableEventTx(tx, {
+        organizationId: auth.organizationId,
+        eventType: BillableEventType.EVIDENCE_STORAGE_MB,
+        subjectId: created.id,
+        quantity: uploaded.sizeBytes / (1024 * 1024),
+        metadata: { caseId: kase.id, type, mimeType: uploaded.mimeType },
+      });
       return created;
     });
   } catch (err) {

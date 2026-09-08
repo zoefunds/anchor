@@ -919,6 +919,46 @@ model Decision {
 // pending-quorum state) look identical if all that's recorded is
 // pass/fail; a dashboard or alert built only on relayTxHash-is-null
 // can't tell those apart.
+// Track 5, item 3: immutable, auditable metering. Append-only by
+// convention (same as SignerLifecycleEvent) — no update/delete path is
+// exposed anywhere in application code. This is metering
+// infrastructure only; nothing in this repo reads BillableEvent to
+// actually charge anyone (see lib/billing.ts's STUB_NOT_INVOICED
+// status, which still derives from usage.ts's live counts, not this
+// table — the two are intentionally independent so a future real
+// invoicing system has a real, replayable event ledger to switch to
+// without also needing computeStubInvoice's aggregate counts to be
+// perfectly reconciled with it on day one).
+model BillableEvent {
+  id             String            @id @default(cuid())
+  organizationId String
+  eventType      BillableEventType
+  // The entity this event is about — a caseId, decisionId, evidenceId,
+  // apiKeyId, or settlementId depending on eventType. Not a foreign key
+  // on purpose: this ledger must remain append-only and readable even
+  // if the referenced row is later deleted or belongs to a table this
+  // model shouldn't take a hard dependency on.
+  subjectId      String
+  // Free-form metering detail: for EVIDENCE_STORAGE_MB, the byte size;
+  // for API_CALL, the route/method; for the rest, usually empty. Never
+  // a pricing decision — quantity/pricing derivation stays in
+  // billing.ts, kept separate from this raw event fact.
+  quantity       Float?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+
+  @@index([organizationId, eventType, createdAt])
+  @@index([subjectId])
+}
+
+enum BillableEventType {
+  CASE_OPENED
+  ADJUDICATION_RUN
+  EVIDENCE_STORAGE_MB
+  API_CALL
+  SETTLEMENT_COMPLETED
+}
+
 enum SignerLifecycleState {
   SIGNING
   QUORUM_REACHED
@@ -1357,11 +1397,27 @@ enum ReviewTrigger {
   // Case amount (in USD) meets or exceeds the binding policy version's
   // humanReviewTriggers.highValueUsdThreshold.
   HIGH_VALUE
-  // The bound RiskAssessment's action was REQUIRE_REVIEW.
+  // The bound RiskAssessment's action was REQUIRE_REVIEW — folds in
+  // both anti-fraud signals and the repeat claimant/respondent-pair
+  // dispute pattern (see risk-engine.ts's repeatPairDisputeCount check),
+  // which escalates via this same RiskAction rather than a separate
+  // enum value, since it's already a REQUIRE_REVIEW-shaped signal.
   FRAUD_RISK
   // A human explicitly requested review through the dashboard, outside
   // any automatic trigger.
   MANUAL
+  // Track 5, item 5: a party filed an appeal — see appeal-service.ts's
+  // triggerAppeal. Deterministic: an appeal was filed, or it wasn't.
+  APPEAL_FILED
+  // Track 5, item 5: a party's KYC/sanctions verification came back
+  // DECLINED for a case whose bound policy requires it — see
+  // settlement-kyc.ts's requireKycApproval / PartyVerificationStatus.
+  KYC_SANCTIONS
+  // Track 5, item 5: automated settlement dispatch exhausted
+  // MAX_RELAY_ATTEMPTS without ever reaching relayTxHash — see
+  // adjudication-service.ts's retryFailedSettlements. A human needs to
+  // look at why, not an unbounded retry loop.
+  SETTLEMENT_FAILED
 }
 
 enum ReviewStatus {

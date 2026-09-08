@@ -4,6 +4,15 @@ import { NextResponse } from "next/server";
 import IORedis from "ioredis";
 import { prisma } from "@/lib/prisma";
 import { ApiScope } from "@/lib/api-scopes";
+import { recordBillableEvent, BillableEventType } from "@/lib/billing-events";
+
+function safeRequestPath(req: Request): string | null {
+  try {
+    return new URL(req.url).pathname;
+  } catch {
+    return null;
+  }
+}
 
 const SESSION_COOKIE = "anchor_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -261,6 +270,16 @@ export async function resolveOrgFromRequest(req: Request): Promise<OrgAuthResult
     if (!rateLimit.allowed) {
       return { error: "rate_limited", retryAfterSeconds: rateLimit.retryAfterSeconds! };
     }
+    // Fire-and-forget, not awaited: metering must never add latency (or
+    // a failure path) to every single API-key request. See
+    // billing-events.ts's own note on why this stays independent of
+    // computeStubInvoice.
+    void recordBillableEvent({
+      organizationId: apiKeyAuth.organizationId,
+      eventType: BillableEventType.API_CALL,
+      subjectId: apiKeyAuth.apiKeyId,
+      metadata: { path: safeRequestPath(req), method: (req as { method?: string }).method ?? null },
+    });
     return {
       organizationId: apiKeyAuth.organizationId,
       apiKeyId: apiKeyAuth.apiKeyId,

@@ -115,5 +115,17 @@ export async function POST(req: NextRequest) {
     }
   });
 
+  // Track 5, item 5 — a DECLINED KYC/sanctions result is a deterministic
+  // human-escalation trigger: this is the real KYC provider adapter
+  // (Track 3) actually telling Anchor a party failed verification, not
+  // a fabricated signal. Outside the transaction above deliberately,
+  // same reasoning as every other post-commit escalation call in this
+  // codebase — a failure here shouldn't roll back the already-genuine
+  // status update.
+  if (mappedStatus === "DECLINED") {
+    const { escalateForKycSanctions } = await import("@/lib/escalation");
+    await escalateForKycSanctions(existing.caseId);
+  }
+
   return NextResponse.json({ ok: true });
 }

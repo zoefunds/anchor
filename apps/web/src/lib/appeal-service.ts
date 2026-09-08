@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { enqueueJob, ensureJobWorker } from "@/lib/jobs";
 import { logAction } from "@/lib/audit";
+import { escalateForAppeal } from "@/lib/escalation";
 
 interface AuditParams {
   organizationId: string;
@@ -77,6 +78,15 @@ export async function triggerAppeal(
     return NextResponse.json({ error: `cannot appeal a case in status ${kase.status}` }, { status: 409 });
   }
   await enqueueJob("adjudicate_case", { caseId: kase.id, isAppeal: true });
+
+  // Track 5, item 5 — an appeal being filed is itself a deterministic
+  // human-escalation trigger: a party contesting a decision is exactly
+  // the kind of signal that should get a human's eyes before the
+  // re-adjudication's own outcome is trusted, independent of amount or
+  // risk score. Outside the transaction above deliberately, same
+  // reasoning as maybeEscalateCase's call site in api/cases/route.ts —
+  // a failure here shouldn't roll back a genuinely-claimed appeal.
+  await escalateForAppeal(kase.id);
 
   dispatchWebhookEvent({
     organizationId: kase.organizationId,
