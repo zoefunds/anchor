@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkDb, checkRedis, checkSepoliaRpc, checkSolanaRpc } from "@/lib/system-health";
+import { computeWindowState } from "@/lib/reliability-window";
 
 // Phase 5, last item: a PUBLIC, unauthenticated status page/route. No
 // auth gate at all — unlike ops-console (platform-admin-only), this is
@@ -65,6 +66,16 @@ export async function GET() {
       resolvedAt: i.resolvedAt ? i.resolvedAt.toISOString() : null,
     }));
 
+    // TRACK 1, item 3: reliability-window summary for the public trust
+    // page. Aggregate-only (day/status/fail count) — the same reasoning
+    // as the rest of this route's payload: no raw check detail here,
+    // see GET /api/reliability-window for that.
+    const windowRows = await prisma.reliabilityWindowObservation.findMany({
+      orderBy: { capturedAt: "asc" },
+      select: { capturedAt: true, status: true, failReasons: true },
+    });
+    const windowState = computeWindowState(windowRows);
+
     return NextResponse.json({
       environment: "TESTNET — no real value",
       generatedAt: new Date().toISOString(),
@@ -79,6 +90,21 @@ export async function GET() {
         ? { lastRunAt: latestCanary.createdAt.toISOString(), outcome: latestCanary.outcome }
         : null,
       incidents,
+      reliabilityWindow: {
+        status: windowState.status,
+        dayOfWindow: windowState.dayOfWindow,
+        targetDays: windowState.targetDays,
+        totalObservations: windowState.totalObservations,
+        lastObservationAt: windowState.lastObservationAt,
+        failTickCount: windowState.failTicks.length,
+      },
+      auditPackageUrl: "/docs/audit-package/README.md",
+      knownLimitations: [
+        "Testnet only — no real funds are ever custodied or moved by this system.",
+        "Attestor signer independence is partial: see docs/multisig-attestor-setup.md and docs/mainnet-custody-design.md for exactly which signer roles are and are not run by fully independent operators today.",
+        "RPC providers used for Sepolia/Hyperlane reads are currently free public endpoints with no SLA — see reliability-monitor.ts's rpc-provider-risk check.",
+        "The 30-day reliability window reported above only reflects ticks that a deployed, scheduled observation job has actually recorded — see the audit package for whether that job is currently running.",
+      ],
     });
   } catch {
     // Deliberately no error detail in the body — an unhandled exception

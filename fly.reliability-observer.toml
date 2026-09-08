@@ -1,0 +1,21 @@
+app = 'anc-hor-reliability-observer'
+primary_region = 'iad'
+
+# TRACK 1, item 1: runs scripts/reliability-observation-loop.ts forever,
+# writing one ReliabilityWindowObservation row every 15 minutes — see
+# docs/reliability-observation-window.md. This app has NOT been deployed
+# from this sandbox (no Fly CLI/deploy access here) — `fly deploy -c
+# fly.reliability-observer.toml` is a step the operator still needs to
+# run themselves before the 30-day clock is genuinely ticking. Until
+# then, `apps/web/scripts/reliability-observation.ts` can still be run
+# by hand for a single tick, but that is not "the window is running."
+
+[build]
+  dockerfile = 'apps/web/Dockerfile.reliability-observer'
+
+[deploy]
+  release_command = 'npx prisma migrate deploy'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'

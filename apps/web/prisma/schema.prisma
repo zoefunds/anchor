@@ -1118,6 +1118,45 @@ model ReliabilityObservation {
   @@index([capturedAt])
 }
 
+// TRACK 1 (evidence-collection / external-proof readiness), item 1: the
+// broad, whole-system 30-day reliability window — deliberately a
+// SEPARATE model from ReliabilityObservation above, which only ever
+// covered the Hyperlane checkpoint/delivery/wiring surface. This one
+// composes system-health.ts (DB/Redis/EVM RPC/Solana RPC), the latest
+// CanaryRun, SignerLifecycleEvent quorum state, and open
+// ReconciliationFinding rows into one per-tick pass/fail verdict — see
+// docs/reliability-observation-window.md for the exact written
+// pass/fail and window-extension/reset rule this is scored against.
+// One row per observation tick (15 minutes — see that doc for why).
+model ReliabilityWindowObservation {
+  id         String   @id @default(cuid())
+  capturedAt DateTime @default(now())
+  // Per-component ok/error snapshot: { db, redis, genlayer, evmRpc,
+  // solanaRpc, signerQuorum, relayer, hyperlane, canary, reconciliation }
+  // — see reliability-window.ts's ComponentSnapshot type for the exact
+  // shape. Raw, not summarized, so a reviewer can verify the verdict
+  // below independently.
+  components Json
+  // PASS or FAIL per docs/reliability-observation-window.md's written
+  // rule — never re-derived looser than that doc at query time.
+  status     String
+  // Machine-readable reasons this tick is FAIL (empty array on PASS) —
+  // e.g. "signer_quorum_loss", "missed_observation", "canary_failed",
+  // "unresolved_reconciliation_finding", "unacknowledged_critical_finding".
+  failReasons String[]
+  notes       String?
+  remediation String?
+  // SHA-256 of this row's canonical JSON (id excluded, since the hash
+  // is computed before the row has an id) — an honest, low-tech stand-in
+  // for real PKI signing, matching manifest-signature.ts's precedent.
+  // Anyone with DB read access can recompute and verify it; this is NOT
+  // a claim of tamper-evidence against someone with write access to the
+  // database itself.
+  observationHash String
+
+  @@index([capturedAt])
+}
+
 model ReconciliationFindingEvent {
   id         String                          @id @default(cuid())
   finding    ReconciliationFinding           @relation(fields: [findingId], references: [id])

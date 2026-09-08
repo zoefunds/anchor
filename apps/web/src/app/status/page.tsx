@@ -27,6 +27,16 @@ interface StatusData {
     startedAt: string;
     resolvedAt: string | null;
   }>;
+  reliabilityWindow: {
+    status: "PASS" | "FAIL" | "EXTENDED" | "NOT_STARTED";
+    dayOfWindow: number;
+    targetDays: number;
+    totalObservations: number;
+    lastObservationAt: string | null;
+    failTickCount: number;
+  };
+  auditPackageUrl: string;
+  knownLimitations: string[];
 }
 
 const COMPONENT_LABELS: Record<keyof StatusData["components"], string> = {
@@ -103,6 +113,35 @@ export default function StatusPage() {
             ) : (
               <p className="mt-2 text-sm text-muted dark:text-muted-dark">No canary runs recorded yet.</p>
             )}
+          </section>
+
+          <section className="mt-8">
+            <h2 className="text-sm font-medium uppercase text-muted dark:text-muted-dark">30-day reliability observation window</h2>
+            <p className="mt-2 text-sm">
+              {data.reliabilityWindow.status === "NOT_STARTED"
+                ? "Not yet started — no observation ticks recorded."
+                : `Day ${data.reliabilityWindow.dayOfWindow} of ${data.reliabilityWindow.targetDays} — ${data.reliabilityWindow.status}`}
+            </p>
+            <p className="mt-1 text-xs text-muted dark:text-muted-dark">
+              {data.reliabilityWindow.totalObservations} observation(s) recorded
+              {data.reliabilityWindow.lastObservationAt ? `, last at ${new Date(data.reliabilityWindow.lastObservationAt).toLocaleString()}` : ""}.
+              {data.reliabilityWindow.failTickCount > 0 ? ` ${data.reliabilityWindow.failTickCount} fail tick(s) recorded — none excluded or rewritten.` : ""}
+            </p>
+            <p className="mt-2 text-xs">
+              <a href={data.auditPackageUrl} className="underline">
+                External audit package
+              </a>{" "}
+              — deployment identity, topology, threat model, and test evidence for independent review.
+            </p>
+          </section>
+
+          <section className="mt-8">
+            <h2 className="text-sm font-medium uppercase text-muted dark:text-muted-dark">Known custody &amp; independence limitations</h2>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted dark:text-muted-dark">
+              {data.knownLimitations.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
           </section>
 
           <section className="mt-8">
