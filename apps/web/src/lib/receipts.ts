@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getUsdcBinding } from "@/lib/environment-registry";
 
@@ -285,6 +286,23 @@ export async function buildAppealRecord(caseId: string, organizationId: string) 
   };
 }
 
+// Track 5, item 4: a stable, deterministic per-row identifier a design
+// partner's accounting system can use as an idempotency/dedup key when
+// re-importing an export (e.g. a re-run of the same period, or a row
+// that appears in both a monthly and a corrected export). Derived only
+// from facts that never change once a settlement exists — caseId,
+// decisionId (null-safe, since a settlement can in principle exist
+// before a decision reconciliation query joins one in), and
+// settledTxHash falling back to depositTxHash — so recomputing it later
+// from the same export always yields the same value, and it changes iff
+// the underlying settlement facts genuinely differ. Documented in
+// docs/api/csv-export-schema.md — treat this as a stable public
+// contract, not an internal implementation detail.
+export function computeReconciliationId(params: { caseId: string; decisionId: string | null; txHash: string | null }): string {
+  const basis = `${params.caseId}|${params.decisionId ?? ""}|${params.txHash ?? ""}`;
+  return createHash("sha256").update(basis).digest("hex").slice(0, 32);
+}
+
 function csvEscape(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
@@ -294,12 +312,21 @@ function csvEscape(value: string): string {
 export async function buildSettlementsCsv(organizationId: string): Promise<string> {
   const settlements = await prisma.caseSettlement.findMany({
     where: { case: { organizationId } },
-    include: { case: { include: { policyVersionRecord: true } }, integration: true },
+    include: {
+      case: { include: { policyVersionRecord: true, decisions: { orderBy: { createdAt: "desc" }, take: 1 } } },
+      integration: true,
+    },
     orderBy: { createdAt: "asc" },
   });
 
+  // Column order/names are a stable, versioned contract — see
+  // docs/api/csv-export-schema.md. Appending a new column to the end is
+  // additive and safe; renaming, removing, or reordering an existing
+  // column is a breaking change and must bump that doc's schema version.
   const header = [
+    "reconciliation_id",
     "case_id",
+    "decision_id",
     "policy_version_id",
     "status",
     "chain",
@@ -318,8 +345,16 @@ export async function buildSettlementsCsv(organizationId: string): Promise<strin
   ];
   const rows = settlements.map((s) => {
     const asset = describeAssetForDisplay(s.integration.assetSymbol, s.expectedAmountAtto);
+    const decisionId = s.case.decisions[0]?.id ?? null;
+    const reconciliationId = computeReconciliationId({
+      caseId: s.caseId,
+      decisionId,
+      txHash: s.settledTxHash ?? s.depositTxHash ?? null,
+    });
     return [
+      reconciliationId,
       s.caseId,
+      decisionId ?? "",
       s.case.policyVersionRecord?.id ?? "",
       s.status,
       s.integration.chain,
@@ -356,18 +391,27 @@ export async function buildReconciliationExport(organizationId: string) {
     generatedAt: new Date().toISOString(),
     organizationId,
     auditAnchor: org,
-    settlements: settlements.map((s) => ({
-      caseId: s.caseId,
-      policyVersionId: s.case.policyVersionRecord?.id ?? null,
-      status: s.status,
-      chain: s.integration.chain,
-      asset: describeAssetForDisplay(s.integration.assetSymbol, s.expectedAmountAtto),
-      depositTxHash: s.depositTxHash,
-      settledTxHash: s.settledTxHash,
-      settledAt: s.settledAt?.toISOString() ?? null,
-      decisionHash: s.case.decisions[0]?.decisionHash ?? null,
-      caseAmount: s.case.amount.toString(),
-      caseCurrency: s.case.currency,
-    })),
+    settlements: settlements.map((s) => {
+      const decisionId = s.case.decisions[0]?.id ?? null;
+      return {
+        reconciliationId: computeReconciliationId({
+          caseId: s.caseId,
+          decisionId,
+          txHash: s.settledTxHash ?? s.depositTxHash ?? null,
+        }),
+        caseId: s.caseId,
+        decisionId,
+        policyVersionId: s.case.policyVersionRecord?.id ?? null,
+        status: s.status,
+        chain: s.integration.chain,
+        asset: describeAssetForDisplay(s.integration.assetSymbol, s.expectedAmountAtto),
+        depositTxHash: s.depositTxHash,
+        settledTxHash: s.settledTxHash,
+        settledAt: s.settledAt?.toISOString() ?? null,
+        decisionHash: s.case.decisions[0]?.decisionHash ?? null,
+        caseAmount: s.case.amount.toString(),
+        caseCurrency: s.case.currency,
+      };
+    }),
   };
 }

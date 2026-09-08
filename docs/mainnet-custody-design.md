@@ -59,6 +59,43 @@ keys — a real change from today's testnet design, where
 `docs/multisig-attestor-setup.md` documents env-key signers as the
 deliberate testnet choice.
 
+## Signer SLAs
+
+Independence alone does not make a 3-operator attestor set operationally
+reliable — each operator must carry an explicit service-level commitment,
+agreed contractually before their key is added via `addAttestor()`:
+
+- **Signing availability**: minimum uptime for the signing service itself
+  (target 99.9% monthly, consistent with the `PENDING_ATTESTATION`
+  external-signature path in `docs/multisig-attestor-setup.md` already
+  assuming an attestor can be temporarily unavailable without breaking
+  quorum at 2-of-3).
+- **Signing latency**: a maximum time-to-sign for a well-formed pending
+  attestation request (e.g. 15 minutes for routine dispatch, faster for
+  an explicitly flagged incident), so the reliability-monitor SLA work
+  from Phase 2/3 isn't undermined by a slow third-party signer.
+- **Incident notification**: an operator must notify Anchor within a
+  defined window (e.g. 1 hour) of any suspected key compromise, planned
+  maintenance affecting signing availability, or change of the
+  infrastructure/personnel with access to the key material — this is
+  what makes emergency rotation (below) actionable rather than
+  theoretical.
+- **Rotation cooperation**: a contractual commitment to cooperate with
+  both routine and emergency rotation within the timelines in this
+  document's rotation/recovery section, including generating a new key
+  under the same independence constraints (own infrastructure, own
+  ceremony) rather than reusing compromised material.
+
+These SLA terms are what turn "three separate legal entities hold keys"
+into an operationally trustworthy 2-of-3, and must be captured in the
+actual service agreement with each of operators 2 and 3 above — not
+left as an unstated assumption. To be unambiguous about the point this
+whole document exists to make: **three keys sitting on the same Fly
+account, the same cloud provider, or under the same operator's control
+is not independence, regardless of how the threshold math is
+configured** — independence is about who can act unilaterally and who
+would need to collude, not the number of key files involved.
+
 ## HSM/MPC vendor evaluation
 
 Comparative table based on each vendor's publicly documented capabilities
