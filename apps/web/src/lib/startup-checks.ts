@@ -1,4 +1,5 @@
 import { loadEvmDeploymentManifest, loadSolanaDeploymentManifest } from "@/lib/deployment-manifest";
+import { ANCHOR_ENVIRONMENTS, isTestnetEnvironment, type AnchorEnvironmentId } from "@/lib/environment-registry";
 
 // Phase 1, item 1: startup checks every signing/worker process runs
 // BEFORE it signs or dispatches anything. Every function here either
@@ -92,5 +93,32 @@ export function assertWorkerKeyCountBelowThreshold(params: {
       );
     }
     assertSolanaSignerRegistered(params.solanaSignerPublicKey);
+  }
+}
+
+/**
+ * Phase 6's single most load-bearing invariant: booting against a
+ * non-testnet environment (genlayer-mainnet, ethereum-mainnet,
+ * solana-mainnet — see environment-registry.ts) with settlement
+ * unpaused must throw, never warn. This is what makes "mainnet
+ * defaults always paused" (docs/mainnet-readiness-gate.md, item 2) a
+ * real enforced property instead of a config convention someone could
+ * silently flip. A testnet environment is exempt by construction —
+ * this repo's actual current, intentional mode is live-testnet
+ * settlement, which is why studio-next-testnet/sepolia/solana-testnet
+ * all carry settlementPaused: false today.
+ */
+export function assertEnvironmentSafeToBoot(envId: AnchorEnvironmentId): void {
+  const env = ANCHOR_ENVIRONMENTS[envId];
+  if (!env) {
+    throw new StartupCheckError(`unknown Anchor environment id "${envId}" — refusing to start`);
+  }
+  if (isTestnetEnvironment(envId)) return;
+  if (env.settlementPaused !== true) {
+    throw new StartupCheckError(
+      `environment "${envId}" is non-testnet (live=${env.live}) but settlementPaused is not strictly true — ` +
+        `refusing to start. Mainnet environments must remain paused until docs/mainnet-readiness-gate.md is satisfied ` +
+        `and an operator has explicitly authorized unpausing.`
+    );
   }
 }

@@ -1,5 +1,17 @@
 import evmManifestJson from "../../deployment-manifest.json";
 import solanaManifestJson from "../../deployment-manifest.solana.json";
+import { verifyManifestHash } from "@/lib/manifest-signature";
+
+// Phase 6: expected SHA-256 of each manifest's canonical JSON, checked
+// into source alongside the manifest itself (not inside the JSON file,
+// which would make the hash self-referential). Recompute with
+// manifest-signature.ts's computeManifestHash() whenever
+// scripts/generate-deployment-manifest.ts / generate-solana-deployment-manifest.ts
+// regenerate either file, and update these constants in the same commit —
+// an unreviewed manifest change without a matching hash update is exactly
+// the drift verifyManifestHash() below exists to catch.
+const EXPECTED_EVM_MANIFEST_HASH = "1b54e1a5d4f99ed7641b5b5c16673fbc33ef8395f13b2e2cca317b21e010bf2c";
+const EXPECTED_SOLANA_MANIFEST_HASH = "93637df98778c03d223cb2258ae4098bbc67d941c0ff5a4a0376cf8c73a440b5";
 
 // Phase 1 (signer/settlement/delivery reliability), item 1's "expected
 // deployment manifest": a COMMITTED file, imported at build time, never
@@ -40,9 +52,11 @@ export interface SolanaDeploymentManifest {
 }
 
 export function loadEvmDeploymentManifest(): EvmDeploymentManifest {
+  verifyManifestHash(evmManifestJson, EXPECTED_EVM_MANIFEST_HASH);
   return evmManifestJson as EvmDeploymentManifest;
 }
 
 export function loadSolanaDeploymentManifest(): SolanaDeploymentManifest {
+  verifyManifestHash(solanaManifestJson, EXPECTED_SOLANA_MANIFEST_HASH);
   return solanaManifestJson as SolanaDeploymentManifest;
 }
