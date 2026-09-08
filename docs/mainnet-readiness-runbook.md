@@ -218,8 +218,9 @@ here.
 **Why this is currently an acceptable risk, not a live vulnerability**:
 `decision-relay`'s `handle()` is notification-only (see its own doc
 comment — no escrow-authority-capable account in its account list). The
-only path that can move funds is `attested_settle` (Ed25519 2-of-2,
-built by Anchor's own backend, independent of Hyperlane delivery). A
+only path that can move funds is `attested_settle` (Ed25519 2-of-3 as of
+the 2026-09-07 automation below, built by Anchor's own backend,
+independent of Hyperlane delivery). A
 compromised or bypassed Solana ISM cannot itself authorize a settlement.
 **This invariant is load-bearing and must never regress** without the
 same rigor as a change to `attested_settle` itself.

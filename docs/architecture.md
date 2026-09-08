@@ -48,7 +48,7 @@ flowchart TB
     Postgres[("Postgres<br/>(Fly)")]
     Redis[("Redis<br/>(BullMQ queue/lock)")]
 
-    subgraph GenLayer["GenLayer StudioNet"]
+    subgraph GenLayer["GenLayer Studio Next (61997)"]
         Adjudicator["adjudicator.py<br/>Intelligent Contract<br/>Optimistic Democracy consensus"]
     end
 

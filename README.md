@@ -157,12 +157,12 @@ flowchart LR
     subgraph Trusted["Required together to settle"]
         GenLayer["GenLayer Optimistic Democracy<br/>(produces the decision itself)"]
         ISMQuorum["ISM: 2-of-3 validator<br/>checkpoint signatures"]
-        AttestorQuorum["DecisionRelay: 2-of-2<br/>attestor signatures"]
+        AttestorQuorum["DecisionRelay: 2-of-3<br/>attestor signatures"]
     end
 
-    Backend -.->|"1 of 2 needed"| AttestorQuorum
+    Backend -.->|"1 of 3 needed"| AttestorQuorum
     OneValidator -.->|"1 of 3 needed"| ISMQuorum
-    OneAttestor -.->|"1 of 2 needed"| AttestorQuorum
+    OneAttestor -.->|"1 of 3 needed"| AttestorQuorum
     Relayer -->|"delivers, doesn't authorize"| ISMQuorum
 
     GenLayer --> Decision["Decision"]
@@ -231,14 +231,19 @@ map) — kept in sync with this section and with
            decision and this deployed contract)
          - signs with whatever ATTESTOR_PRIVATE_KEYS the backend holds
          - if that's fewer than attestorThreshold, throws
-           InsufficientAttestorSignaturesError — the decision waits,
-           see "Co-signing" below — otherwise dispatches immediately via
-           Hyperlane's Mailbox
+           InsufficientAttestorSignaturesError — as of 2026-09-07 two
+           other automated signers (`anc-hor-attestor2`/`anc-hor-attestor3`)
+           normally close that gap on their own within their polling
+           interval, so most decisions never actually wait on a human;
+           see "Co-signing" below for the exception path — otherwise
+           dispatches immediately via Hyperlane's Mailbox
      - Solana (solanatestnet): submitAttestedSettle() in
        lib/solana-settle.ts
          - same pattern: computes the attestation message, signs with
-           the backend's one Solana attestor key, needs a second
-           signature to reach the real 2-of-2 threshold
+           the backend's one Solana attestor key, needs enough of the
+           other two automated signers' signatures to reach the real
+           2-of-3 threshold (same `anc-hor-attestor2`/`anc-hor-attestor3`
+           processes also run the Solana auto-signer)
          - builds a versioned Solana transaction (Address Lookup
            Table–based, since 2+ Ed25519 verify instructions exceed
            Solana's 1232-byte legacy transaction limit) containing the
@@ -250,7 +255,7 @@ map) — kept in sync with this section and with
 6. Destination-side verification:
      - EVM: DecisionRelay.sol's handle() — requires the message came
        via the Mailbox from a trusted sender AND passed the real
-       multisig ISM (2-of-2 validator checkpoints) AND carries
+       multisig ISM (2-of-3 validator checkpoints) AND carries
        attestorThreshold-many valid attestor signatures over its own
        content
      - Solana: decision-relay's attested_settle() — requires
@@ -266,7 +271,13 @@ map) — kept in sync with this section and with
 
 Both chains are configured so the backend deliberately holds **fewer**
 than `attestorThreshold` keys — real M-of-N, not "one operator holding
-enough keys to look like M-of-N." When that happens:
+enough keys to look like M-of-N." As of 2026-09-07, both chains are
+2-of-3 with the other two keys held by automated Fly signers
+(`anc-hor-attestor2`/`anc-hor-attestor3`), each running its own policy
+gate that only co-signs decisions under `AUTO_ATTESTOR_MAX_AMOUNT_USD` —
+so in the normal case, no human is involved at all. The manual flow
+below is now the exception path: it still exists and still works, for
+decisions above that cap or if an automated signer is unavailable.
 
 - **EVM**: `Decision.pendingAttestationHash`/`pendingAttestationSignatures`
   persist the wait. An external attestor holder fetches the pending hash
@@ -278,12 +289,20 @@ enough keys to look like M-of-N." When that happens:
   route verifies the signature actually recovers to a registered
   attestor address before accepting it. Completion happens within ~10
   minutes via the worker's periodic retry sweep.
-- **Solana**: no automated queue yet (see "Known gaps" below) —
-  `submitAttestedSettle`'s `externalAttestations` parameter exists and
-  is proven working, but collecting a real external signature today is
-  a manual process (compute the message, get it signed offline, pass it
-  in). This is the one piece of the M-of-N mechanism that's built and
-  tested but not yet wired into the automatic dispatch path.
+- **Solana**: the same pattern exists via
+  `GET /api/internal/pending-solana-attestations` and
+  `POST .../pending-solana-attestations/[decisionId]/sign` — this used
+  to be a manual-only gap (no queue at all), but that gap has since been
+  closed with a real API mirroring the EVM one; see
+  `docs/multisig-attestor-setup.md`'s "Co-signing a real decision
+  (Solana side)" for the exact flow.
+
+Note: independence between `anc-hor-attestor2`/`anc-hor-attestor3` and
+the backend worker is **not real** — they share the same Fly
+account/org with raw keys in Fly secrets, not separate cloud accounts
+or KMS/HSM custody. Automating away the human-in-the-loop step improved
+availability, not custody independence — see
+`docs/mainnet-readiness-runbook.md`.
 
 ---
 
@@ -298,7 +317,7 @@ work. Full technical detail and the exact live addresses live in
 
 Neither `DecisionRelay.sol` nor Solana's `decision-relay` trusts "a
 message arrived via Hyperlane" as sufficient to move funds. Both require
-a threshold-many (currently 2-of-2 on both chains) set of independently
+a threshold-many (currently 2-of-3 on both chains) set of independently
 held ECDSA (EVM) / Ed25519 (Solana) signatures over the decision's own
 content — case id, outcome, shares, escrow id, proof hash, origin
 domain, and (on EVM) the specific deployed contract's own address /
@@ -306,10 +325,13 @@ domain, and (on EVM) the specific deployed contract's own address /
 genesis hash, so a signature can never be replayed against a different
 deployment or a different chain.
 
-The backend holds **one** key per chain; the second is generated and
-held entirely offline by the human operator, on a machine never
-connected to Fly/Vercel. The backend structurally cannot forge a
-settlement alone.
+The backend holds **one** key per chain; the other two are held by the
+automated `anc-hor-attestor2`/`anc-hor-attestor3` signers (as of
+2026-09-07 — previously the second key was generated and held entirely
+offline by a human operator; see `docs/multisig-attestor-setup.md` for
+that retired design). The backend structurally cannot forge a
+settlement alone — reaching threshold always needs at least one of the
+other two signers.
 
 ### 2. Governance separation (EVM only, so far)
 
@@ -452,24 +474,41 @@ flowchart TB
 
 | Contract | Address | Purpose |
 |---|---|---|
-| `DecisionRelay` (current) | `0x94f3FF552CC879a36B19b829af3325Ea72cbC71C` | Receives decisions, gates settlement on M-of-N attestation + multisig ISM |
-| Multisig ISM (`StaticMerkleRootMultisigIsm`) | `0xf9Ceb195C295c496952649574A78B2Da6dD7b05f` | Real 2-of-2 validator-checkpoint verification, replacing `TrustedRelayerIsm` |
-| `AuditAnchor` | `0x642C8f4De6302D06fC0620efE571dFd69DF94CEA` | External audit-chain checkpointing |
-| Governance Safe | `0xc200534F7DEbF2816C085C5A156aBd686fA19f4C` | 2-of-2 owner of `DecisionRelay` |
-| Hyperlane Mailbox | `0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766` | Canonical Hyperlane infra |
-| Hyperlane ValidatorAnnounce | `0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9` | Canonical Hyperlane infra |
-| `staticMerkleRootMultisigIsmFactory` | `0x0a71AcC99967829eE305a285750017C4916Ca269` | Canonical Hyperlane infra, used to deploy the ISM above |
+| `DecisionRelay` (current) | `0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2` | Receives decisions, gates settlement on M-of-N attestation + multisig ISM |
+| Multisig ISM (`StaticMerkleRootMultisigIsm`) | `0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0` | Real 2-of-3 validator-checkpoint verification |
+| Escrow (V2) | `0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7` | Holds/releases case funds per adjudicated shares |
+| `AuditAnchor` | `0x642C8f4De6302D06fC0620efE571dFd69DF94CEA` | External audit-chain checkpointing (not independently re-verified live this pass — see `AUDIT_ANCHOR_CONTRACT_ADDRESS` in `apps/web/.env.example`) |
+| Governance Safe | `0xc200534F7Debf2816C085c5a156AbD686FA19f4C` | 2-of-2 owner of `DecisionRelay` |
+| Hyperlane Mailbox | `0x345E7246631ceb0300427caB75eacA10c326BB09` | Anchor's own (migrated off the canonical shared Sepolia Mailbox on 2026-09-07 after finding its hooks disconnected — see `docs/mainnet-readiness-runbook.md`) |
+| Hyperlane MerkleTreeHook | `0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB` | Anchor's own |
+| Hyperlane ValidatorAnnounce | `0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5` | Anchor's own |
 
-**Attestor addresses (EVM, 2-of-2)**: `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70`
-(backend-held) and `0x229d46B4C22B5AA42fE7cDAae37cf611e726f732` (held
-offline by the operator).
+See `apps/web/deployment-manifest.json` (regenerated live by
+`scripts/generate-deployment-manifest.ts`) and
+`docs/mainnet-readiness-runbook.md`'s "Exact current addresses" table
+for the live-verified source of truth — this table is a snapshot and
+can drift.
+
+**Attestor addresses (EVM, 2-of-3, fully automated as of 2026-09-07)**:
+`0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70` (backend-held,
+`anc-hor-worker`), `0xfFC936AEab8220bFD283f3016356F67EEb32130B`
+(`anc-hor-attestor2`), `0x6F1A0EE85f08C54669E33103486D98D947Efc043`
+(`anc-hor-attestor3`) — no human co-signs a decision under the
+auto-attestor's dollar cap anymore; see `docs/multisig-attestor-setup.md`
+for the retired offline-key design this replaced, and
+`docs/mainnet-readiness-runbook.md` for why operator independence
+across these three signers is still not real (same Fly account/org as
+the backend worker, raw keys in Fly secrets rather than KMS/HSM).
 
 **Governance Safe owners (2-of-2)**: `0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb`
 (deployer/dispatch key) and `0xEDc300fb7Bd8437C90aF68393381514722FE128c`
-(held offline by the operator, distinct from the attestor key above).
+(governance key) — distinct from every attestor key above, on purpose.
+Operator independence between these two owners is unverified.
 
-**Validator addresses**: `0x2ffFd80d446835214EF87Eb3753B48935550f73f`
-(validator1) and `0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3` (validator2).
+**Validator addresses (2-of-3)**: `0x2ffFd80d446835214EF87Eb3753B48935550f73f`
+(validator1, Fly), `0xf171c23607b892797Eb5eb4e52fc668f924Df0A3`
+(validator2, AWS), `0x4dbc8704ebD282535d64Be6daDF2a477C543114D`
+(validator3, AWS, different account than validator2).
 
 ### Solana Testnet
 
@@ -609,39 +648,60 @@ don't auto-start after a config-only deploy — needs an explicit
 
 Stated plainly, not swept under anything:
 
-1. **Validator operator independence.** Both Hyperlane validators
-   currently run under one operator's Fly.io account. Real security
-   needs a second/third genuinely independent operator (different
-   person, different account or provider). The mechanism itself
-   (validator binary, S3 checkpoint storage, on-chain announcement, a
-   real multisig ISM) is proven and working — adding a real second
-   operator is a documented runbook
-   (`chains/hyperlane-validator/README.md`), not a redesign.
-2. **Solana-side transport ISM is still permissive.** `TRUSTED_ISM` in
-   `decision-relay` always accepts. Narrower exposure than the EVM gap
-   was, since real fund movement is independently gated by Solana-side
-   M-of-N attestation, but not closed. A real Sealevel multisig ISM is
-   unattempted work.
-3. **No automated Solana co-signing queue.** `submitAttestedSettle`
-   supports collecting an external signature (`externalAttestations`
-   parameter), proven working live, but nothing in the automatic
-   dispatch path calls it yet — a real Solana settlement today needs a
-   manual signature-collection step, unlike the EVM side's
-   `/api/internal/pending-attestations` API.
-4. **`AUDIT_ANCHOR_PRIVATE_KEY` is backend-held**, not offline like the
+1. **Validator operator independence is real but only partial.** As of
+   the 2026-09-06 validator2 replacement, all three Hyperlane validators
+   run under distinct operators/accounts (validator1: Fly under
+   `priscilla-george-personal`; validator2/validator3: separate AWS
+   accounts). Cloud-provider independence is not achieved — validator2
+   and validator3 are both AWS, just different accounts. See
+   `docs/mainnet-readiness-runbook.md` §0 for the tracked, verified
+   status.
+2. **Solana-side transport ISM is real but unproven end-to-end.**
+   `decision-relay` now returns `REAL_MULTISIG_ISM`, Anchor's own
+   deployment of `hyperlane-sealevel-multisig-ism-message-id` with the
+   same 2-of-3 validator set as EVM (the old always-accepting
+   `TRUSTED_ISM` is kept only for rollback). This closes the "permissive
+   ISM" gap, but it has not yet had `ISM_MIGRATION.md`'s 8-point testnet
+   proof run against it — do not call it "secure" or "independent" until
+   that's done. Regardless, this is a transport-layer gap only: real
+   fund movement is independently gated by Solana-side M-of-N
+   attestation (`attested_settle`), which a compromised or bypassed ISM
+   cannot itself authorize.
+3. **EVM and Solana attestor sets are 2-of-3 but not operator-independent.**
+   As of 2026-09-07, both chains moved from "backend + one offline human
+   key" to a fully automated 2-of-3 set (`anc-hor-attestor2`/`anc-hor-attestor3`,
+   each gated by a dollar cap in `apps/web/src/lib/auto-attestor/policy.ts`).
+   This closes the old "no automated Solana co-signing queue" gap and
+   removes the human-in-the-loop bottleneck on both chains, but it is
+   **not** genuine custody independence: the two new signers run on the
+   same Fly account/org as the backend worker, with raw keys in Fly
+   secrets rather than KMS/HSM-held keys in separate cloud accounts. A
+   compromise of that Fly account or its secrets store could plausibly
+   reach all three EVM keys or all three Solana keys. See
+   `docs/mainnet-readiness-runbook.md` and `docs/multisig-attestor-setup.md`.
+4. **`AUDIT_ANCHOR_PRIVATE_KEY` is backend-held**, not split like the
    attestor keys — a compromise of the backend can still tamper with
    future anchors (though not past ones, since those are already on an
    immutable public chain).
 5. **AWS IAM policy for the validator S3 bucket is `AmazonS3FullAccess`**,
-   not scoped down to just that one bucket.
+   not scoped down to just that one bucket (not re-verified this pass —
+   see `docs/self-hosted-validator-setup.md`).
 6. **Evidence provenance, KYC/consent workflows, chargeback-network
    compatibility** are explicitly out of scope — real regulatory/business
    work, not something to fake or half-build.
-7. **The example test dispatch through the new multisig ISM** was still
-   waiting on the self-hosted relayer's indexing catch-up as of the last
-   check in this session — confirm current delivery status via the
-   Hyperlane explorer or `Mailbox.delivered(messageId)` before assuming
-   it landed.
+7. **Governance Safe (2-of-2) and attestor-signer operator independence
+   are both explicitly tracked as unverified**, not assumed — see
+   `docs/mainnet-readiness-runbook.md`'s trust-layer independence
+   diagram, which is the authoritative, continuously-updated version of
+   this list's custody-related items.
+8. **No PDF/downloadable receipt rendering** and **no Python SDK** — the
+   receipts/analytics work in this repo covers structured JSON receipts
+   and the TypeScript SDK (`packages/anchor-sdk`) only.
+9. **No true low-confidence-triggered human escalation.** GenLayer's
+   Optimistic Democracy consensus doesn't expose a confidence score —
+   escalation to a human reviewer is triggered by policy rules (amount
+   thresholds, disagreement among validators, appeal filed), not by the
+   adjudicator itself reporting low confidence.
 
 ---
 

@@ -66,14 +66,26 @@ deployed instance adjudicates one case:
 
 ## Status
 
-**Deployed and running a real end-to-end adjudication on GenLayer StudioNet.**
+**Deployed and running a real end-to-end adjudication on GenLayer.**
+
+As of 2026-09-08, Anchor has migrated off StudioNet (chain 61999) onto
+Studio Next / Studio-dev (chain 61997, v0.6 RC fee stack) — this is now the
+default network (`GENLAYER_NETWORK=studioDevnet` in `apps/web/src/lib/genlayer.ts`
+and `packages/genlayer-sdk/index.ts`). `GENLAYER_NETWORK=studionet` still
+targets the old 61999 network and is kept as an explicit opt-in fallback,
+not removed, but it is no longer what Anchor runs against by default. The
+findings and verified runs below were captured against StudioNet while it
+was still the active network; they remain accurate as history but should
+not be read as describing the current default network.
 
 - Plugins installed and loaded: `genlayer-dev@genlayerlabs`, `genlayer-docs@genlayerlabs`.
-- GenLayer CLI configured: `genlayer network set studionet`, account
-  `anchor-dev` imported from the throwaway key in `apps/web/.env` (gitignored).
+- GenLayer CLI configured: `genlayer network set studionet` (at the time),
+  account `anchor-dev` imported from the throwaway key in `apps/web/.env`
+  (gitignored).
 - `genvm-lint check contracts/adjudicator.py` passes clean.
 - Direct-mode test suite (`tests/direct/test_adjudicator.py`, 7 cases) passes.
-- **Live deploy confirmed**: contract deployed to StudioNet, `adjudicate()`
+- **Live deploy confirmed**: contract deployed to StudioNet (then the active
+  network), `adjudicate()`
   called with a real task spec/delivery/statements, 5 independent validators
   ran their own LLM evaluation (4 AGREE, 1 DISAGREE — genuine independent
   variance, not template matching), reached `MAJORITY_AGREE`, and
@@ -186,5 +198,9 @@ and full rationale in its header comment.
   consensus) — fine for now, but a production version should move this to
   a background job so the case sits in `ADJUDICATING` and a webhook/poll
   picks up the result, per the architecture notes in the root README.
-- Hyperlane relay dispatch (`docs/hyperlane-integration.md`) — not wired
-  yet; the decision is persisted but not relayed cross-chain.
+
+Hyperlane relay dispatch is no longer on this list: `apps/web/src/lib/adjudication-service.ts`
+now calls `dispatchDecisionForCase` (`apps/web/src/lib/hyperlane.ts`)
+automatically once a decision is persisted, auto-dispatching to both Sepolia
+`DecisionRelay` and Solana `decision-relay` — see `docs/hyperlane-integration.md`
+for the wired, proven end-to-end path.
