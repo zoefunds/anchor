@@ -18,10 +18,9 @@ import {EscrowUSDC} from "../contracts/EscrowUSDC.sol";
 //
 // Requires USDC_TOKEN_ADDRESS — defaults to Circle's official Sepolia
 // testnet USDC deployment, 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238.
-// This default has NOT been independently re-verified against a live
-// RPC call in this environment (no Sepolia RPC access available here)
-// — re-confirm symbol()=="USDC" and decimals()==6 against this address
-// before ever broadcasting a real deployment against it.
+// Verified live via eth_call on 2026-09-09: symbol() == "USDC",
+// decimals() == 6, and eth_getCode confirms a real EIP-1967 transparent
+// proxy (matches Circle's real USDC deployment pattern).
 //
 // Requires DECISION_RELAY_ADDRESS and DEPOSIT_AUTHORIZER_ADDRESS — same
 // meaning as DeployEscrow.s.sol's own (this is the same already-deployed

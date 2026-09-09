@@ -1,6 +1,7 @@
 import { type Address } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { ESCROW_DEPLOYED_BYTECODE_TEMPLATE, ESCROW_IMMUTABLE_BYTE_RANGES } from "@/lib/escrow-code-reference";
+import { ESCROW_USDC_DEPLOYED_BYTECODE_TEMPLATE, ESCROW_USDC_IMMUTABLE_BYTE_RANGES } from "@/lib/escrow-usdc-code-reference";
 
 // Security-audit fix (finding #4, 2026-09-04): escrow-version.ts's own
 // detection (deposits() return-length) only proves an address's ABI
@@ -60,7 +61,20 @@ function normalize(rawHex: string): string {
   return maskImmutables(stripCborMetadata(withoutPrefix.toLowerCase()));
 }
 
+function normalizeWithRanges(rawHex: string, ranges: ReadonlyArray<readonly [number, number]>): string {
+  const withoutPrefix = rawHex.startsWith("0x") ? rawHex.slice(2) : rawHex;
+  const stripped = stripCborMetadata(withoutPrefix.toLowerCase());
+  const chars = stripped.split("");
+  for (const [start, length] of ranges) {
+    const startHex = start * 2;
+    const endHex = (start + length) * 2;
+    for (let i = startHex; i < endHex && i < chars.length; i++) chars[i] = "0";
+  }
+  return chars.join("");
+}
+
 const EXPECTED_NORMALIZED = normalize(ESCROW_DEPLOYED_BYTECODE_TEMPLATE);
+const EXPECTED_USDC_NORMALIZED = normalizeWithRanges(ESCROW_USDC_DEPLOYED_BYTECODE_TEMPLATE, ESCROW_USDC_IMMUTABLE_BYTE_RANGES);
 
 /**
  * Real code-identity check — throws EscrowCodeIdentityError (never
@@ -84,6 +98,30 @@ export async function verifyEscrowCodeIdentity(escrowContractAddress: Address): 
   if (liveNormalized !== EXPECTED_NORMALIZED) {
     throw new EscrowCodeIdentityError(
       `${escrowContractAddress}'s deployed bytecode does not match Anchor's own real Escrow.sol (even after masking immutable constructor args and compiler metadata) — this is not a genuine Escrow deployment, or it is a proxy/upgradeable contract, neither of which this system trusts to hold real funds.`
+    );
+  }
+}
+
+/**
+ * Same discipline as verifyEscrowCodeIdentity, against EscrowUSDC.sol's
+ * own compiled reference instead — needed because EscrowUSDC's
+ * deposits() returns the identical 192-byte shape as native V2
+ * (status, claimant, respondent, amount, caseId, depositedAt — same 6
+ * fields), so the shape probe alone cannot tell them apart. A contract
+ * that passes the usdcToken() getter probe (see escrow-version.ts) but
+ * isn't byte-identical real EscrowUSDC code is rejected outright.
+ */
+export async function verifyEscrowUsdcCodeIdentity(escrowContractAddress: Address): Promise<void> {
+  const client = getEvmPublicClient();
+  const liveCode = await client.getCode({ address: escrowContractAddress });
+  if (!liveCode || liveCode === "0x") {
+    throw new EscrowCodeIdentityError(`no code at all found at ${escrowContractAddress} — not a deployed contract`);
+  }
+
+  const liveNormalized = normalizeWithRanges(liveCode, ESCROW_USDC_IMMUTABLE_BYTE_RANGES);
+  if (liveNormalized !== EXPECTED_USDC_NORMALIZED) {
+    throw new EscrowCodeIdentityError(
+      `${escrowContractAddress}'s deployed bytecode does not match Anchor's own real EscrowUSDC.sol (even after masking immutable constructor args and compiler metadata) — this is not a genuine EscrowUSDC deployment, or it is a proxy/upgradeable contract, neither of which this system trusts to hold real funds.`
     );
   }
 }

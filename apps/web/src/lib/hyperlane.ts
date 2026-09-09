@@ -123,11 +123,11 @@ export function isApprovedSettlementContract(chain: string, address: string): bo
 // never interchangeable (settling a USDC case against an ETH escrow's
 // address, or vice versa, would be a real fund-safety bug, not merely
 // a config error), so conflating the two lists would make that mistake
-// possible even with both defaults present. Empty by default —
-// EscrowUSDC has not been deployed to Sepolia by this change (see
-// chains/evm/deploy/DeployEscrowUSDC.s.sol) — override via env once a
-// real deployment exists.
-const DEFAULT_APPROVED_SEPOLIA_USDC_ESCROWS: string[] = [];
+// possible even with both defaults present. Deployed 2026-09-09 (see
+// environment-registry.ts's sepolia.addresses.escrowUsdc for the tx
+// hash and constructor args) — override via env only for a genuinely
+// new approved integration, never to loosen this.
+const DEFAULT_APPROVED_SEPOLIA_USDC_ESCROWS: string[] = ["0x87e94aac03f1a032b264e035fd41a76bcdc802e2"];
 
 /**
  * Track 2, item 1 — "reject arbitrary ERC-20 token addresses" and

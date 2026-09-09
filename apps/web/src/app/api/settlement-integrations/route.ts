@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
   }
 
   let escrowContractAddress: string;
-  let escrowVersion: "V1" | "V2" | "SOLANA_V1";
+  let escrowVersion: "V1" | "V2" | "USDC_V1" | "SOLANA_V1";
 
   if (chain === "solanatestnet") {
     const escrowProgramId = normalizeSolanaAddress(body.escrowContractAddress);

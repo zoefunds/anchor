@@ -54,7 +54,7 @@ export interface CutoverReadinessReport {
   blockingReasons: string[];
 }
 
-async function scanUnsettledDeposits(escrowAddress: Address, version: "V1" | "V2", fromBlock: bigint): Promise<{ everMade: number; unsettled: string[] }> {
+async function scanUnsettledDeposits(escrowAddress: Address, version: "V1" | "V2" | "USDC_V1", fromBlock: bigint): Promise<{ everMade: number; unsettled: string[] }> {
   const client = getEvmPublicClient();
   const latest = await client.getBlockNumber();
   const escrowIds = new Set<string>();

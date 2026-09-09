@@ -90,18 +90,23 @@ export const ANCHOR_ENVIRONMENTS: Record<AnchorEnvironmentId, AnchorEnvironment>
     addresses: {
       decisionRelay: "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
       interchainSecurityModule: "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0",
-      // Track 2 — not yet deployed (see chains/evm/deploy/DeployEscrowUSDC.s.sol,
-      // which has NOT been broadcast). Left unset here on purpose:
-      // isApprovedUsdcEscrow must reject every address until a real
-      // deployment's address is filled in here deliberately, never
-      // guessed or left implicit.
-      escrowUsdc: undefined,
+      // Track 2 — deployed 2026-09-09 via
+      // chains/evm/deploy/DeployEscrowUSDC.s.sol, tx
+      // 0xb49c1002f9621ad258f3ef8cd69c48315cd5cd66c2a65e7a22a248e94cbbeb06,
+      // confirmed on-chain (status: true). Constructor args: usdcToken
+      // (the entry above), decisionRelay (this environment's own
+      // decisionRelay address), depositAuthorizer =
+      // 0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb (the same backend
+      // dispatch wallet already trusted as decisionRelay's
+      // trustedSender — see DeployEscrowUSDC.s.sol's own header for why).
+      escrowUsdc: "0x87e94aac03f1a032b264e035fd41a76bcdc802e2",
     },
-    // Circle's official Sepolia testnet USDC deployment. NOT
-    // independently re-verified via a live RPC call in this sandbox (no
-    // Sepolia RPC access available here) — re-confirm symbol()=="USDC"
-    // and decimals()==6 against this address before relying on it for
-    // anything beyond this prepare-only registry entry.
+    // Circle's official Sepolia testnet USDC deployment. Verified live
+    // via eth_call on 2026-09-09 against ethereum-sepolia.publicnode.com:
+    // symbol() == "USDC", decimals() == 6, and eth_getCode confirms a
+    // real EIP-1967 transparent proxy (matches Circle's real USDC
+    // deployment pattern) — not merely trusted from a publicly
+    // documented address.
     usdc: {
       tokenAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
       decimals: 6,

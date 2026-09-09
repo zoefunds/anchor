@@ -2,7 +2,7 @@ import { type Address, type Hex, encodeFunctionData } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { prisma } from "@/lib/prisma";
 import { logAction } from "@/lib/audit";
-import { verifyEscrowCodeIdentity, EscrowCodeIdentityError } from "@/lib/escrow-code-identity";
+import { verifyEscrowCodeIdentity, verifyEscrowUsdcCodeIdentity, EscrowCodeIdentityError } from "@/lib/escrow-code-identity";
 
 // Priority 2 (settlement-readiness gaps): explicit, verified
 // contract-version detection — never an assumption from "which address
@@ -39,8 +39,32 @@ const DEPOSITS_SELECTOR_ABI = [
 const V1_RETURN_BYTES = 128; // status, claimant, respondent, amount
 const V2_RETURN_BYTES = 192; // + caseId, + depositedAt
 
+// EscrowUSDC.sol's deposits() returns this SAME 192-byte shape as V2
+// (status, claimant, respondent, amount, caseId, depositedAt) — shape
+// alone cannot distinguish them. usdcToken() is the real distinguishing
+// signal: a public immutable getter EscrowUSDC exposes that native
+// Escrow.sol has no equivalent of at all (V1 or V2).
+const USDC_TOKEN_GETTER_ABI = [
+  { type: "function", name: "usdcToken", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
+
 export class UnknownEscrowVersionError extends Error {}
 export class EscrowVersionMismatchError extends Error {}
+
+async function probeUsdcTokenGetter(escrowContractAddress: Address): Promise<Address | null> {
+  const client = getEvmPublicClient();
+  const data = encodeFunctionData({ abi: USDC_TOKEN_GETTER_ABI, functionName: "usdcToken" });
+  try {
+    const result = await client.call({ to: escrowContractAddress, data });
+    const raw = result.data;
+    if (!raw || raw.length !== 66) return null; // 0x + 64 hex chars = one padded address slot
+    const address = ("0x" + raw.slice(-40)) as Address;
+    if (address === "0x0000000000000000000000000000000000000000") return null;
+    return address;
+  } catch {
+    return null; // no usdcToken() function at all — not an EscrowUSDC contract
+  }
+}
 
 async function probeDepositsReturnLength(escrowContractAddress: Address): Promise<number> {
   const client = getEvmPublicClient();
@@ -74,6 +98,8 @@ function versionForReturnLength(byteLength: number): "V1" | "V2" {
   );
 }
 
+export type EscrowContractVersion = "V1" | "V2" | "USDC_V1";
+
 /**
  * Called once, at registration time (POST /api/settlement-integrations)
  * — establishes the real, verified version a new integration is
@@ -92,7 +118,13 @@ function versionForReturnLength(byteLength: number): "V1" | "V2" {
  * legacy/frozen — no new V1 integrations are expected) and is
  * unaffected.
  */
-export async function detectEscrowVersion(escrowContractAddress: Address): Promise<"V1" | "V2"> {
+export async function detectEscrowVersion(escrowContractAddress: Address): Promise<EscrowContractVersion> {
+  const usdcTokenAddress = await probeUsdcTokenGetter(escrowContractAddress);
+  if (usdcTokenAddress !== null) {
+    await verifyEscrowUsdcCodeIdentity(escrowContractAddress);
+    return "USDC_V1";
+  }
+
   const byteLength = await probeDepositsReturnLength(escrowContractAddress);
   const version = versionForReturnLength(byteLength);
   if (version === "V2") {
@@ -120,7 +152,26 @@ export async function detectEscrowVersion(escrowContractAddress: Address): Promi
  * unconditionally regardless of its current implementation, since a
  * proxy's own bytecode is never byte-identical to real Escrow logic.
  */
-export async function verifyEscrowVersionUnchanged(params: { integrationId: string; escrowContractAddress: Address; expectedVersion: "V1" | "V2" }): Promise<void> {
+export async function verifyEscrowVersionUnchanged(params: { integrationId: string; escrowContractAddress: Address; expectedVersion: EscrowContractVersion }): Promise<void> {
+  if (params.expectedVersion === "USDC_V1") {
+    const usdcTokenAddress = await probeUsdcTokenGetter(params.escrowContractAddress);
+    if (usdcTokenAddress === null) {
+      await recordVersionMismatch(params.integrationId, params.escrowContractAddress, "no usdcToken() getter found", params.expectedVersion);
+      throw new EscrowVersionMismatchError(
+        `escrow ${params.escrowContractAddress} no longer exposes usdcToken() — SettlementIntegration ${params.integrationId} was registered as USDC_V1. This usually means the contract at this address was redeployed after registration.`
+      );
+    }
+    try {
+      await verifyEscrowUsdcCodeIdentity(params.escrowContractAddress);
+    } catch (err) {
+      if (err instanceof EscrowCodeIdentityError) {
+        await recordVersionMismatch(params.integrationId, params.escrowContractAddress, "USDC_V1 (usdcToken() present, but code identity does not match — possible proxy or malicious replacement)", params.expectedVersion);
+      }
+      throw err;
+    }
+    return;
+  }
+
   const byteLength = await probeDepositsReturnLength(params.escrowContractAddress);
   let liveVersion: "V1" | "V2";
   try {
@@ -199,7 +250,7 @@ async function recordVersionMismatch(integrationId: string, escrowContractAddres
 }
 
 /** The version-appropriate deposits() ABI — this is the ONE place in the codebase that should ever construct this ABI; every reader (case-settlement.ts, escrow.ts, reconciliation.ts) should call this instead of hardcoding a shape. */
-export function depositsAbiForVersion(version: "V1" | "V2") {
+export function depositsAbiForVersion(version: EscrowContractVersion) {
   const base = [
     { name: "status", type: "uint8" },
     { name: "claimant", type: "address" },
@@ -210,6 +261,9 @@ export function depositsAbiForVersion(version: "V1" | "V2") {
     { name: "caseId", type: "bytes32" },
     { name: "depositedAt", type: "uint256" },
   ] as const;
+  // USDC_V1's Deposit struct is field-for-field identical to V2's
+  // (see EscrowUSDC.sol's own Deposit struct) — same ABI, distinct
+  // EscrowVersion value only for audit/code-identity clarity.
   return [
     {
       type: "function",
