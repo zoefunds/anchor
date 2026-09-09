@@ -44,6 +44,12 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mockFindUnique,
       update: mockCaseSettlementUpdate,
     },
+    // dispatchDecisionForCase unconditionally calls
+    // assertKycPolicyRequirementMet (lib/kyc/kyc-gate.ts), which reads
+    // prisma.case — a no-bound-policy result makes it a real no-op,
+    // matching this suite's actual scope (settlement-target binding,
+    // not KYC gating).
+    case: { findUnique: vi.fn().mockResolvedValue({ policyVersionRecordId: null, policyVersionRecord: null }) },
   },
 }));
 

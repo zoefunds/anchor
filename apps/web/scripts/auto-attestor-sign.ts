@@ -62,38 +62,54 @@ async function processOnce(signer: KmsSigner, apiBaseUrl: string, cosignSecret: 
   });
 
   for (const decision of candidates) {
-    const hash = decision.pendingAttestationHash as Hex;
+    // Real incident, 2026-09-09: a single decision with a malformed
+    // pendingAttestationHash (a leftover test placeholder, not a real
+    // hash) threw out of this loop body unhandled, aborting the ENTIRE
+    // poll iteration — every other real, legitimately pending decision
+    // queued in the same batch silently never got processed, on every
+    // single poll tick, for as long as that one bad record existed.
+    // Isolating each decision's processing means one corrupt/malformed
+    // record can only ever block itself, never its neighbors.
+    try {
+      const hash = decision.pendingAttestationHash as Hex;
+      if (!isHex(hash)) {
+        console.error(`[auto-attestor] skipping decision ${decision.id}: pendingAttestationHash is not valid hex (${JSON.stringify(hash)})`);
+        continue;
+      }
 
-    const alreadySigned = await Promise.all(
-      decision.pendingAttestationSignatures.map(async (sig) => {
-        try {
-          return (await recoverAddress({ hash, signature: sig as Hex })).toLowerCase() === signer.address.toLowerCase();
-        } catch {
-          return false;
-        }
-      })
-    );
-    if (alreadySigned.some(Boolean)) continue;
+      const alreadySigned = await Promise.all(
+        decision.pendingAttestationSignatures.map(async (sig) => {
+          try {
+            return (await recoverAddress({ hash, signature: sig as Hex })).toLowerCase() === signer.address.toLowerCase();
+          } catch {
+            return false;
+          }
+        })
+      );
+      if (alreadySigned.some(Boolean)) continue;
 
-    const eligibility = await checkAutoSignEligibility(decision.id);
-    if (!eligibility.eligible) {
-      console.log(`[auto-attestor] skipping decision ${decision.id}: ${eligibility.reason}`);
-      continue;
+      const eligibility = await checkAutoSignEligibility(decision.id);
+      if (!eligibility.eligible) {
+        console.log(`[auto-attestor] skipping decision ${decision.id}: ${eligibility.reason}`);
+        continue;
+      }
+
+      const signature = await signer.sign(hash);
+
+      const res = await fetch(`${apiBaseUrl}/api/internal/pending-attestations/${decision.id}/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cosignSecret}` },
+        body: JSON.stringify({ signature }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        console.error(`[auto-attestor] decision ${decision.id}: sign submission failed (${res.status}):`, body);
+        continue;
+      }
+      console.log(`[auto-attestor] decision ${decision.id}: signed as ${signer.address} — ${JSON.stringify(body)}`);
+    } catch (err) {
+      console.error(`[auto-attestor] decision ${decision.id}: failed, continuing with remaining candidates:`, err);
     }
-
-    const signature = await signer.sign(hash);
-
-    const res = await fetch(`${apiBaseUrl}/api/internal/pending-attestations/${decision.id}/sign`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cosignSecret}` },
-      body: JSON.stringify({ signature }),
-    });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) {
-      console.error(`[auto-attestor] decision ${decision.id}: sign submission failed (${res.status}):`, body);
-      continue;
-    }
-    console.log(`[auto-attestor] decision ${decision.id}: signed as ${signer.address} — ${JSON.stringify(body)}`);
   }
 }
 

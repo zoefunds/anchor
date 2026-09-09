@@ -51,30 +51,43 @@ async function processOnce(signer: ReturnType<typeof loadKeypair>, apiBaseUrl: s
   });
 
   for (const decision of candidates) {
-    const already = (decision.pendingSolanaAttestations as { publicKey: string }[] | null) ?? [];
-    const publicKeyBuffer = new PublicKey(signer.publicKeyBase58).toBytes();
-    const publicKeyBase64 = Buffer.from(publicKeyBuffer).toString("base64");
-    if (already.some((a) => a.publicKey === publicKeyBase64)) continue;
+    // Same isolation fix as auto-attestor-sign.ts's identical bug (real
+    // incident, 2026-09-09): one malformed decision must never abort
+    // processing of every other decision queued behind it in this batch.
+    try {
+      const already = (decision.pendingSolanaAttestations as { publicKey: string }[] | null) ?? [];
+      const publicKeyBuffer = new PublicKey(signer.publicKeyBase58).toBytes();
+      const publicKeyBase64 = Buffer.from(publicKeyBuffer).toString("base64");
+      if (already.some((a) => a.publicKey === publicKeyBase64)) continue;
 
-    const eligibility = await checkAutoSignEligibility(decision.id);
-    if (!eligibility.eligible) {
-      console.log(`[auto-attestor-solana] skipping decision ${decision.id}: ${eligibility.reason}`);
-      continue;
+      const eligibility = await checkAutoSignEligibility(decision.id);
+      if (!eligibility.eligible) {
+        console.log(`[auto-attestor-solana] skipping decision ${decision.id}: ${eligibility.reason}`);
+        continue;
+      }
+
+      const message = decision.pendingSolanaAttestationMessage as string;
+      if (!/^(0x)?[0-9a-fA-F]+$/.test(message)) {
+        console.error(`[auto-attestor-solana] skipping decision ${decision.id}: pendingSolanaAttestationMessage is not valid hex (${JSON.stringify(message)})`);
+        continue;
+      }
+
+      const signature = "0x" + signer.sign(message);
+
+      const res = await fetch(`${apiBaseUrl}/api/internal/pending-solana-attestations/${decision.id}/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cosignSecret}` },
+        body: JSON.stringify({ publicKey: signer.publicKeyBase58, signature }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        console.error(`[auto-attestor-solana] decision ${decision.id}: sign submission failed (${res.status}):`, body);
+        continue;
+      }
+      console.log(`[auto-attestor-solana] decision ${decision.id}: signed as ${signer.publicKeyBase58} — ${JSON.stringify(body)}`);
+    } catch (err) {
+      console.error(`[auto-attestor-solana] decision ${decision.id}: failed, continuing with remaining candidates:`, err);
     }
-
-    const signature = "0x" + signer.sign(decision.pendingSolanaAttestationMessage as string);
-
-    const res = await fetch(`${apiBaseUrl}/api/internal/pending-solana-attestations/${decision.id}/sign`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cosignSecret}` },
-      body: JSON.stringify({ publicKey: signer.publicKeyBase58, signature }),
-    });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) {
-      console.error(`[auto-attestor-solana] decision ${decision.id}: sign submission failed (${res.status}):`, body);
-      continue;
-    }
-    console.log(`[auto-attestor-solana] decision ${decision.id}: signed as ${signer.publicKeyBase58} — ${JSON.stringify(body)}`);
   }
 }
 

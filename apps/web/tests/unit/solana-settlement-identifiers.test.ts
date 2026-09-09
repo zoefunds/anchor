@@ -17,6 +17,12 @@ const mockCaseSettlementFindUnique = vi.fn();
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     caseSettlement: { findUnique: mockCaseSettlementFindUnique },
+    // dispatchDecisionForCase unconditionally calls
+    // assertKycPolicyRequirementMet (lib/kyc/kyc-gate.ts), which reads
+    // prisma.case — a no-bound-policy result makes it a real no-op,
+    // matching this suite's actual scope (Solana identifier
+    // distinctness, not KYC gating).
+    case: { findUnique: vi.fn().mockResolvedValue({ policyVersionRecordId: null, policyVersionRecord: null }) },
   },
 }));
 
