@@ -74,7 +74,21 @@ async function main() {
   // Real, honest flags — not just data. A manifest that only dumps
   // values without calling out the actual governance-independence gap
   // is exactly the kind of doc drift this script exists to prevent.
+  //
+  // `flags` is reserved for genuine DRIFT — something that could change
+  // back to healthy on its own (a governance action, a threshold fix) —
+  // because startup-checks.ts fails every signer/worker process closed
+  // on any non-empty flags[]. A static, already-accepted-for-testnet
+  // fact that can never resolve (like "this Safe is 2-of-2") belongs in
+  // `knownLimitations` instead: informational, never gates startup. Real
+  // incident, 2026-09-09: putting the 2-of-2 note in `flags` took down
+  // anc-hor-worker and both attestors in production the moment this
+  // manifest was ever checked by a process that actually enforced it —
+  // that check was correctly fail-closed, but this categorization
+  // wasn't, and a fact that never resolves must never live where "never
+  // resolves" means "never boots again."
   const flags: string[] = [];
+  const knownLimitations: string[] = [];
   if (owner.toLowerCase() !== SAFE.toLowerCase()) {
     flags.push(`DecisionRelay.owner() (${owner}) is NOT the expected Safe (${SAFE}) — governance may have been reassigned to an EOA or a different contract.`);
   }
@@ -85,7 +99,7 @@ async function main() {
     flags.push(`Safe threshold (${safeThreshold}) is below 2 — a single compromised owner key could unilaterally change governance.`);
   }
   if (safeOwners.length === 2 && Number(safeThreshold) === 2) {
-    flags.push("Safe is 2-of-2 with only 2 owners — no redundancy if either owner's key is lost; operator independence between these two owners is UNVERIFIED (see governance-manifest.md for tracked status).");
+    knownLimitations.push("Safe is 2-of-2 with only 2 owners — no redundancy if either owner's key is lost; operator independence between these two owners is UNVERIFIED (see docs/mainnet-custody-design.md for tracked status).");
   }
 
   const manifest = {
@@ -111,6 +125,7 @@ async function main() {
       nonce: safeNonce.toString(),
     },
     flags,
+    knownLimitations,
   };
 
   // Compute codehash from the fetched bytecode (a real, independent

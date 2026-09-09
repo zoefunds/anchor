@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-07T14:49:06.420Z",
+  "generatedAt": "2026-09-09T04:16:05.716Z",
   "generatedBy": "scripts/generate-deployment-manifest.ts",
   "network": {
     "chain": "sepolia",
@@ -33,7 +33,8 @@
     "threshold": "2",
     "nonce": "17"
   },
-  "flags": [
-    "Safe is 2-of-2 with only 2 owners — no redundancy if either owner's key is lost; operator independence between these two owners is UNVERIFIED (see governance-manifest.md for tracked status)."
+  "flags": [],
+  "knownLimitations": [
+    "Safe is 2-of-2 with only 2 owners — no redundancy if either owner's key is lost; operator independence between these two owners is UNVERIFIED (see docs/mainnet-custody-design.md for tracked status)."
   ]
 }

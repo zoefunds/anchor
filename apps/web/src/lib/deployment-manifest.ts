@@ -10,7 +10,7 @@ import { verifyManifestHash } from "@/lib/manifest-signature";
 // regenerate either file, and update these constants in the same commit —
 // an unreviewed manifest change without a matching hash update is exactly
 // the drift verifyManifestHash() below exists to catch.
-const EXPECTED_EVM_MANIFEST_HASH = "1b54e1a5d4f99ed7641b5b5c16673fbc33ef8395f13b2e2cca317b21e010bf2c";
+const EXPECTED_EVM_MANIFEST_HASH = "5116cdc5249607c71269e61c84faf6655ae7e26e51fcb1078b705beaca2fc1bc";
 const EXPECTED_SOLANA_MANIFEST_HASH = "93637df98778c03d223cb2258ae4098bbc67d941c0ff5a4a0376cf8c73a440b5";
 
 // Phase 1 (signer/settlement/delivery reliability), item 1's "expected
@@ -42,7 +42,25 @@ export interface EvmDeploymentManifest {
     interchainSecurityModule: string;
     attestors: { active: string[]; checkedButInactive: string[] };
   };
+  // Genuine governance-drift signals (owner reassigned away from the
+  // Safe, threshold exceeding the active attestor set, Safe threshold
+  // below 2) — a real, transient, resolvable problem. startup-checks.ts
+  // fails closed on these because they mean the deployed relay's
+  // governance is in a state this process has no way to reason about
+  // safely.
   flags: string[];
+  // Static, already-documented, ALREADY-ACCEPTED-for-testnet facts about
+  // this deployment (e.g. "Safe is 2-of-2, operator independence
+  // unverified" — see docs/multisig-attestor-setup.md) that will never
+  // resolve short of a real governance change and were never meant to
+  // block a process from starting — they're the reason
+  // docs/mainnet-custody-design.md and docs/mainnet-readiness-gate.md
+  // exist, not something a signer/worker restart can fix. Distinct from
+  // `flags` specifically so a real, permanent, known limitation can
+  // never accidentally become a permanent inability to boot at all —
+  // that conflation is exactly what took anc-hor-worker and both
+  // attestors down in production on 2026-09-09 before this fix.
+  knownLimitations: string[];
 }
 
 export interface SolanaDeploymentManifest {
