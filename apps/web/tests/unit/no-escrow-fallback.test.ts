@@ -25,6 +25,11 @@ vi.mock("viem", async (importOriginal) => {
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     caseSettlement: { findUnique: vi.fn().mockResolvedValue(null) },
+    // dispatchDecisionForCase unconditionally calls
+    // assertKycPolicyRequirementMet (lib/kyc/kyc-gate.ts), which reads
+    // prisma.case — a no-bound-policy result makes it a real no-op,
+    // matching this suite's actual scope (the no-escrow fallback path).
+    case: { findUnique: vi.fn().mockResolvedValue({ policyVersionRecordId: null, policyVersionRecord: null }) },
   },
 }));
 

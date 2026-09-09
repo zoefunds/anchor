@@ -40,6 +40,12 @@ afterAll(async () => {
   const decisionIds = decisions.map((d) => d.id);
   await prisma.reconciliationFinding.deleteMany({ where: { type: "RELAY_RETRIES_EXHAUSTED", targetId: { in: decisionIds } } });
   await prisma.signerLifecycleEvent.deleteMany({ where: { decisionId: { in: decisionIds } } });
+  // Track 5's SETTLEMENT_FAILED escalation trigger (MAX_RELAY_ATTEMPTS
+  // exhaustion — exactly what this suite exercises) can open a
+  // CaseReview; its FK on Case must be cleared before case.deleteMany.
+  await prisma.caseReviewApproval.deleteMany({ where: { review: { case: { organizationId: orgId } } } });
+  await prisma.caseReviewNote.deleteMany({ where: { review: { case: { organizationId: orgId } } } });
+  await prisma.caseReview.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.decision.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.case.deleteMany({ where: { organizationId: orgId } });
   await prisma.organization.delete({ where: { id: orgId } });

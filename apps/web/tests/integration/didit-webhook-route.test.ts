@@ -28,6 +28,12 @@ afterAll(async () => {
   process.env.DIDIT_WEBHOOK_SECRET = ORIGINAL_SECRET;
   await prisma.partyVerification.deleteMany({ where: { caseId } });
   await prisma.auditLog.deleteMany({ where: { organizationId: orgId } });
+  // Track 5's KYC_SANCTIONS escalation trigger can open a CaseReview for
+  // a declined verification — its FK on Case must be cleared first, or
+  // case.deleteMany below fails closed on CaseReview_caseId_fkey.
+  await prisma.caseReviewApproval.deleteMany({ where: { review: { caseId } } });
+  await prisma.caseReviewNote.deleteMany({ where: { review: { caseId } } });
+  await prisma.caseReview.deleteMany({ where: { caseId } });
   await prisma.case.deleteMany({ where: { organizationId: orgId } });
   await prisma.organization.delete({ where: { id: orgId } });
   await prisma.$disconnect();
