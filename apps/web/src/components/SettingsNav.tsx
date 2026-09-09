@@ -28,32 +28,30 @@ export function SettingsNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="border-b border-line bg-black/[0.02] dark:border-line-dark dark:bg-white/[0.02]">
-      <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-8 py-3">
-        <Link
-          href="/cases"
-          className="shrink-0 font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
-        >
-          ← Docket
-        </Link>
-        <div className="flex flex-wrap justify-end gap-x-4 gap-y-1">
-          {SETTINGS_LINKS.map((link) => {
-            const active = pathname === link.href;
-            return (
-              <Link
-                key={link.href}
-                href={link.href}
-                className={`font-mono text-xs ${
-                  active
-                    ? "text-seal-500 dark:text-seal-400"
-                    : "text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
-                }`}
-              >
-                {link.label}
-              </Link>
-            );
-          })}
-        </div>
+    <nav className="sticky top-0 flex h-screen w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r border-line bg-black/[0.02] px-6 py-6 dark:border-line-dark dark:bg-white/[0.02]">
+      <Link
+        href="/cases"
+        className="shrink-0 font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
+      >
+        ← Docket
+      </Link>
+      <div className="flex flex-col gap-1">
+        {SETTINGS_LINKS.map((link) => {
+          const active = pathname === link.href;
+          return (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={`font-mono text-xs ${
+                active
+                  ? "text-seal-500 dark:text-seal-400"
+                  : "text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
+              }`}
+            >
+              {link.label}
+            </Link>
+          );
+        })}
       </div>
     </nav>
   );

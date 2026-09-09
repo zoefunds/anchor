@@ -11,9 +11,9 @@ export default async function SettingsLayout({ children }: { children: React.Rea
     redirect("/verify-required");
   }
   return (
-    <>
+    <div className="flex">
       <SettingsNav />
-      {children}
-    </>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
   );
 }
