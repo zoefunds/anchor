@@ -6,6 +6,7 @@ import { deliverWebhookAttempt } from "@/lib/webhooks";
 import { anchorAuditChains } from "@/lib/audit-anchor";
 import { runReconciliationSweep } from "@/lib/reconciliation";
 import { runReliabilityObservation } from "@/lib/reliability-monitor";
+import { checkReliabilityObserverHeartbeat } from "@/lib/reliability-observer-watchdog";
 import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
 import { getAttestorAccounts } from "@/lib/hyperlane";
 import { assertWorkerKeyCountBelowThreshold, StartupCheckError } from "@/lib/startup-checks";
@@ -29,6 +30,13 @@ const RECONCILIATION_SWEEP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes — sever
 // enough density for a 30-day observation window, without doubling the
 // RPC provider load of a check that runs unconditionally on every tick.
 const RELIABILITY_OBSERVATION_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+// Genuine redundancy: this worker process is separate from
+// anc-hor-reliability-observer, so it can notice when that process
+// goes silent. 10 minutes gives at least 3-4 checks inside the
+// watchdog's own 40-minute staleness window, so a real outage is
+// caught within one or two check cycles of crossing the threshold,
+// not one entire staleness window late.
+const RELIABILITY_OBSERVER_HEARTBEAT_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 let worker: Worker | null = null;
 
@@ -99,6 +107,12 @@ async function processJob(job: Job): Promise<void> {
     const { passCount, warnCount, failCount, state } = await runReliabilityObservation();
     // eslint-disable-next-line no-console
     console.log(`worker: reliability observation complete, state=${state}, ${passCount} pass, ${warnCount} warn, ${failCount} fail`);
+    return;
+  }
+  if (job.name === "check_reliability_observer_heartbeat") {
+    const status = await checkReliabilityObserverHeartbeat();
+    // eslint-disable-next-line no-console
+    console.log(`worker: reliability-observer heartbeat check complete, stale=${status.stale}, lastObservationAt=${status.lastObservationAt ?? "none"}`);
     return;
   }
   if (job.name === "anchor_audit_chains") {
@@ -241,6 +255,21 @@ async function ensureReliabilityObservationScheduled(): Promise<void> {
 }
 
 /**
+ * Registers the periodic reliability-observer heartbeat check (see
+ * lib/reliability-observer-watchdog.ts) — a different process (this
+ * worker) noticing when anc-hor-reliability-observer itself has gone
+ * silent, rather than the observer trying to watch itself. Same
+ * upsert-is-idempotent reasoning as the other sweeps.
+ */
+async function ensureReliabilityObserverHeartbeatScheduled(): Promise<void> {
+  await getAdjudicationQueue().upsertJobScheduler(
+    "reliability-observer-heartbeat-check",
+    { every: RELIABILITY_OBSERVER_HEARTBEAT_CHECK_INTERVAL_MS },
+    { name: "check_reliability_observer_heartbeat" }
+  );
+}
+
+/**
  * Idempotent — starts the BullMQ Worker once per process; safe to call
  * more than once. Created with autorun disabled so the environment guard
  * (assertDatabaseMatchesAppEnv — see lib/app-env.ts) can run and be
@@ -328,6 +357,10 @@ export async function startAdjudicationWorker(): Promise<Worker> {
   ensureReliabilityObservationScheduled().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to schedule reliability observation sweep:", err instanceof Error ? err.message : err);
+  });
+  ensureReliabilityObserverHeartbeatScheduled().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to schedule reliability-observer heartbeat check:", err instanceof Error ? err.message : err);
   });
 
   return w;
