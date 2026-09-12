@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireOwner, requireScope } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { logAction } from "@/lib/audit";
-import { toAttoAmount } from "@/lib/genlayer";
+import { toAtomicAmount } from "@/lib/money";
 import { deriveEscrowIdForCase, assertEscrowBoundToDecisionRelay, SettlementIntegrationError } from "@/lib/case-settlement";
 import { assertSolanaEscrowBoundToDecisionRelay, toLamports, SolanaEscrowError } from "@/lib/solana-escrow";
 
@@ -92,7 +92,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: `could not verify escrow contract on-chain: ${(err as Error).message}` }, { status: 502 });
   }
 
-  const expectedAmountAtto = integration.chain === "solanatestnet" ? toLamports(kase.amount.toString()).toString() : toAttoAmount(kase.amount.toString()).toString();
+  // Real bug fixed 2026-09-12: this used to call toAttoAmount
+  // unconditionally for every non-Solana integration, hardcoding 18
+  // decimals — correct for native ETH, silently wrong by 12 orders of
+  // magnitude for a USDC integration's real 6 decimals (assetDecimals
+  // is set per-integration at registration time, see
+  // settlement-integrations/route.ts). A USDC case could never confirm
+  // its deposit under the old computation, since the real 6-decimal
+  // on-chain amount would never match an 18-decimal expectation.
+  const expectedAmountAtto =
+    integration.chain === "solanatestnet"
+      ? toLamports(kase.amount.toString()).toString()
+      : toAtomicAmount(kase.amount.toString(), integration.assetDecimals).toString();
   const escrowId = deriveEscrowIdForCase(kase);
 
   const settlement = await prisma.$transaction(async (tx) => {

@@ -51,7 +51,7 @@ const USDC_TOKEN_GETTER_ABI = [
 export class UnknownEscrowVersionError extends Error {}
 export class EscrowVersionMismatchError extends Error {}
 
-async function probeUsdcTokenGetter(escrowContractAddress: Address): Promise<Address | null> {
+export async function probeUsdcTokenGetter(escrowContractAddress: Address): Promise<Address | null> {
   const client = getEvmPublicClient();
   const data = encodeFunctionData({ abi: USDC_TOKEN_GETTER_ABI, functionName: "usdcToken" });
   try {

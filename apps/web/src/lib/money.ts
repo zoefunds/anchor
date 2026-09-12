@@ -45,3 +45,33 @@ export function parseCanonicalDecimalAmount(raw: unknown): string {
   }
   return raw;
 }
+
+/**
+ * Converts a canonical decimal amount string to atomic units for an
+ * asset with the given decimal count — the ONE place in the codebase
+ * that should ever do this conversion. Real bug this closes (found
+ * wiring EscrowUSDC into case settlement, 2026-09-12): the settlement-
+ * binding route previously called genlayer.ts's toAttoAmount()
+ * unconditionally, which hardcodes 18 decimals — correct for native
+ * ETH, silently wrong by 12 orders of magnitude for USDC's real 6
+ * decimals. toAttoAmount is now a thin wrapper around this for
+ * backward compatibility with existing native-ETH callers.
+ */
+export function toAtomicAmount(amount: number | string, decimals: number): bigint {
+  const str = typeof amount === "number" ? amount.toString() : amount;
+  if (!/^-?\d+(\.\d+)?$/.test(str)) {
+    throw new Error(`toAtomicAmount: not a valid decimal string: ${str}`);
+  }
+  if (str.startsWith("-")) {
+    throw new Error(`toAtomicAmount: amount must not be negative: ${str}`);
+  }
+  if (!Number.isInteger(decimals) || decimals < 0) {
+    throw new Error(`toAtomicAmount: decimals must be a non-negative integer, got ${decimals}`);
+  }
+  const [whole, frac = ""] = str.split(".");
+  if (frac.length > decimals) {
+    throw new Error(`toAtomicAmount: amount has more than ${decimals} fractional digits, would lose precision: ${str}`);
+  }
+  const fracPadded = frac.padEnd(decimals, "0");
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fracPadded || "0");
+}

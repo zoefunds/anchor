@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import type { Case, Decision } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAdjudicatorContractCode, getGenLayerClient, toAttoAmount } from "@/lib/genlayer";
+import { toAtomicAmount } from "@/lib/money";
 import { getPolicy } from "@/lib/policies";
 import { dispatchWebhookEvent } from "@/lib/webhooks";
 import { dispatchDecisionForCase, DecisionAlreadySettledError, InsufficientAttestorSignaturesError } from "@/lib/hyperlane";
@@ -279,7 +280,25 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     return;
   }
 
-  const totalAmountAtto = toAttoAmount(kase.amount.toString());
+  // Real bug found and fixed 2026-09-12 wiring EscrowUSDC into case
+  // settlement: this used to unconditionally call toAttoAmount (18
+  // decimals), correct for native ETH but 10^12x wrong for a USDC
+  // integration's real 6 decimals. The Solana branch of
+  // dispatchDecisionForCase ignores claimantAmountAtto/respondentAmountAtto
+  // entirely (it dispatches by claimantShareBps against the escrow's own
+  // on-chain balance, see solana-settle.ts's submitAttestedSettle), so
+  // this only matters for the sepolia branch — but that branch REQUIRES
+  // a bound CaseSettlement already (throws otherwise, see
+  // hyperlane.ts's dispatchDecisionForCase), so this lookup is never
+  // wasted work when it actually matters, and defaults to 18 decimals
+  // for the case where no integration is bound yet (Solana, or a case
+  // that hasn't reached deposit binding).
+  const boundIntegration = await prisma.caseSettlement.findUnique({
+    where: { caseId: kase.id },
+    select: { integration: { select: { assetDecimals: true } } },
+  });
+  const settlementAssetDecimals = boundIntegration?.integration.assetDecimals ?? 18;
+  const totalAmountAtto = toAtomicAmount(kase.amount.toString(), settlementAssetDecimals);
   const claimantBps = BigInt(decision.claimantShareBps ?? 0);
   const respondentBps = BigInt(decision.respondentShareBps ?? 0);
   try {
