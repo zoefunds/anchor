@@ -156,18 +156,4 @@ export function parseHumanReviewTriggers(json: unknown): HumanReviewTriggers {
   };
 }
 
-/**
- * Track 2, item 3 — "policy engine controls which asset is permitted."
- * `allowedAssets` already existed on PolicyVersion (Phase 4) but nothing
- * read it as a real gate before this; case creation for a USDC-settling
- * case must call this and refuse if it returns false, the same way an
- * unlisted outcome or chain is already refused elsewhere in this file's
- * callers. Asset keys are the stable strings from
- * environment-registry.ts (e.g. "USDC-sepolia"), never a raw token
- * address — see USDC_SEPOLIA_ASSET_KEY.
- */
-export function isAssetAllowedByPolicy(policyVersion: { allowedAssets: string[] }, assetKey: string): boolean {
-  return policyVersion.allowedAssets.includes(assetKey);
-}
-
 export type { RiskAction };

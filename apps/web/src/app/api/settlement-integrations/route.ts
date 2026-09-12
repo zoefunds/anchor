@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 import { normalizeEvmAddress, SettlementIntegrationError } from "@/lib/case-settlement";
-import { detectEscrowVersion, probeUsdcTokenGetter, UnknownEscrowVersionError } from "@/lib/escrow-version";
+import { detectEscrowVersion, UnknownEscrowVersionError } from "@/lib/escrow-version";
 import { EscrowCodeIdentityError } from "@/lib/escrow-code-identity";
 import { normalizeSolanaAddress, assertSolanaEscrowBoundToDecisionRelay, SolanaEscrowError } from "@/lib/solana-escrow";
 
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
   }
 
   let escrowContractAddress: string;
-  let escrowVersion: "V1" | "V2" | "USDC_V1" | "SOLANA_V1";
+  let escrowVersion: "V1" | "V2" | "SOLANA_V1";
 
   if (chain === "solanatestnet") {
     const escrowProgramId = normalizeSolanaAddress(body.escrowContractAddress);
@@ -119,23 +119,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `could not detect escrow contract version: ${(err as Error).message}` }, { status: 502 });
     }
 
-    // Real gap closed 2026-09-12: isApprovedUsdcEscrow (hyperlane.ts)
-    // existed since Track 2 but was never actually called anywhere —
-    // detectEscrowVersion's code-identity check alone proves the
-    // contract IS a genuine EscrowUSDC deployment, but not that it's
-    // THIS environment's specific operator-approved deployment (e.g. a
-    // legitimate EscrowUSDC someone deployed against a different,
-    // unapproved ERC-20). Registration must fail closed on either.
-    if (escrowVersion === "USDC_V1") {
-      const { isApprovedUsdcEscrow } = await import("@/lib/hyperlane");
-      const tokenAddress = await probeUsdcTokenGetter(normalizedEscrow);
-      if (!tokenAddress || !isApprovedUsdcEscrow(chain, normalizedEscrow, tokenAddress)) {
-        return NextResponse.json(
-          { error: `${normalizedEscrow} is a genuine EscrowUSDC deployment but is not this environment's approved USDC escrow/token pair — see environment-registry.ts's sepolia.addresses.escrowUsdc/usdc` },
-          { status: 422 }
-        );
-      }
-    }
     escrowContractAddress = normalizedEscrow;
   }
 

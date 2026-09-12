@@ -280,19 +280,19 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     return;
   }
 
-  // Real bug found and fixed 2026-09-12 wiring EscrowUSDC into case
-  // settlement: this used to unconditionally call toAttoAmount (18
-  // decimals), correct for native ETH but 10^12x wrong for a USDC
-  // integration's real 6 decimals. The Solana branch of
-  // dispatchDecisionForCase ignores claimantAmountAtto/respondentAmountAtto
-  // entirely (it dispatches by claimantShareBps against the escrow's own
-  // on-chain balance, see solana-settle.ts's submitAttestedSettle), so
-  // this only matters for the sepolia branch — but that branch REQUIRES
-  // a bound CaseSettlement already (throws otherwise, see
-  // hyperlane.ts's dispatchDecisionForCase), so this lookup is never
-  // wasted work when it actually matters, and defaults to 18 decimals
-  // for the case where no integration is bound yet (Solana, or a case
-  // that hasn't reached deposit binding).
+  // Reads the bound integration's own assetDecimals rather than
+  // hardcoding 18, so this isn't re-hardcoded to "assume ETH" the
+  // moment a different-decimals asset is ever bound again. The Solana
+  // branch of dispatchDecisionForCase ignores
+  // claimantAmountAtto/respondentAmountAtto entirely (it dispatches by
+  // claimantShareBps against the escrow's own on-chain balance, see
+  // solana-settle.ts's submitAttestedSettle), so this only matters for
+  // the sepolia branch — but that branch REQUIRES a bound
+  // CaseSettlement already (throws otherwise, see hyperlane.ts's
+  // dispatchDecisionForCase), so this lookup is never wasted work when
+  // it actually matters, and defaults to 18 decimals for the case
+  // where no integration is bound yet (Solana, or a case that hasn't
+  // reached deposit binding).
   const boundIntegration = await prisma.caseSettlement.findUnique({
     where: { caseId: kase.id },
     select: { integration: { select: { assetDecimals: true } } },

@@ -33,7 +33,7 @@ vi.mock("@/lib/receipts", () => ({
     settlement: {
       status: "SETTLED",
       chain: "sepolia",
-      asset: { assetSymbol: "USDC", tokenAddress: "0xtoken", decimals: 6, atomicAmount: "100000000", humanAmount: "100", fiatReferenceUsd: "100", fiatReferenceNote: "note", testnetNotice: "USDC (Sepolia testnet — no real value)" },
+      asset: { assetSymbol: "ETH", tokenAddress: null, decimals: 18, atomicAmount: "100000000000000000", humanAmount: "0.1", fiatReferenceUsd: null, fiatReferenceNote: null, testnetNotice: null },
       depositTxHash: "0xdeposit",
       settledTxHash: "0xsettled",
       settledAt: "2026-09-03T00:00:00.000Z",
@@ -61,7 +61,7 @@ vi.mock("@/lib/receipts", () => ({
     policyVersionId: "pv_1",
     chain: "sepolia",
     escrowContractAddress: "0xescrow",
-    asset: { assetSymbol: "USDC", tokenAddress: "0xtoken", decimals: 6, atomicAmount: "100000000", humanAmount: "100", fiatReferenceUsd: "100", fiatReferenceNote: "note", testnetNotice: "USDC (Sepolia testnet — no real value)" },
+    asset: { assetSymbol: "ETH", tokenAddress: null, decimals: 18, atomicAmount: "100000000000000000", humanAmount: "0.1", fiatReferenceUsd: null, fiatReferenceNote: null, testnetNotice: null },
     depositTxHash: "0xdeposit",
     depositConfirmedAt: "2026-09-01T12:00:00.000Z",
   })),

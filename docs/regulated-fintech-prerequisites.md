@@ -82,37 +82,36 @@ existing settlement-target validation):
   to sit in front of `apps/web/src/lib/hyperlane.ts`'s settlement dispatch
   path, not built in this phase.
 
-## Stablecoin strategy
+## Stablecoin strategy — tried and reverted
 
-**Recommendation: start with one allowlisted asset, USDC**, rather than
-raw ETH/SOL settlement or a broad multi-asset allowlist.
+A USDC-first settlement path (a real `EscrowUSDC.sol` deployment,
+ERC-20 deposit/approve flow, and version-detection wiring) was built
+and briefly deployed to Sepolia, then removed. The volatility argument
+below was the original motivation and remains true in the abstract,
+but the actual blocker that killed it was architectural, not
+regulatory: `DecisionRelay` only supports a single settlement target
+per chain, and fighting that limitation to support a second (token)
+settlement path per chain was judged not worth it relative to simply
+staying on native ETH/SOL settlement, which this system already
+supports on both chains it operates on. The deployed `EscrowUSDC`
+contract (Sepolia, `0x87e94aac03f1a032b264e035fd41a76bcdc802e2`) is
+immutable and was left in place on-chain — Anchor's application layer
+no longer references it — and still holds a small amount of real
+testnet USDC from a test that was never dispatched because of the same
+limitation. A future revisit of stablecoin settlement should design
+around DecisionRelay's per-chain single-target constraint from the
+start, rather than bolting a second target onto it after the fact.
 
-**Why USDC specifically**: at the time of this document, USDC has the
-broadest regulatory clarity among USD-pegged stablecoins (issued by a
-U.S.-regulated entity, subject to attestation/audit of reserves), the
-deepest liquidity across both Ethereum and Solana (both chains this
-system already operates on), and native support on both chains without a
-bridge — relevant because Anchor already spans EVM (Sepolia) and Solana.
-
-**Why not raw ETH/SOL**: this project's own prior sessions already
-identified the volatility problem directly — a dispute's claimant/
-respondent amounts are denominated at case-creation time, and if
-settlement in raw ETH/SOL is delayed (which `docs/mainnet-readiness-runbook.md`'s
-retry/escalation logic explicitly allows for), the settled value can
-diverge materially from the disputed value by the time settlement
-executes. A stablecoin removes this entire class of dispute ("I was
-supposed to receive X ETH worth $500, but it settled at $420 because ETH
-moved") which is a real user-experience and fairness problem for a
-dispute-resolution product specifically, not just a general crypto
-concern.
-
-**Migration implication**: `Escrow.sol` currently handles native ETH
-deposits (per its `deposit()` function); supporting USDC requires an
-ERC-20-aware deposit/settle path (or a wrapped-USDC-specific escrow
-variant), which is new contract work out of scope for this
-prepare-only phase, and — like everything else touching the deployed
-contracts — must go through the item-3 external audit gate before
-mainnet regardless of which asset it settles in.
+**The volatility problem** (why a stablecoin was considered at all):
+a dispute's claimant/respondent amounts are denominated at
+case-creation time, and if settlement in raw ETH/SOL is delayed (which
+`docs/mainnet-readiness-runbook.md`'s retry/escalation logic explicitly
+allows for), the settled value can diverge materially from the
+disputed value by the time settlement executes. This remains a real
+user-experience and fairness consideration for a dispute-resolution
+product, and should be weighed again before any future mainnet
+launch — just not solved by USDC specifically given the architectural
+cost above.
 
 **Environment-registry hook (real, added this phase)**: once a stablecoin
 path exists, its per-environment contract address belongs in

@@ -1,25 +1,16 @@
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { getUsdcBinding } from "@/lib/environment-registry";
 
-// Track 2, item 3 — receipts must show, for a USDC settlement: symbol,
-// token address, decimals, atomic amount, human-readable amount, and a
-// fiat reference amount. `expectedAmountAtto` is always a decimal
-// string of ATOMIC units (never a JS Number — see lib/genlayer.ts's own
-// toAttoAmount discipline this field already follows), so every
-// conversion below stays in BigInt until the very last, display-only
-// division.
+// `expectedAmountAtto` is always a decimal string of ATOMIC units
+// (never a JS Number — see lib/genlayer.ts's own toAttoAmount
+// discipline this field already follows), so every conversion below
+// stays in BigInt until the very last, display-only division.
 export interface AssetDisplay {
   assetSymbol: string;
   tokenAddress: string | null;
   decimals: number;
   atomicAmount: string;
   humanAmount: string;
-  /**
-   * USDC ≈ 1:1 USD is an honestly-labeled ASSUMPTION, not a live price
-   * feed — there is no oracle wired up here. null for any non-USDC
-   * asset (native ETH/SOL have no such simple peg to assume).
-   */
   fiatReferenceUsd: string | null;
   fiatReferenceNote: string | null;
   testnetNotice: string | null;
@@ -39,21 +30,6 @@ function formatAtomicAsHuman(atomicAmount: string, decimals: number): string {
 
 /** The one place that turns (assetSymbol, atomic amount) into a full display record — every receipt/CSV row below should call this rather than re-deriving decimals/labels inline. */
 export function describeAssetForDisplay(assetSymbol: string, atomicAmount: string): AssetDisplay {
-  if (assetSymbol.toUpperCase() === "USDC") {
-    const binding = getUsdcBinding("sepolia");
-    const decimals = binding?.decimals ?? 6;
-    const humanAmount = formatAtomicAsHuman(atomicAmount, decimals);
-    return {
-      assetSymbol,
-      tokenAddress: binding?.tokenAddress ?? null,
-      decimals,
-      atomicAmount,
-      humanAmount,
-      fiatReferenceUsd: humanAmount,
-      fiatReferenceNote: "Assumes USDC ≈ 1:1 USD — not a live price feed, and this is Sepolia TESTNET USDC with no real value.",
-      testnetNotice: binding?.label ?? "USDC (Sepolia testnet — no real value)",
-    };
-  }
   const decimals = 18;
   return {
     assetSymbol,
@@ -331,7 +307,7 @@ export async function buildSettlementsCsv(organizationId: string): Promise<strin
     "status",
     "chain",
     "asset_symbol",
-    "asset_is_token", // Track 2, item 3 — distinguishes a token settlement (USDC) from a native-asset one (ETH/SOL); summing "expected_amount_atto" raw across rows with different asset_symbol values is meaningless (different decimals, different units) — consumers must group by asset_symbol first, this column makes that obvious rather than implicit.
+    "asset_is_token", // distinguishes a token settlement from a native-asset one (ETH/SOL); summing "expected_amount_atto" raw across rows with different asset_symbol values is meaningless (different decimals, different units) — consumers must group by asset_symbol first, this column makes that obvious rather than implicit. Always "false" today (no token-settling asset is currently supported — see docs/api/csv-export-schema.md), kept for forward compatibility since it's part of this export's stable column contract.
     "token_address",
     "asset_decimals",
     "expected_amount_atto",

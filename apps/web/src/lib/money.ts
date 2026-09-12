@@ -49,13 +49,10 @@ export function parseCanonicalDecimalAmount(raw: unknown): string {
 /**
  * Converts a canonical decimal amount string to atomic units for an
  * asset with the given decimal count — the ONE place in the codebase
- * that should ever do this conversion. Real bug this closes (found
- * wiring EscrowUSDC into case settlement, 2026-09-12): the settlement-
- * binding route previously called genlayer.ts's toAttoAmount()
- * unconditionally, which hardcodes 18 decimals — correct for native
- * ETH, silently wrong by 12 orders of magnitude for USDC's real 6
- * decimals. toAttoAmount is now a thin wrapper around this for
- * backward compatibility with existing native-ETH callers.
+ * that should ever do this conversion, rather than a hardcoded
+ * 18-decimals assumption baked into each call site. genlayer.ts's
+ * toAttoAmount is now a thin wrapper around this for backward
+ * compatibility with existing native-ETH callers.
  */
 export function toAtomicAmount(amount: number | string, decimals: number): bigint {
   const str = typeof amount === "number" ? amount.toString() : amount;

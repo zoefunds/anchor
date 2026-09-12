@@ -1127,14 +1127,6 @@ enum ReconciliationFindingType {
 enum EscrowVersion {
   V1
   V2
-  // Track 2's EscrowUSDC.sol. deposits() returns the identical 192-byte
-  // shape as V2 (status, claimant, respondent, amount, caseId,
-  // depositedAt — same 6 fields), so shape alone cannot distinguish
-  // them; detectEscrowVersion instead probes the public immutable
-  // usdcToken() getter, which V2 (native ETH) has no equivalent of, and
-  // verifies code identity against EscrowUSDC's own compiled reference
-  // (escrow-usdc-code-reference.ts), never Escrow.sol's.
-  USDC_V1
   // The Sealevel (Solana) reference escrow program
   // (chains/solana/programs/escrow) — a single fixed Anchor-framework
   // account layout, not versioned the way the EVM contracts are (no

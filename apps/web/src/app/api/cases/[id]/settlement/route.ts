@@ -94,12 +94,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   // Real bug fixed 2026-09-12: this used to call toAttoAmount
   // unconditionally for every non-Solana integration, hardcoding 18
-  // decimals — correct for native ETH, silently wrong by 12 orders of
-  // magnitude for a USDC integration's real 6 decimals (assetDecimals
-  // is set per-integration at registration time, see
-  // settlement-integrations/route.ts). A USDC case could never confirm
-  // its deposit under the old computation, since the real 6-decimal
-  // on-chain amount would never match an 18-decimal expectation.
+  // decimals. Reads integration.assetDecimals (set per-integration at
+  // registration time, see settlement-integrations/route.ts) instead
+  // of assuming 18 — every EVM integration today is native ETH (18
+  // decimals), so this evaluates the same way it always did, but it no
+  // longer silently re-hardcodes that assumption into the code itself.
   const expectedAmountAtto =
     integration.chain === "solanatestnet"
       ? toLamports(kase.amount.toString()).toString()

@@ -33,24 +33,7 @@ const NATIVE_ASSET_LABELS: Record<string, string> = {
   solanatestnet: "SOL",
 };
 
-// Track 2 — a USDC-settling case's amount is a TOKEN amount, not this
-// chain's native asset, and this label must make that unmistakable
-// (this task's own explicit requirement: "UI makes testnet-token status
-// unmistakable"). Keyed off Case.currency (not settlementChain) since a
-// USDC case still settles ON sepolia — the asset, not the chain, is
-// what differs here. No case in this codebase sets currency to "USDC"
-// yet (Case has no per-case asset-selection field wired up end-to-end —
-// see this session's Track 2 handoff notes for that real, separate
-// follow-up), but this keeps the label correct the moment one does,
-// rather than silently mislabeling a real USDC case as its settlement
-// chain's native ETH.
-const TESTNET_TOKEN_LABELS: Record<string, string> = {
-  usdc: "USDC (Sepolia testnet — no real value)",
-};
-
 function displayCurrency(c: { currency: string; settlementChain: string | null }): string {
-  const tokenLabel = TESTNET_TOKEN_LABELS[c.currency.toLowerCase()];
-  if (tokenLabel) return tokenLabel;
   return (c.settlementChain && NATIVE_ASSET_LABELS[c.settlementChain]) || c.currency;
 }
 

@@ -83,7 +83,7 @@ export async function assertEscrowDepositMatches(params: {
   // it was registered against, and select the correct deposits() ABI,
   // instead of assuming a shape from which address is configured.
   integrationId: string;
-  escrowVersion: "V1" | "V2" | "USDC_V1";
+  escrowVersion: "V1" | "V2";
 }): Promise<void> {
   await verifyEscrowVersionUnchanged({
     integrationId: params.integrationId,

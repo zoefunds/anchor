@@ -47,7 +47,7 @@ const EMPTY_FORM: FormState = {
   appealWindowHours: "48",
   allowedOutcomes: "CLAIMANT_WINS, RESPONDENT_WINS, SPLIT",
   autoSettlementCapUsd: "",
-  allowedAssets: "USDC",
+  allowedAssets: "ETH, SOL",
   allowedChains: "",
   kycRequired: false,
 };

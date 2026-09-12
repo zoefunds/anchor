@@ -11,7 +11,6 @@ import { pad, isHex, createPublicClient, http, recoverAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import { prisma } from "@/lib/prisma";
-import { getUsdcBinding } from "@/lib/environment-registry";
 
 const PROCESSED_DECISIONS_ABI = [
   {
@@ -115,38 +114,6 @@ export function isApprovedSettlementContract(chain: string, address: string): bo
     ? process.env.APPROVED_SOLANA_SETTLEMENT_PROGRAMS.split(",").map((s) => s.trim()).filter(Boolean)
     : DEFAULT_APPROVED_SOLANA_SETTLEMENT_PROGRAMS;
   return approved.includes(address);
-}
-
-// Track 2 — USDC settlement targets are gated through a SEPARATE
-// allowlist from isApprovedSettlementContract above, deliberately: a
-// USDC EscrowUSDC deployment and a native-ETH Escrow deployment are
-// never interchangeable (settling a USDC case against an ETH escrow's
-// address, or vice versa, would be a real fund-safety bug, not merely
-// a config error), so conflating the two lists would make that mistake
-// possible even with both defaults present. Deployed 2026-09-09 (see
-// environment-registry.ts's sepolia.addresses.escrowUsdc for the tx
-// hash and constructor args) — override via env only for a genuinely
-// new approved integration, never to loosen this.
-const DEFAULT_APPROVED_SEPOLIA_USDC_ESCROWS: string[] = ["0x87e94aac03f1a032b264e035fd41a76bcdc802e2"];
-
-/**
- * Track 2, item 1 — "reject arbitrary ERC-20 token addresses" and
- * "only this specific registry-bound USDC escrow can ever be a
- * settlement target." Both `escrowAddress` (the ISettlementTarget
- * contract) AND `tokenAddress` (the ERC-20 it was deployed against)
- * must match this environment's single bound USDC deployment — an
- * otherwise-approved escrow address paired with a DIFFERENT token
- * address is rejected too, since that combination could never be the
- * real, verified EscrowUSDC deployment this allowlist means to name.
- */
-export function isApprovedUsdcEscrow(chain: string, escrowAddress: string, tokenAddress: string): boolean {
-  if (chain !== "sepolia") return false;
-  const approvedEscrows = parseApprovedList(process.env.APPROVED_SEPOLIA_USDC_ESCROWS, DEFAULT_APPROVED_SEPOLIA_USDC_ESCROWS);
-  if (!approvedEscrows.has(escrowAddress.toLowerCase())) return false;
-
-  const binding = getUsdcBinding("sepolia");
-  if (!binding) return false;
-  return binding.tokenAddress.toLowerCase() === tokenAddress.toLowerCase();
 }
 
 /** Same idea as isApprovedSettlementContract, for the separate Solana escrow-program address (see solana-settle.ts's submitAttestedSettle) — the account that actually moves funds, not the decision-relay notification program. */

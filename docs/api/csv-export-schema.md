@@ -35,8 +35,8 @@ One row / array entry per `CaseSettlement`, ordered by `createdAt` ascending.
 | 4 | `policy_version_id` | string (nullable) | The immutable PolicyVersion this case was bound to at creation. |
 | 5 | `status` | string | `CaseSettlement.status` enum value. |
 | 6 | `chain` | string | `sepolia` \| `solanatestnet`. |
-| 7 | `asset_symbol` | string | e.g. `USDC`, `ETH`, `SOL`. |
-| 8 | `asset_is_token` | `"true"` \| `"false"` | `true` for an ERC-20/SPL token (has `token_address`), `false` for a native asset. |
+| 7 | `asset_symbol` | string | e.g. `ETH`, `SOL`. |
+| 8 | `asset_is_token` | `"true"` \| `"false"` | `true` for an ERC-20/SPL token (has `token_address`), `false` for a native asset. Always `"false"` today — Anchor currently settles only in native ETH (Sepolia) or native SOL — kept for forward compatibility since this column is part of the export's stable schema contract. |
 | 9 | `token_address` | string (nullable) | Empty for a native asset. |
 | 10 | `asset_decimals` | number | Required to interpret `expected_amount_atto` — do not assume 18 or 6. |
 | 11 | `expected_amount_atto` | string (integer) | Raw atomic-unit amount, exact — never parse as a float. |
@@ -45,7 +45,7 @@ One row / array entry per `CaseSettlement`, ordered by `createdAt` ascending.
 | 14 | `deposit_confirmed_at` | ISO 8601 (nullable) | |
 | 15 | `settled_tx_hash` | string (nullable) | |
 | 16 | `settled_at` | ISO 8601 (nullable) | |
-| 17 | `case_amount` | string | The case's own claimed amount, in `case_currency` — independent of the settlement asset (e.g. a USD-denominated case settled in USDC). |
+| 17 | `case_amount` | string | The case's own claimed amount, in `case_currency` — independent of the settlement asset (e.g. a USD-denominated case settled in native ETH or SOL). |
 | 18 | `case_currency` | string | ISO currency code for `case_amount`. |
 
 **Do not sum `expected_amount_atto` across rows with different

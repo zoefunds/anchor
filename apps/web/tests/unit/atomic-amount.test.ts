@@ -2,19 +2,11 @@ import { describe, it, expect } from "vitest";
 import { toAtomicAmount } from "@/lib/money";
 import { toAttoAmount } from "@/lib/genlayer";
 
-describe("toAtomicAmount — USDC settlement amount correctness", () => {
-  it("computes the real 6-decimal USDC atomic amount, not an 18-decimal ETH one", () => {
-    // Real incident this closes (2026-09-12): the settlement-binding
-    // route and dispatchSettlementForDecision both used to call
-    // toAttoAmount (hardcoded 18 decimals) unconditionally, regardless
-    // of the bound integration's real assetDecimals. A $50 USDC case
-    // would compute an expectedAmountAtto/settlement amount of
-    // 50 * 10^18 instead of the real on-chain 50 * 10^6 — the deposit
-    // could never be confirmed, and the settle() dispatch would send a
-    // catastrophically wrong amount.
-    const usdcAmount = toAtomicAmount("50", 6);
-    expect(usdcAmount).toBe(50_000_000n);
-    expect(usdcAmount).not.toBe(toAttoAmount("50"));
+describe("toAtomicAmount — decimal-aware atomic-unit conversion", () => {
+  it("computes the correct atomic amount for a non-18-decimals asset (e.g. Solana's 9-decimal lamports), not an 18-decimal ETH one", () => {
+    const solAmount = toAtomicAmount("50", 9);
+    expect(solAmount).toBe(50_000_000_000n);
+    expect(solAmount).not.toBe(toAttoAmount("50"));
   });
 
   it("matches toAttoAmount exactly when decimals=18 (native ETH, unchanged behavior)", () => {

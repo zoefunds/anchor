@@ -9,9 +9,7 @@ import {
 } from "@/lib/receipts";
 
 // Every generated PDF carries this banner so nobody mistakes a Sepolia
-// testnet artifact for a document with real financial effect — same
-// phrasing convention as the USDC binding label in
-// lib/environment-registry.ts ("USDC (Sepolia testnet — no real value)").
+// testnet artifact for a document with real financial effect.
 const TESTNET_BANNER = "TESTNET — no real value — Sepolia/Solana testnet only, no live funds";
 
 const PAGE_WIDTH = 612;
@@ -169,7 +167,7 @@ export async function generateCaseStatementPdf(caseId: string, organizationId: s
   if (doc.settlement) {
     w.field("Status", doc.settlement.status);
     w.field("Chain", doc.settlement.chain);
-    w.field("Asset", `${doc.settlement.asset.assetSymbol} (${doc.settlement.asset.testnetNotice ?? "non-USDC"})`);
+    w.field("Asset", `${doc.settlement.asset.assetSymbol} (${doc.settlement.asset.testnetNotice ?? "native asset"})`);
     w.field("Amount", `${doc.settlement.asset.humanAmount} ${doc.settlement.asset.assetSymbol}`);
     w.field("Deposit tx hash", doc.settlement.depositTxHash);
     w.field("Settled tx hash", doc.settlement.settledTxHash);
@@ -297,7 +295,7 @@ export async function generateDepositReceiptPdf(caseId: string, organizationId: 
   w.field("Policy version ID", doc.policyVersionId);
   w.field("Chain", doc.chain);
   w.field("Escrow contract address", doc.escrowContractAddress);
-  w.field("Asset", `${doc.asset.assetSymbol} (${doc.asset.testnetNotice ?? "non-USDC"})`);
+  w.field("Asset", `${doc.asset.assetSymbol} (${doc.asset.testnetNotice ?? "native asset"})`);
   w.field("Amount", `${doc.asset.humanAmount} ${doc.asset.assetSymbol}`);
   w.field("Deposit tx hash", doc.depositTxHash);
   w.field("Deposit confirmed at", doc.depositConfirmedAt);
