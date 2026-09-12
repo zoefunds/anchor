@@ -14,6 +14,12 @@ import { computeWindowState } from "@/lib/reliability-window";
 // each section computed from `ok`/`status`/small enum fields, never by
 // spreading a raw health-check or Prisma row into the response.
 
+// Without this, Next.js treats a route with no request-dependent input
+// as static and caches the response indefinitely at build time — this
+// route reads live DB state (canary runs, incidents, RPC health) on
+// every request, so it must never be statically cached.
+export const dynamic = "force-dynamic";
+
 type ComponentStatus = "up" | "degraded" | "down";
 
 function componentStatus(ok: boolean): ComponentStatus {
