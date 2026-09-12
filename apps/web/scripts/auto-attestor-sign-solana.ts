@@ -12,7 +12,7 @@
 // offline human held previously used by hand.
 //
 // Required env (same ANCHOR_API_BASE_URL/ATTESTOR_COSIGN_SECRET/
-// AUTO_ATTESTOR_MAX_AMOUNT_USD/DATABASE_URL/POLL_INTERVAL_MS as the EVM
+// AUTO_ATTESTOR_MAX_AMOUNT_SOL/DATABASE_URL/POLL_INTERVAL_MS as the EVM
 // script — this runs as a SECOND process alongside it on the same Fly
 // app, sharing those):
 //   AUTO_ATTESTOR_SOLANA_PRIVATE_KEY   JSON array of the 64-byte secret

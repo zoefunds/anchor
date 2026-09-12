@@ -85,6 +85,17 @@ export async function POST(req: NextRequest) {
     );
   }
   const isSealevelSettlement = settlementChain === "solanatestnet";
+  // Real bug found and fixed 2026-09-12: this route never set Case.currency
+  // at all, so every real case (regardless of settlementChain) silently
+  // took the Prisma schema's "USD" default — even though Anchor settles
+  // only native chain assets (ETH on Sepolia, SOL on Solana; USDC support
+  // was removed entirely). That mismatch made checkAutoSignEligibility's
+  // currency check refuse EVERY real case, permanently, since none of
+  // them were actually USD. A case created with no settlementChain (no
+  // settlement configured yet) still gets the "USD" placeholder — it's
+  // harmless there since such a case never reaches attestor signing.
+  const SETTLEMENT_CHAIN_CURRENCIES: Record<string, string> = { sepolia: "ETH", solanatestnet: "SOL" };
+  const currency = settlementChain ? SETTLEMENT_CHAIN_CURRENCIES[settlementChain] : undefined;
   if (
     isSealevelSettlement &&
     (!settlementSolanaClaimant || !settlementSolanaRespondent || !settlementSolanaEscrowProgram || !settlementSolanaCaseId)
@@ -213,6 +224,7 @@ export async function POST(req: NextRequest) {
         organizationId: auth.organizationId,
         claim,
         amount: canonicalAmount,
+        ...(currency ? { currency } : {}),
         claimantRef,
         respondentRef,
         policyId: policy.id,

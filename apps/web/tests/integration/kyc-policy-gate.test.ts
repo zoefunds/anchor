@@ -26,7 +26,7 @@ async function makePolicyVersion(kycRequired: boolean) {
     evidenceDeadlineHours: 72,
     appealWindowHours: 24,
     allowedOutcomes: ["CLAIMANT", "RESPONDENT"],
-    autoSettlementCapUsd: null,
+    autoSettlementCapNative: null,
     allowedAssets: ["ETH-sepolia"],
     allowedChains: ["sepolia"],
     kycRequired,

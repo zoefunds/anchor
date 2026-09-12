@@ -7,6 +7,7 @@ import { anchorAuditChains } from "@/lib/audit-anchor";
 import { runReconciliationSweep } from "@/lib/reconciliation";
 import { runReliabilityObservation } from "@/lib/reliability-monitor";
 import { checkReliabilityObserverHeartbeat } from "@/lib/reliability-observer-watchdog";
+import { runTestnetCanary } from "../../scripts/testnet-canary";
 import { getAppEnv, assertDatabaseMatchesAppEnv } from "@/lib/app-env";
 import { getAttestorAccounts } from "@/lib/hyperlane";
 import { assertWorkerKeyCountBelowThreshold, StartupCheckError } from "@/lib/startup-checks";
@@ -37,6 +38,11 @@ const RELIABILITY_OBSERVATION_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 // caught within one or two check cycles of crossing the threshold,
 // not one entire staleness window late.
 const RELIABILITY_OBSERVER_HEARTBEAT_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+// Phase 1, item 4: the canary's own SLA clock defaults to 15 minutes (see
+// scripts/testnet-canary.ts) and a run blocks a worker slot until it
+// settles or breaches, so this interval must stay comfortably above that
+// to avoid two runs overlapping under normal conditions.
+const CANARY_SWEEP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 let worker: Worker | null = null;
 
@@ -113,6 +119,12 @@ async function processJob(job: Job): Promise<void> {
     const status = await checkReliabilityObserverHeartbeat();
     // eslint-disable-next-line no-console
     console.log(`worker: reliability-observer heartbeat check complete, stale=${status.stale}, lastObservationAt=${status.lastObservationAt ?? "none"}`);
+    return;
+  }
+  if (job.name === "run_testnet_canary") {
+    await runTestnetCanary();
+    // eslint-disable-next-line no-console
+    console.log("worker: testnet canary run complete");
     return;
   }
   if (job.name === "anchor_audit_chains") {
@@ -270,6 +282,24 @@ async function ensureReliabilityObserverHeartbeatScheduled(): Promise<void> {
 }
 
 /**
+ * Registers the periodic testnet canary sweep (see
+ * scripts/testnet-canary.ts's runTestnetCanary) — Phase 1, item 4. Only
+ * registered when CANARY_ORGANIZATION_ID is configured: an environment
+ * that hasn't set up canary monitoring (e.g. a developer machine, or a
+ * deployment that intentionally hasn't enabled it yet) shouldn't have
+ * this job scheduled at all, since runTestnetCanary() throws immediately
+ * without it. Same upsert-is-idempotent reasoning as the other sweeps.
+ */
+async function ensureCanarySweepScheduled(): Promise<void> {
+  if (!process.env.CANARY_ORGANIZATION_ID) return;
+  await getAdjudicationQueue().upsertJobScheduler(
+    "testnet-canary-sweep",
+    { every: CANARY_SWEEP_INTERVAL_MS },
+    { name: "run_testnet_canary" }
+  );
+}
+
+/**
  * Idempotent — starts the BullMQ Worker once per process; safe to call
  * more than once. Created with autorun disabled so the environment guard
  * (assertDatabaseMatchesAppEnv — see lib/app-env.ts) can run and be
@@ -361,6 +391,10 @@ export async function startAdjudicationWorker(): Promise<Worker> {
   ensureReliabilityObserverHeartbeatScheduled().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to schedule reliability-observer heartbeat check:", err instanceof Error ? err.message : err);
+  });
+  ensureCanarySweepScheduled().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("worker: failed to schedule testnet canary sweep:", err instanceof Error ? err.message : err);
   });
 
   return w;

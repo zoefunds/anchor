@@ -22,7 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const body = await req.json();
-  const { evidenceDeadlineHours, appealWindowHours, allowedOutcomes, autoSettlementCapUsd, allowedAssets, allowedChains, kycRequired, velocityLimits, humanReviewTriggers } = body;
+  const { evidenceDeadlineHours, appealWindowHours, allowedOutcomes, autoSettlementCapNative, allowedAssets, allowedChains, kycRequired, velocityLimits, humanReviewTriggers } = body;
 
   if (!evidenceDeadlineHours || !appealWindowHours || !Array.isArray(allowedOutcomes)) {
     return NextResponse.json(
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       evidenceDeadlineHours,
       appealWindowHours,
       allowedOutcomes,
-      autoSettlementCapUsd: autoSettlementCapUsd ?? null,
+      autoSettlementCapNative: autoSettlementCapNative ?? null,
       allowedAssets: allowedAssets ?? [],
       allowedChains: allowedChains ?? [],
       kycRequired: Boolean(kycRequired),

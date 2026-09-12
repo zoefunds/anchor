@@ -12,7 +12,7 @@ interface PolicyVersion {
   evidenceDeadlineHours: number;
   appealWindowHours: number;
   allowedOutcomes: string[];
-  autoSettlementCapUsd: string | null;
+  autoSettlementCapNative: string | null;
   allowedAssets: string[];
   allowedChains: string[];
   kycRequired: boolean;
@@ -34,7 +34,7 @@ interface FormState {
   evidenceDeadlineHours: string;
   appealWindowHours: string;
   allowedOutcomes: string;
-  autoSettlementCapUsd: string;
+  autoSettlementCapNative: string;
   allowedAssets: string;
   allowedChains: string;
   kycRequired: boolean;
@@ -46,7 +46,7 @@ const EMPTY_FORM: FormState = {
   evidenceDeadlineHours: "72",
   appealWindowHours: "48",
   allowedOutcomes: "CLAIMANT_WINS, RESPONDENT_WINS, SPLIT",
-  autoSettlementCapUsd: "",
+  autoSettlementCapNative: "",
   allowedAssets: "ETH, SOL",
   allowedChains: "",
   kycRequired: false,
@@ -59,7 +59,7 @@ function toBody(form: FormState) {
     evidenceDeadlineHours: Number(form.evidenceDeadlineHours),
     appealWindowHours: Number(form.appealWindowHours),
     allowedOutcomes: form.allowedOutcomes.split(",").map((s) => s.trim()).filter(Boolean),
-    autoSettlementCapUsd: form.autoSettlementCapUsd ? Number(form.autoSettlementCapUsd) : null,
+    autoSettlementCapNative: form.autoSettlementCapNative ? Number(form.autoSettlementCapNative) : null,
     allowedAssets: form.allowedAssets.split(",").map((s) => s.trim()).filter(Boolean),
     allowedChains: form.allowedChains.split(",").map((s) => s.trim()).filter(Boolean),
     kycRequired: form.kycRequired,
@@ -99,7 +99,7 @@ export default function PoliciesPage() {
       evidenceDeadlineHours: String(active.evidenceDeadlineHours),
       appealWindowHours: String(active.appealWindowHours),
       allowedOutcomes: active.allowedOutcomes.join(", "),
-      autoSettlementCapUsd: active.autoSettlementCapUsd ?? "",
+      autoSettlementCapNative: active.autoSettlementCapNative ?? "",
       allowedAssets: active.allowedAssets.join(", "),
       allowedChains: active.allowedChains.join(", "),
       kycRequired: active.kycRequired,
@@ -254,7 +254,7 @@ export default function PoliciesPage() {
                   <dt className="text-muted dark:text-muted-dark">Allowed outcomes</dt>
                   <dd>{activeVersion.allowedOutcomes.join(", ") || "—"}</dd>
                   <dt className="text-muted dark:text-muted-dark">Auto-settlement cap</dt>
-                  <dd>{activeVersion.autoSettlementCapUsd ? `$${activeVersion.autoSettlementCapUsd}` : "none (global default)"}</dd>
+                  <dd>{activeVersion.autoSettlementCapNative ? `${activeVersion.autoSettlementCapNative} (in the case's settlement currency)` : "none (global default)"}</dd>
                   <dt className="text-muted dark:text-muted-dark">Allowed assets</dt>
                   <dd>{activeVersion.allowedAssets.join(", ") || "any"}</dd>
                   <dt className="text-muted dark:text-muted-dark">Allowed chains</dt>
@@ -338,14 +338,14 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
       </label>
       <div className="flex gap-4">
         <label className="flex flex-1 flex-col gap-2">
-          <span className="field-label">Auto-settlement cap (USD, optional)</span>
+          <span className="field-label">Auto-settlement cap (in the case's settlement currency — ETH or SOL, optional)</span>
           <input
             className="field-input"
             type="number"
             min={0}
             placeholder="uses global default if blank"
-            value={form.autoSettlementCapUsd}
-            onChange={(e) => onChange({ ...form, autoSettlementCapUsd: e.target.value })}
+            value={form.autoSettlementCapNative}
+            onChange={(e) => onChange({ ...form, autoSettlementCapNative: e.target.value })}
           />
         </label>
         <label className="flex items-center gap-2 self-end pb-2">

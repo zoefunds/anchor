@@ -14,7 +14,7 @@
 // Required env:
 //   ANCHOR_API_BASE_URL          e.g. https://anc-hor.vercel.app
 //   ATTESTOR_COSIGN_SECRET       shared secret (see lib/internal-auth.ts)
-//   AUTO_ATTESTOR_MAX_AMOUNT_USD policy cap — see lib/auto-attestor/policy.ts
+//   AUTO_ATTESTOR_MAX_AMOUNT_ETH policy cap — see lib/auto-attestor/policy.ts
 //   AUTO_ATTESTOR_BACKEND        "aws" | "gcp"
 //   AUTO_ATTESTOR_AWS_KMS_KEY_ID   (when AUTO_ATTESTOR_BACKEND=aws)
 //   AUTO_ATTESTOR_GCP_KMS_KEY_VERSION_NAME (when AUTO_ATTESTOR_BACKEND=gcp)

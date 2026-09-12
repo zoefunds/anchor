@@ -60,7 +60,7 @@ describe("policy version binding immutability", () => {
       evidenceDeadlineHours: 48,
       appealWindowHours: 48,
       allowedOutcomes: ["claimant", "respondent", "split"],
-      autoSettlementCapUsd: 1000,
+      autoSettlementCapNative: 1000,
       allowedAssets: ["ETH"],
       allowedChains: ["sepolia"],
       kycRequired: false,
@@ -78,7 +78,7 @@ describe("policy version binding immutability", () => {
       evidenceDeadlineHours: 72,
       appealWindowHours: 72,
       allowedOutcomes: ["claimant", "respondent"],
-      autoSettlementCapUsd: 50,
+      autoSettlementCapNative: 50,
       allowedAssets: ["ETH"],
       allowedChains: ["sepolia"],
       kycRequired: true,
@@ -100,7 +100,7 @@ describe("policy version binding immutability", () => {
     });
     expect(kaseReloaded.policyVersionRecordId).toBe(v1.id);
     expect(kaseReloaded.policyVersionRecord?.version).toBe(1);
-    expect(Number(kaseReloaded.policyVersionRecord?.autoSettlementCapUsd)).toBe(1000);
+    expect(Number(kaseReloaded.policyVersionRecord?.autoSettlementCapNative)).toBe(1000);
     expect(kaseReloaded.policyVersionRecord?.kycRequired).toBe(false);
 
     // And resolveActivePolicyVersion — the function used ONLY at
@@ -118,7 +118,7 @@ describe("policy version binding immutability", () => {
       evidenceDeadlineHours: 24,
       appealWindowHours: 24,
       allowedOutcomes: ["claimant"],
-      autoSettlementCapUsd: null,
+      autoSettlementCapNative: null,
       allowedAssets: [],
       allowedChains: [],
       kycRequired: false,
@@ -131,7 +131,7 @@ describe("policy version binding immutability", () => {
       evidenceDeadlineHours: 999,
       appealWindowHours: 999,
       allowedOutcomes: ["respondent"],
-      autoSettlementCapUsd: 1,
+      autoSettlementCapNative: 1,
       allowedAssets: ["ETH"],
       allowedChains: ["solanatestnet"],
       kycRequired: true,

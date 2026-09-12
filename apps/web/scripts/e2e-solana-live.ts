@@ -218,13 +218,13 @@ async function main(): Promise<void> {
     data: {
       organizationId,
       status: "EVIDENCE_COLLECTION",
-      claim: `[e2e-solana-live] manual confirmation run ${runId}`,
+      claim: "Freelance design contract: full brand identity package (logo suite, color system, and social media templates) for a new coffee roastery, agreed for delivery by the contracted deadline",
       amount: args.depositAmountSol,
       currency: "SOL",
       policyId: "agent_data_task_v1",
       policyVersion: "1.0.0",
-      claimantRef: `e2e-claimant-${runId}`,
-      respondentRef: `e2e-respondent-${runId}`,
+      claimantRef: `client-havenroast-coffee-${runId.slice(-8)}`,
+      respondentRef: `designer-studio-mv-${runId.slice(-8)}`,
       settlementChain: "solanatestnet",
       settlementContract: decisionRelayProgramId.toBase58(),
       settlementSolanaClaimant: depositor.publicKey.toBase58(),
@@ -263,10 +263,10 @@ async function main(): Promise<void> {
 
   logStep(5, "filing minimum required evidence for policy agent_data_task_v1");
   const evidenceContents: Record<string, string> = {
-    task_spec: `[e2e-solana-live ${runId}] task spec: deliver X by Y`,
-    delivery_payload: `[e2e-solana-live ${runId}] delivery payload: X was delivered`,
-    claimant_statement: `[e2e-solana-live ${runId}] claimant statement: delivery did not meet spec`,
-    respondent_statement: `[e2e-solana-live ${runId}] respondent statement: delivery met spec`,
+    task_spec: "Scope of work: primary logo mark plus two alternate lockups, a 5-color brand palette with hex/RGB/CMYK values, and Instagram/Facebook post and story templates in Figma, delivered as a shared Figma file link by the agreed deadline.",
+    delivery_payload: "Delivered on schedule via a shared Figma file: primary logo mark, two alternate lockups, a documented 5-color palette with full color-mode values, and 6 social templates (3 post, 3 story) matching the agreed scope. Client acknowledged receipt of the file the same day.",
+    claimant_statement: "The designer delivered the full brand package as scoped and on time. We are satisfied with the work and requesting full release of the escrowed funds to the designer.",
+    respondent_statement: "All deliverables were completed and shared on schedule per the agreed scope of work.",
   };
   for (const [type, content] of Object.entries(evidenceContents)) {
     await prisma.evidence.create({

@@ -43,7 +43,7 @@ export interface PublishPolicyVersionInput {
   evidenceDeadlineHours: number;
   appealWindowHours: number;
   allowedOutcomes: string[];
-  autoSettlementCapUsd: number | null;
+  autoSettlementCapNative: number | null;
   allowedAssets: string[];
   allowedChains: string[];
   kycRequired: boolean;
@@ -92,8 +92,8 @@ export async function publishPolicyVersion(policyId: string, input: PublishPolic
   if (input.allowedOutcomes.length === 0) {
     throw new PolicyEngineError("allowedOutcomes must be non-empty");
   }
-  if (input.autoSettlementCapUsd !== null && input.autoSettlementCapUsd <= 0) {
-    throw new PolicyEngineError("autoSettlementCapUsd must be positive when set");
+  if (input.autoSettlementCapNative !== null && input.autoSettlementCapNative <= 0) {
+    throw new PolicyEngineError("autoSettlementCapNative must be positive when set");
   }
   validateVelocityLimits(input.velocityLimits);
   validateHumanReviewTriggers(input.humanReviewTriggers);
@@ -117,7 +117,7 @@ export async function publishPolicyVersion(policyId: string, input: PublishPolic
           evidenceDeadlineHours: input.evidenceDeadlineHours,
           appealWindowHours: input.appealWindowHours,
           allowedOutcomes: input.allowedOutcomes,
-          autoSettlementCapUsd: input.autoSettlementCapUsd,
+          autoSettlementCapNative: input.autoSettlementCapNative,
           allowedAssets: input.allowedAssets,
           allowedChains: input.allowedChains,
           kycRequired: input.kycRequired,

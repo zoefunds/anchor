@@ -29,6 +29,7 @@ import { checkAndConfirmSolanaDeposit } from "@/lib/solana-escrow";
 import { caseIdToBytes32 } from "@/lib/emergency-refund";
 import { isApprovedSettlementContract, isApprovedSolanaEscrowProgram } from "@/lib/hyperlane";
 import { getEscrowProgram, keypairWallet, buildInitializeCaseInstruction } from "@anchor/solana-escrow-client";
+import { sepoliaTxUrl, solanaTxUrl } from "@/lib/explorer-links";
 
 export class DepositExecutionError extends Error {}
 
@@ -151,7 +152,7 @@ export async function executeEvmDeposit(params: {
     escrowId: escrowIdBytes32,
     txHash: "txHash" in confirmed && confirmed.txHash ? confirmed.txHash : txHash,
     confirmationState: "confirmed",
-    explorerUrl: `https://sepolia.etherscan.io/tx/${txHash}`,
+    explorerUrl: sepoliaTxUrl(txHash),
   };
 }
 
@@ -236,7 +237,22 @@ export async function executeSolanaDeposit(params: {
   }
 
   const txSignature = await connection.sendTransaction(tx, { skipPreflight: false });
-  await connection.confirmTransaction({ signature: txSignature, blockhash, lastValidBlockHeight }, "confirmed");
+  // Real incident, 2026-09-12: connection.confirmTransaction's websocket
+  // subscription hung indefinitely (40+ minutes, no error, no progress)
+  // against the public api.testnet.solana.com RPC — a known class of bug
+  // where a free/public RPC never pushes the subscription notification.
+  // Polling getSignatureStatus with a bounded timeout is what this file's
+  // own deposit-confirmation step below already does for exactly this
+  // reason; applying the same pattern here instead of trusting the
+  // websocket-based confirm to ever resolve.
+  await pollUntil("transaction confirmation", 60_000, 2_000, async () => {
+    const { value } = await connection.getSignatureStatus(txSignature);
+    if (value?.err) throw new DepositExecutionError(`initialize_case transaction failed: ${JSON.stringify(value.err)}`);
+    if (value?.confirmationStatus === "confirmed" || value?.confirmationStatus === "finalized") return true;
+    const height = await connection.getBlockHeight("confirmed");
+    if (height > lastValidBlockHeight) throw new DepositExecutionError(`initialize_case transaction ${txSignature} expired (blockhash no longer valid) before confirming`);
+    return null;
+  });
   await prisma.caseSettlement.update({ where: { id: cs.id }, data: { depositTxHash: txSignature } });
 
   // Never trust the confirmed signature alone — re-read the escrow's
@@ -264,7 +280,7 @@ export async function executeSolanaDeposit(params: {
     escrowId: cs.escrowId,
     txHash: txSignature,
     confirmationState: "confirmed",
-    explorerUrl: `https://explorer.solana.com/tx/${txSignature}?cluster=devnet`,
+    explorerUrl: solanaTxUrl(txSignature),
   };
 }
 

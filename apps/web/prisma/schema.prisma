@@ -1328,12 +1328,14 @@ model PolicyVersion {
   evidenceDeadlineHours Int
   appealWindowHours     Int
   allowedOutcomes       String[]
-  // Null = no cap configured for this policy version (falls back to the
-  // global AUTO_ATTESTOR_MAX_AMOUNT_USD env cap in
-  // auto-attestor/policy.ts). Non-null generalizes that single global
-  // env var into a per-org/per-policy value — see
-  // checkAutoSignEligibility's Phase 4 update.
-  autoSettlementCapUsd  Decimal?
+  // Cap expressed in the CASE'S OWN settlement currency (ETH or SOL —
+  // whatever Case.currency actually is), never USD: Anchor settles only
+  // native chain assets, and a USD-denominated cap made every real case
+  // permanently ineligible for automated attestor signing (real bug
+  // found and fixed 2026-09-12 — see auto-attestor/policy.ts). Null = no
+  // cap configured for this policy version (falls back to the global
+  // per-currency AUTO_ATTESTOR_MAX_AMOUNT_ETH/_SOL env caps).
+  autoSettlementCapNative Decimal?
   allowedAssets         String[]
   allowedChains         String[]
   kycRequired           Boolean  @default(false)

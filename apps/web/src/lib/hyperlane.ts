@@ -80,12 +80,28 @@ export function getEvmPublicClient() {
 // class of doc/code drift apps/web/scripts/generate-deployment-manifest.ts
 // exists to catch. Corrected against that script's live on-chain read
 // (owner/attestorThreshold/codehash all verified against the real Safe).
-// Production already sets APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS via env,
-// so this default only matters for local/staging environments without
-// that override — but a wrong default there fails closed (rejects
-// legitimate case creation) rather than open, which is why this went
-// unnoticed rather than causing a security incident.
-const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = ["0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2"];
+// Real incident, 2026-09-12: the old DecisionRelay
+// (0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2) is immutably bound to
+// Hyperlane's canonical shared Sepolia mailbox (0xfFAEF09B...), whose
+// defaultHook doesn't route through any real Merkle tree — so no
+// message ever dispatched to it (regardless of dispatch code, relayer,
+// or validator health) can ever be delivered. Anchor's dispatch code
+// (packages/hyperlane-relay's HYPERLANE_MAILBOX.sepolia) already
+// correctly uses Anchor's own working Mailbox (0x345E7246...), but that
+// old DecisionRelay never trusted it — a real, permanent dead end
+// confirmed via a live test whose settlement dispatch succeeded on-chain
+// but never actually executed settle() (escrow status stayed DEPOSITED,
+// not SETTLED). Replaced with a new DecisionRelay
+// (0x3AAFf2Db124a41a46414A36792FDc955E2e74FCe) deployed against the
+// working mailbox, same ISM/attestor set (the ISM factory is
+// deterministic on (validators, threshold) alone, so it's the exact
+// same already-deployed ISM, 0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0,
+// requiring the same 2-of-3 validators already checkpointing that
+// mailbox's tree). Production sets APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS
+// via env; this default matters for local/staging without that
+// override — a wrong default here fails closed (rejects legitimate case
+// creation) rather than open.
+const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = ["0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9"];
 const DEFAULT_APPROVED_SOLANA_SETTLEMENT_PROGRAMS = ["DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"];
 // The escrow program actually invoked to move funds on Solana settlement
 // (see solana-settle.ts's submitAttestedSettle) — a separate, even more

@@ -19,6 +19,28 @@ const CHAIN_OPTIONS = [
   { value: "solanatestnet", label: "Solana Testnet" },
 ];
 
+// Anchor's own operator-approved contracts for this testnet deployment —
+// see lib/hyperlane.ts's isApprovedSettlementContract/
+// isApprovedSolanaEscrowProgram: an address not on that list is rejected
+// at registration regardless of what's typed here. Orgs don't deploy
+// their own escrow/DecisionRelay on this testnet; they all settle
+// through these same contracts, so there is exactly one right answer
+// per chain — this just saves an org owner from having to go find it.
+const ANCHOR_TESTNET_CONTRACTS: Record<string, { escrowContractAddress: string; decisionRelayAddress: string; assetSymbol: string; assetDecimals: number }> = {
+  sepolia: {
+    escrowContractAddress: "0xd848A7CA77CcaA3718d430F7D0DB62174e7a3DfC",
+    decisionRelayAddress: "0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9",
+    assetSymbol: "ETH",
+    assetDecimals: 18,
+  },
+  solanatestnet: {
+    escrowContractAddress: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn",
+    decisionRelayAddress: "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN",
+    assetSymbol: "SOL",
+    assetDecimals: 9,
+  },
+};
+
 export default function SettlementIntegrationsPage() {
   const [integrations, setIntegrations] = useState<SettlementIntegration[]>([]);
   const [chain, setChain] = useState("sepolia");
@@ -147,6 +169,20 @@ export default function SettlementIntegrationsPage() {
               ))}
             </select>
           </label>
+          <button
+            type="button"
+            onClick={() => {
+              const preset = ANCHOR_TESTNET_CONTRACTS[chain];
+              if (!preset) return;
+              setEscrowContractAddress(preset.escrowContractAddress);
+              setDecisionRelayAddress(preset.decisionRelayAddress);
+              setAssetSymbol(preset.assetSymbol);
+              setAssetDecimals(preset.assetDecimals);
+            }}
+            className="self-start rounded-md border border-seal-500/40 px-3 py-1.5 text-xs font-medium text-seal-600 hover:bg-seal-50 dark:border-seal-400/40 dark:text-seal-400 dark:hover:bg-seal-500/10"
+          >
+            Use Anchor's testnet contracts for {CHAIN_OPTIONS.find((c) => c.value === chain)?.label}
+          </button>
           <label className="flex flex-col gap-2">
             <span className="field-label">{chain === "solanatestnet" ? "Escrow program ID" : "Escrow contract address"}</span>
             <input

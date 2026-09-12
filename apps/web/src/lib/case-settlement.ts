@@ -168,6 +168,17 @@ export async function authorizeDepositOnChain(caseSettlementId: string): Promise
     args: [caseIdBytes32, escrowIdBytes32, cs.claimantAddress as Address, cs.respondentAddress as Address, BigInt(cs.expectedAmountAtto)],
   });
 
+  // Real bug found and fixed 2026-09-12: writeContract only submits the
+  // transaction — it does not confirm it landed. A caller that proceeds
+  // straight to a deposit() call (executeEvmDeposit does exactly this)
+  // can simulate/submit deposit() against on-chain state from BEFORE
+  // this authorization was actually mined, hitting a real
+  // NotAuthorized(bytes32) revert even though authorizeDeposit()
+  // eventually succeeds. Confirming here closes that race for every
+  // caller, not just the one that happened to expose it.
+  const publicClient = createPublicClient({ chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+
   await prisma.$transaction(async (tx) => {
     await tx.caseSettlement.update({
       where: { id: cs.id },

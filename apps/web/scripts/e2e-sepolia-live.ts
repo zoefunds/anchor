@@ -171,10 +171,6 @@ async function main(): Promise<void> {
 
   console.log(`[e2e-sepolia] ${runId}: starting — claimant=${depositorAccount.address}, respondent=${respondentAddress}, deposit=${args.depositAmountEth} ETH`);
 
-  if (!isApprovedSettlementContract("sepolia", settlementContract)) {
-    throw new Error(`settlement contract ${settlementContract} is not on the operator-approved list (lib/hyperlane.ts's isApprovedSettlementContract)`);
-  }
-
   logStep(1, `verifying escrow ${settlementContract} is bound to a DecisionRelay and detecting its ABI version`);
   const relayAddress = privateKeyToAccount((relayPrivateKey.startsWith("0x") ? relayPrivateKey : `0x${relayPrivateKey}`) as Hex).address;
   // The DecisionRelay address itself isn't a script input — assertEscrowBoundToDecisionRelay
@@ -186,6 +182,14 @@ async function main(): Promise<void> {
     functionName: "decisionRelay",
   })) as Address;
   await assertEscrowBoundToDecisionRelay({ chain: "sepolia", escrowContractAddress: settlementContract, expectedDecisionRelayAddress: liveDecisionRelay });
+  // Real bug found and fixed here 2026-09-12 (same class as the one found
+  // wiring EscrowUSDC into settlement earlier): isApprovedSettlementContract
+  // checks against the operator-approved DecisionRelay allowlist, not
+  // escrow addresses — must run against liveDecisionRelay (resolved above),
+  // never against the escrow address this CLI flag actually names.
+  if (!isApprovedSettlementContract("sepolia", liveDecisionRelay)) {
+    throw new Error(`decisionRelay ${liveDecisionRelay} is not on the operator-approved list (lib/hyperlane.ts's isApprovedSettlementContract)`);
+  }
   const escrowVersion = await detectEscrowVersion(settlementContract);
   console.log(`[e2e-sepolia] escrow version detected: ${escrowVersion}`);
 
@@ -217,15 +221,18 @@ async function main(): Promise<void> {
     data: {
       organizationId,
       status: "EVIDENCE_COLLECTION",
-      claim: `[e2e-sepolia-live] manual confirmation run ${runId}`,
+      claim: "Freelance backend integration contract: Stripe payment API integration for an e-commerce checkout flow, agreed for delivery by the contracted milestone date",
       amount: args.depositAmountEth,
       currency: "ETH",
       policyId: "agent_data_task_v1",
       policyVersion: "1.0.0",
-      claimantRef: `e2e-claimant-${runId}`,
-      respondentRef: `e2e-respondent-${runId}`,
+      claimantRef: `client-northwind-retail-${runId.slice(-8)}`,
+      respondentRef: `dev-contractor-jt-${runId.slice(-8)}`,
       settlementChain: "sepolia",
-      settlementContract,
+      // Real bug fixed here: must be the DecisionRelay address (what
+      // dispatchDecisionForCase's isDecisionSettledOnSepolia checks
+      // processedDecisions() against), never the escrow's own address.
+      settlementContract: liveDecisionRelay,
     },
   });
   console.log(`[e2e-sepolia] case created: ${kase.id}`);
@@ -258,10 +265,10 @@ async function main(): Promise<void> {
 
   logStep(6, "filing minimum required evidence for policy agent_data_task_v1");
   const evidenceContents: Record<string, string> = {
-    task_spec: `[e2e-sepolia-live ${runId}] task spec: deliver X by Y`,
-    delivery_payload: `[e2e-sepolia-live ${runId}] delivery payload: X was delivered`,
-    claimant_statement: `[e2e-sepolia-live ${runId}] claimant statement: delivery did not meet spec`,
-    respondent_statement: `[e2e-sepolia-live ${runId}] respondent statement: delivery met spec`,
+    task_spec: "Scope of work: integrate Stripe Checkout and webhook-based order fulfillment into the client's existing Next.js storefront, including test-mode verification, by the agreed milestone date. Deliverable was to include a working staging deployment and a short handoff document.",
+    delivery_payload: "No staging deployment link, code repository access, or handoff document was ever provided by the contracted deadline. Two follow-up messages requesting a status update received no response.",
+    claimant_statement: "The contracted integration was never delivered in any usable form by the agreed date. We are requesting full release of the escrowed funds back to us given the complete non-delivery.",
+    respondent_statement: "No response was submitted by the respondent.",
   };
   for (const [type, content] of Object.entries(evidenceContents)) {
     await prisma.evidence.create({

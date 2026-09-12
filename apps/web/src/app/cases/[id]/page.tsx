@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { StatusStamp } from "@/components/StatusStamp";
+import { sepoliaTxUrl, genlayerTxUrl, genlayerAddressUrl, settlementTxUrl, settlementAddressUrl } from "@/lib/explorer-links";
 
 const EXHIBIT_LETTERS = "ABCDEFGH";
 
@@ -440,7 +441,7 @@ export default function CaseDetailPage() {
         {kase.contractAddress && (
           <p className="mt-4 font-mono text-[11px] text-muted dark:text-muted-dark">
             GenLayer contract{" "}
-            <span className="text-ink-950 dark:text-ink">{kase.contractAddress}</span>
+            <ExplorerLink href={genlayerAddressUrl(kase.contractAddress)}>{kase.contractAddress}</ExplorerLink>
           </p>
         )}
         <p className="mt-2 font-mono text-[11px] text-muted dark:text-muted-dark">
@@ -880,19 +881,50 @@ function EscrowPanel({
               <span className="font-mono text-[11px] text-muted dark:text-muted-dark">{caseSettlement.integration.assetSymbol}</span>
             </div>
             <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">
-              escrow {caseSettlement.escrowId} on {caseSettlement.integration.escrowContractAddress}
+              escrow {caseSettlement.escrowId} on{" "}
+              {settlementAddressUrl(caseSettlement.integration.chain, caseSettlement.integration.escrowContractAddress) ? (
+                <ExplorerLink href={settlementAddressUrl(caseSettlement.integration.chain, caseSettlement.integration.escrowContractAddress)!}>
+                  {caseSettlement.integration.escrowContractAddress}
+                </ExplorerLink>
+              ) : (
+                caseSettlement.integration.escrowContractAddress
+              )}
             </p>
 
             <ol className="mt-6 flex flex-col gap-3 border-t border-line pt-6 dark:border-line-dark">
               <PipelineStep
                 done={Boolean(caseSettlement.claimantAddress)}
                 label="Claimant set their payout address"
-                detail={caseSettlement.claimantAddress ?? "waiting — the claimant sets this from their own case link"}
+                detail={
+                  caseSettlement.claimantAddress ? (
+                    settlementAddressUrl(caseSettlement.integration.chain, caseSettlement.claimantAddress) ? (
+                      <ExplorerLink href={settlementAddressUrl(caseSettlement.integration.chain, caseSettlement.claimantAddress)!}>
+                        {caseSettlement.claimantAddress}
+                      </ExplorerLink>
+                    ) : (
+                      caseSettlement.claimantAddress
+                    )
+                  ) : (
+                    "waiting — the claimant sets this from their own case link"
+                  )
+                }
               />
               <PipelineStep
                 done={Boolean(caseSettlement.respondentAddress)}
                 label="Respondent set their payout address"
-                detail={caseSettlement.respondentAddress ?? "waiting — the respondent sets this from their own case link"}
+                detail={
+                  caseSettlement.respondentAddress ? (
+                    settlementAddressUrl(caseSettlement.integration.chain, caseSettlement.respondentAddress) ? (
+                      <ExplorerLink href={settlementAddressUrl(caseSettlement.integration.chain, caseSettlement.respondentAddress)!}>
+                        {caseSettlement.respondentAddress}
+                      </ExplorerLink>
+                    ) : (
+                      caseSettlement.respondentAddress
+                    )
+                  ) : (
+                    "waiting — the respondent sets this from their own case link"
+                  )
+                }
               />
               <PipelineStep
                 done={caseSettlement.status === "DEPOSITED" || caseSettlement.status === "SETTLED"}
@@ -1021,10 +1053,20 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
         <p className="text-sm text-muted dark:text-muted-dark">
           Target: <span className="font-mono text-ink-950 dark:text-ink">{SETTLEMENT_CHAIN_LABELS[kase.settlementChain] ?? kase.settlementChain}</span>
         </p>
-        <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">{kase.settlementContract}</p>
+        <p className="mt-1 break-all font-mono text-xs text-muted dark:text-muted-dark">
+          {kase.settlementContract && settlementAddressUrl(kase.settlementChain ?? "", kase.settlementContract) ? (
+            <ExplorerLink href={settlementAddressUrl(kase.settlementChain ?? "", kase.settlementContract)!}>{kase.settlementContract}</ExplorerLink>
+          ) : (
+            kase.settlementContract
+          )}
+        </p>
 
         <ol className="mt-6 flex flex-col gap-3 border-t border-line pt-6 dark:border-line-dark">
-          <PipelineStep done label="Adjudicated on GenLayer" detail={d?.adjudicateTxHash ? `tx ${d.adjudicateTxHash}` : undefined} />
+          <PipelineStep
+            done
+            label="Adjudicated on GenLayer"
+            detail={d?.adjudicateTxHash ? <>tx <ExplorerLink href={genlayerTxUrl(d.adjudicateTxHash)}>{d.adjudicateTxHash}</ExplorerLink></> : undefined}
+          />
           <PipelineStep
             done={kase.status === "FINALIZED"}
             label="Finalized (appeal window closed)"
@@ -1040,21 +1082,33 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
                 : "Relayed via Hyperlane to destination contract"
             }
             detail={
-              reconciled
-                ? undefined
-                : d?.relayTxHash
-                  ? // Three distinct identifiers, shown distinctly — never
-                    // collapse the settlement tx, the notification tx, and
-                    // the Hyperlane message ID into one value. For EVM
-                    // settlements relayNotificationTxHash is null (the
-                    // Hyperlane-delivered message IS the settlement tx),
-                    // so only Solana settlements show the extra "notify tx".
-                    `settle tx ${d.relayTxHash}` +
-                    (d.relayNotificationTxHash ? ` · notify tx ${d.relayNotificationTxHash}` : "") +
-                    (d.relayMessageId ? ` · hyperlane message ${d.relayMessageId}` : "")
-                  : d?.relayError
-                    ? `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
-                    : undefined
+              reconciled ? undefined : d?.relayTxHash ? (
+                // Three distinct identifiers, shown distinctly — never
+                // collapse the settlement tx, the notification tx, and
+                // the Hyperlane message ID into one value. For EVM
+                // settlements relayNotificationTxHash is null (the
+                // Hyperlane-delivered message IS the settlement tx), so
+                // only Solana settlements show the extra "notify tx" —
+                // that notification dispatch always happens on Sepolia
+                // (Anchor's own Mailbox), regardless of settlement chain.
+                <>
+                  settle tx{" "}
+                  {settlementTxUrl(kase.settlementChain ?? "", d.relayTxHash) ? (
+                    <ExplorerLink href={settlementTxUrl(kase.settlementChain ?? "", d.relayTxHash)!}>{d.relayTxHash}</ExplorerLink>
+                  ) : (
+                    d.relayTxHash
+                  )}
+                  {d.relayNotificationTxHash && (
+                    <>
+                      {" "}
+                      · notify tx <ExplorerLink href={sepoliaTxUrl(d.relayNotificationTxHash)}>{d.relayNotificationTxHash}</ExplorerLink>
+                    </>
+                  )}
+                  {d.relayMessageId && <> · hyperlane message {d.relayMessageId}</>}
+                </>
+              ) : d?.relayError ? (
+                `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
+              ) : undefined
             }
           />
         </ol>
@@ -1070,6 +1124,19 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
   );
 }
 
+function ExplorerLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-seal-500 underline decoration-dotted underline-offset-2 hover:text-seal-600 dark:text-seal-400 dark:hover:text-seal-300"
+    >
+      {children}
+    </a>
+  );
+}
+
 function PipelineStep({
   done,
   pending,
@@ -1081,7 +1148,7 @@ function PipelineStep({
   pending?: boolean;
   failed?: boolean;
   label: string;
-  detail?: string;
+  detail?: ReactNode;
 }) {
   const marker = failed ? "✕" : done ? "✓" : pending ? "…" : "○";
   const markerColor = failed

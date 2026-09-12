@@ -8,12 +8,10 @@
       "chainId": 11155111,
       "displayName": "Sepolia",
       "domainId": 11155111,
-      "index": { "from": 11598000 },
-      "interchainGasPaymaster": "0x6f2756380FD49228ae25Aa7F2817993cB74Ecc56",
-      "interchainSecurityModule": "0x115F9F1651B68E719a60C4E3E8c01a761171608C",
+      "index": { "from": 11651800 },
       "isTestnet": true,
-      "mailbox": "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-      "merkleTreeHook": "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d",
+      "mailbox": "0x345E7246631ceb0300427caB75eacA10c326BB09",
+      "merkleTreeHook": "0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB",
       "name": "sepolia",
       "nativeToken": { "decimals": 18, "name": "Ether", "symbol": "ETH" },
       "protocol": "ethereum",
@@ -23,7 +21,7 @@
         { "http": "https://sepolia.gateway.tenderly.co" },
         { "http": "https://sepolia.rpc.thirdweb.com" }
       ],
-      "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9"
+      "validatorAnnounce": "0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5"
     },
     "solanatestnet": {
       "blockExplorers": [
