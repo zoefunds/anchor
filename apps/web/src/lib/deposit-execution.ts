@@ -28,7 +28,6 @@ import { authorizeDepositOnChain, checkAndConfirmDeposit } from "@/lib/case-sett
 import { checkAndConfirmSolanaDeposit } from "@/lib/solana-escrow";
 import { caseIdToBytes32 } from "@/lib/emergency-refund";
 import { isApprovedSettlementContract, isApprovedSolanaEscrowProgram } from "@/lib/hyperlane";
-import { getEscrowProgram, keypairWallet, buildInitializeCaseInstruction } from "@anchor/solana-escrow-client";
 import { sepoliaTxUrl, solanaTxUrl } from "@/lib/explorer-links";
 
 export class DepositExecutionError extends Error {}
@@ -197,6 +196,10 @@ export async function executeSolanaDeposit(params: {
   const rpcUrl = process.env.SOLANA_RPC_URL;
   if (!rpcUrl) throw new DepositExecutionError("SOLANA_RPC_URL is not set — see apps/web/.env.example");
   const connection = new Connection(rpcUrl, "confirmed");
+  // Lazy import: keeps this module loadable (e.g. by testnet-canary.ts's
+  // sepolia-only path) in any deployment whose build context doesn't
+  // include the packages/solana-escrow-client workspace package.
+  const { getEscrowProgram, keypairWallet, buildInitializeCaseInstruction } = await import("@anchor/solana-escrow-client");
 
   const depositor = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(params.depositorSecretKeyJson)));
   if (depositor.publicKey.toBase58() !== cs.claimantAddress) {
