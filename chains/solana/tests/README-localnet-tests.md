@@ -91,6 +91,14 @@ real quorum check:
 - a real, validly-signed message from a non-registered key does not
   count toward quorum
 
+See also `../tools/ism-localnet-tests/` for real local coverage of the
+separate Hyperlane multisig-ISM `Verify`/quorum path (first
+delivery/quorum-loss/malformed-metadata/recovery scenarios against the
+real `hyperlane-sealevel-multisig-ism-message-id` program, in-process via
+`solana-program-test` rather than `solana-test-validator` — see that
+crate's own README for why) — that suite is `ISM_MIGRATION.md`'s Testnet
+proof checklist, not this one's.
+
 Not covered here (out of scope for this suite): the Hyperlane
 dispatch/handle notification path, `InitReplayGuard`, and the
 `no-entrypoint`/direct-Rust unit tests already in `lib.rs`'s own `#[cfg(test)]`

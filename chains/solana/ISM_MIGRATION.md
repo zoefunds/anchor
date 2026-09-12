@@ -1,8 +1,20 @@
 # Solana ISM migration: trusted-relayer → real multisig
 
-Status: **design only — not implemented, not deployed.** Per the security
-brief this responds to: "do NOT deploy a replacement until a complete
-Testnet proof exists." Nothing in this document has been built yet.
+Status: **stale header, corrected 2026-09-12 — this line previously said
+"design only — not implemented, not deployed," which is no longer true
+and should not have been trusted at face value.** The migration described
+below was actually carried out: `decision-relay`'s `InterchainSecurityModule`
+handler (`programs/decision-relay/src/lib.rs`) now returns
+`REAL_MULTISIG_ISM` (`5DLNSFtzEJBTipvvSvNPzvAFpx8uwf96qEjygAwT6ncY`, a real
+deployed `hyperlane-sealevel-multisig-ism-message-id` instance, 2-of-3
+validators) instead of `TRUSTED_ISM`, per `docs/mainnet-readiness-runbook.md`'s
+"Solana inbound transport — updated 2026-09-07" section — but, matching that
+section's own caveat, **the 8-step Testnet proof checklist below had never
+actually been run against it** until the local coverage added 2026-09-12
+(see `chains/solana/tools/ism-localnet-tests/` and its own README). Only
+the items explicitly marked "PROVEN (local)" below have real, recorded
+evidence; the rest remain open exactly as this document originally
+required before calling this migration secure or independent.
 
 ## What this migration is and isn't
 
@@ -75,40 +87,91 @@ is wired into the live `decision-relay` program:
    (already running for the EVM ISM) sign and publish checkpoints that
    cover Solana-destination messages too (Hyperlane checkpoints are
    Mailbox-global, not per-destination, but this must be verified against
-   the actual running agent config, not assumed).
+   the actual running agent config, not assumed). **Not proven.** Needs the
+   real running validator agents' own checkpoint storage inspected on
+   Testnet; out of scope for local coverage (there's no local validator
+   agent to check).
 2. **Metadata construction** — build the multisig ISM's expected
    `metadata` bytes (validator signatures + checkpoint index/root) for a
    real dispatched message, using the same tooling/library Hyperlane's own
    Sealevel relayer uses, not a hand-rolled encoder.
+   **PROVEN (local).** `chains/solana/tools/ism-localnet-tests/tests/multisig_ism_scenarios.rs`
+   builds real `MultisigIsmMessageIdMetadata` (the crate's own typed
+   struct, not a hand-rolled encoder) with real secp256k1 ECDSA signatures
+   and feeds it through the real `VerifyAccountMetas`/`Verify` instructions
+   of the real `hyperlane-sealevel-multisig-ism-message-id` program,
+   in-process via `solana-program-test`. See that crate's README for exact
+   command output.
 3. **Relayer simulation** — run the self-hosted relayer's simulation step
    against the new ISM configuration and confirm it accepts the
    constructed metadata (catches account-list/format mismatches before
    spending a real `process()` transaction).
+   **PROVEN (local), partially.** The same test file runs the exact
+   `VerifyAccountMetas` simulate-then-`Verify` sequence a real relayer's
+   simulation step performs, and it accepts valid metadata
+   (`scenario_1_first_delivery_accepted_with_quorum`). This proves the
+   ISM's own simulation-facing instruction works correctly; it does not
+   run Hyperlane's actual self-hosted relayer binary/config, which is a
+   separate, not-yet-run step.
 4. **`process()` transaction** — submit a real `process()` call on Solana
    Testnet through the new ISM and confirm it succeeds on-chain (record
    the transaction signature).
+   **Not proven** at the Mailbox `process()` layer (no local Mailbox
+   deployment/CPI wiring was built — see `ism-localnet-tests/README.md`
+   for exactly why that was out of this task's budget). The ISM's own
+   `Verify` acceptance, which `process()` CPIs into, is proven per item 2.
 5. **Recipient notification event/log** — confirm `decision-relay`'s
    `handle()` still emits its existing notification log/state for the
    delivered message (proves the new ISM didn't change what a successful
-   delivery hands to the recipient).
+   delivery hands to the recipient). **Not proven locally** — same Mailbox
+   CPI-wiring gap as item 4.
 6. **Replay rejection** — resubmit the same message/metadata and confirm
    Hyperlane's own `Processed` PDA idempotency check rejects it (this is
    Hyperlane's own protection, separate from `decision-relay`'s own
    `ReplayGuard` on the recipient side — both must independently hold).
+   **Not proven at the Mailbox `Processed`-PDA layer** (same gap as item
+   4). **`decision-relay`'s own independent `ReplayGuard` layer IS proven**
+   — its pre-existing direct unit tests (`replay_guard_tests` in
+   `programs/decision-relay/src/lib.rs`: `rejects_replay_of_the_same_decision_hash`,
+   `accepts_two_distinct_decisions`, `ring_buffer_evicts_oldest_entry_after_capacity_exceeded`)
+   were run for this task (`cargo test -p decision-relay --lib`) and all 3
+   pass — real ring-buffer replay-rejection logic, not new work, just
+   verified still correct.
 7. **Forged-origin rejection** — attempt delivery with metadata over a
    forged/wrong checkpoint (wrong root, insufficient signatures, or
    signatures from non-validator keys) and confirm `process()` rejects it
    — this is the actual security property the whole migration exists to
    add over `TRUSTED_ISM`'s unconditional accept.
+   **PROVEN (local), at the ISM-verify layer.** `scenario_5_quorum_loss_rejected`
+   (1-of-3 real signatures, below threshold),
+   `scenario_5b_non_validator_signature_does_not_count_toward_quorum` (a
+   real signature from a real key outside the registered set),
+   `scenario_4_malformed_metadata_rejected` (truncated metadata bytes), and
+   `scenario_4b_corrupted_signature_bytes_rejected` (bit-flipped signature)
+   all confirm real rejection with the real program's own error codes
+   (`ThresholdNotMet`=7, `InvalidMetadata`=10). Not proven: rejection by
+   the Mailbox's own `process()` wrapper specifically (item 4's gap).
 8. **Notification-only invariant re-confirmed** — after 4-7 pass, confirm
    directly (read the deployed `decision-relay` program's `handle()`
    account list, e.g. via `handle_account_metas`) that it still requires no
    escrow-authority or settlement-capable account — i.e. the new ISM
    changed nothing about what a delivered message can do.
+   **Not re-run against the live Testnet deployment this task** (4-7
+   haven't fully passed at the Mailbox layer per above, so this item's own
+   precondition isn't met yet); `decision-relay`'s pre-existing
+   `handle_account_metas_never_includes_a_signer` regression test does
+   still pass (see item 6's test run), which is the same invariant checked
+   directly in source rather than by reading the live on-chain account list.
 
 Only once all 8 have real, recorded evidence does this become a
 "deploy-ready" change, per the brief's explicit instruction not to deploy
-before a complete proof exists.
+before a complete proof exists. **As of this update, items 2/3/7 (and
+6's decision-relay-side half) have real local evidence; items 1, 4, 5, and
+6's Mailbox-side half, and 8, remain open** — this is a partial, honest
+proof, not a complete one, and the live `REAL_MULTISIG_ISM` cutover that
+already happened on Testnet (per `docs/mainnet-readiness-runbook.md`)
+still predates this proof rather than following it, which is itself a
+process gap worth flagging, not repeating going forward.
 
 ### 3. Notification-only invariant — explicit preservation statement
 

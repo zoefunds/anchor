@@ -1,0 +1,40 @@
+[package]
+name = "ism-localnet-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Real-program-logic integration tests for the multisig ISM
+# (hyperlane-sealevel-multisig-ism-message-id, the program decision-relay's
+# InterchainSecurityModule handler now points at as REAL_MULTISIG_ISM —
+# see chains/solana/programs/decision-relay/src/lib.rs and
+# chains/solana/ISM_MIGRATION.md) that ISM_MIGRATION.md's 8-step Testnet
+# proof checklist never had run against it locally. Uses solana-program-test
+# (BanksClient), the same in-process harness Hyperlane's own upstream
+# `functional.rs` test for this exact program uses (see
+# tests/multisig_ism_scenarios.rs's own doc comment for why this, not
+# solana-test-validator, is the honest choice here) — this is the real
+# process_instruction() entrypoint invoked directly, not a mock, and real
+# secp256k1 ECDSA signatures over the real EVM-compatible signed digest.
+[lib]
+name = "ism_localnet_tests"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+borsh = "1.5"
+hex = "0.4"
+account-utils = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+ecdsa-signature = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+hyperlane-core = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+hyperlane-sealevel-interchain-security-module-interface = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+hyperlane-sealevel-multisig-ism-message-id = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+multisig-ism = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b", features = ["test-data"] }
+serializable-account-meta = { git = "https://github.com/hyperlane-xyz/hyperlane-monorepo", rev = "b58c7eb7275cd61467805f8841d26682118b6f1b" }
+solana-program = "=3.0.0"
+solana-system-interface = { version = "=2.0.0", features = ["bincode"] }
+solana-program-test = "=3.0.7"
+solana-sdk = "=3.0.0"
+solana-keypair = "=3.1.0"
+five8 = "=0.2.1"
+tokio = { version = "1", features = ["full"] }
