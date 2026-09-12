@@ -155,6 +155,134 @@ export async function executeEvmDeposit(params: {
   };
 }
 
+const USDC_DEPOSIT_ABI = [
+  {
+    type: "function",
+    name: "deposit",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "caseId", type: "bytes32" },
+      { name: "escrowId", type: "bytes32" },
+      { name: "claimant", type: "address" },
+      { name: "respondent", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const ERC20_ABI = [
+  { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] },
+  { type: "function", name: "allowance", stateMutability: "view", inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], outputs: [{ type: "uint256" }] },
+] as const;
+
+/**
+ * EscrowUSDC's deposit() is a materially different call shape from
+ * native Escrow.sol's — non-payable, an explicit amount argument, and
+ * it requires an ERC20 approve() first (SafeERC20.safeTransferFrom
+ * pulls the funds; there is no msg.value). Kept as a separate function
+ * from executeEvmDeposit rather than branching inside it, since the two
+ * ABIs, the allowlist check (isApprovedUsdcEscrow, not
+ * isApprovedSettlementContract), and the extra approve step are genuine
+ * differences, not a shared code path with one varying parameter.
+ */
+export async function executeUsdcDeposit(params: {
+  caseSettlementId: string;
+  depositorPrivateKey: string;
+  timeoutMs?: number;
+}): Promise<DepositReceipt> {
+  const cs = await prisma.caseSettlement.findUniqueOrThrow({
+    where: { id: params.caseSettlementId },
+    include: { integration: true, case: true },
+  });
+  if (cs.integration.chain !== "sepolia" || cs.integration.escrowVersion !== "USDC_V1") {
+    throw new DepositExecutionError(`executeUsdcDeposit called on a non-USDC_V1 integration (chain=${cs.integration.chain}, escrowVersion=${cs.integration.escrowVersion})`);
+  }
+  if (!cs.claimantAddress || !cs.respondentAddress) {
+    throw new DepositExecutionError("both parties must set their settlement address before a deposit can be executed");
+  }
+  if (cs.status === "DEPOSITED" || cs.status === "SETTLED") {
+    throw new DepositExecutionError(`CaseSettlement ${cs.id} is already ${cs.status} — refusing to execute a second deposit`);
+  }
+  const settlementContract = cs.integration.escrowContractAddress as Address;
+
+  const rpcUrl = process.env.HYPERLANE_RELAY_RPC_URL;
+  if (!rpcUrl) throw new DepositExecutionError("HYPERLANE_RELAY_RPC_URL is not set — see apps/web/.env.example");
+  const depositorKey = (params.depositorPrivateKey.startsWith("0x") ? params.depositorPrivateKey : `0x${params.depositorPrivateKey}`) as Hex;
+  const depositorAccount = privateKeyToAccount(depositorKey);
+  if (depositorAccount.address.toLowerCase() !== cs.claimantAddress.toLowerCase()) {
+    throw new DepositExecutionError(
+      `depositor key resolves to ${depositorAccount.address}, but this CaseSettlement's claimantAddress is ${cs.claimantAddress} — EscrowUSDC.deposit() requires msg.sender === claimant`
+    );
+  }
+
+  const { probeUsdcTokenGetter } = await import("@/lib/escrow-version");
+  const { isApprovedUsdcEscrow } = await import("@/lib/hyperlane");
+  const tokenAddress = await probeUsdcTokenGetter(settlementContract);
+  if (!tokenAddress || !isApprovedUsdcEscrow("sepolia", settlementContract, tokenAddress)) {
+    throw new DepositExecutionError(`escrow ${settlementContract} is not this environment's approved USDC escrow/token pair (lib/hyperlane.ts's isApprovedUsdcEscrow)`);
+  }
+
+  const publicClient = createPublicClient({ chain: sepolia, transport: http(rpcUrl) });
+  const walletClient = createWalletClient({ account: depositorAccount, chain: sepolia, transport: http(rpcUrl) });
+
+  const authResult = await authorizeDepositOnChain(cs.id);
+  if (authResult.outcome === "not_ready") {
+    throw new DepositExecutionError(`authorizeDepositOnChain not ready: ${authResult.reason}`);
+  }
+
+  const caseIdBytes32 = caseIdToBytes32(cs.caseId);
+  const escrowIdBytes32 = cs.escrowId as Hex;
+  const amount = BigInt(cs.expectedAmountAtto);
+
+  const currentAllowance = (await publicClient.readContract({
+    address: tokenAddress,
+    abi: ERC20_ABI,
+    functionName: "allowance",
+    args: [depositorAccount.address, settlementContract],
+  })) as bigint;
+  if (currentAllowance < amount) {
+    const { request: approveRequest } = await publicClient.simulateContract({
+      account: depositorAccount,
+      address: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [settlementContract, amount],
+    });
+    const approveTxHash = await walletClient.writeContract(approveRequest);
+    await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
+  }
+
+  const depositArgs = { caseId: caseIdBytes32, escrowId: escrowIdBytes32, claimant: depositorAccount.address, respondent: cs.respondentAddress as Address, amount };
+
+  const { request } = await publicClient.simulateContract({
+    account: depositorAccount,
+    address: settlementContract,
+    abi: USDC_DEPOSIT_ABI,
+    functionName: "deposit",
+    args: [depositArgs.caseId, depositArgs.escrowId, depositArgs.claimant, depositArgs.respondent, depositArgs.amount],
+  });
+
+  const txHash = await walletClient.writeContract(request);
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  await prisma.caseSettlement.update({ where: { id: cs.id }, data: { depositTxHash: txHash } });
+
+  const confirmed = await pollUntil("deposit confirmation", params.timeoutMs ?? 120_000, 5_000, async () => {
+    const result = await checkAndConfirmDeposit(cs.id);
+    return result.outcome === "confirmed" ? result : result.outcome === "already_confirmed" ? { outcome: "already_confirmed" as const, txHash } : null;
+  });
+
+  return {
+    chain: "sepolia",
+    asset: cs.integration.assetSymbol,
+    amountAtomic: cs.expectedAmountAtto,
+    escrowId: escrowIdBytes32,
+    txHash: "txHash" in confirmed && confirmed.txHash ? confirmed.txHash : txHash,
+    confirmationState: "confirmed",
+    explorerUrl: `https://sepolia.etherscan.io/tx/${txHash}`,
+  };
+}
+
 /**
  * Constructs, simulates, submits, and confirms a real Solana escrow
  * deposit (escrow.initialize_case) for an existing CaseSettlement,
