@@ -36,6 +36,9 @@ export interface PublicSettlement {
   expectedAmountAtto: string;
   claimantAddress: string | null;
   respondentAddress: string | null;
+  /** Public on-chain facts (see the /deposit page) — not present on the embeddable widget's own display, only used by the dedicated deposit page. */
+  escrowContractAddress: string;
+  escrowId: string;
 }
 
 export interface PublicPolicy {

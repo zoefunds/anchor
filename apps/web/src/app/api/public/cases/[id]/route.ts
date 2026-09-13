@@ -81,6 +81,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
           expectedAmountAtto: kase.settlement.expectedAmountAtto,
           claimantAddress: kase.settlement.claimantAddress,
           respondentAddress: kase.settlement.respondentAddress,
+          // Added for the dedicated (non-embedded, signing-capable)
+          // /public/cases/[id]/deposit page — see that route's own
+          // header comment for why this is deliberately NOT exposed to
+          // CasePanel.tsx/the embeddable widget, which stay
+          // wallet-connect-free by design. escrowContractAddress/escrowId
+          // are public on-chain facts (visible to anyone reading the
+          // Escrow contract's own events), not secrets.
+          escrowContractAddress: kase.settlement.integration.escrowContractAddress,
+          escrowId: kase.settlement.escrowId,
         }
       : null,
     evidence: kase.evidence.map((e) => ({
