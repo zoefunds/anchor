@@ -16,7 +16,15 @@ import { verifyManifestHash } from "@/lib/manifest-signature";
 // digest) — the manifest now reflects 0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834,
 // replacing the short-lived, never-used first Phase 2 pair
 // (0x2d5E63ea...) — see deployment-registry.ts's RETIRED_SEPOLIA_ADDRESSES.
-const EXPECTED_EVM_MANIFEST_HASH = "cf720bb1f17beaf54a4c524132fc9d5e64d58e11345a2ad1b643f988fb70f2ce";
+// Updated again 2026-09-13 (same day) after the manifest's owner-not-Safe
+// finding was recategorized from `flags` to `knownLimitations` — this
+// contract has no ownership-transfer function at all (confirmed by
+// reading DecisionRelay.sol), so that finding can never resolve without
+// a full redeploy, and putting it in `flags` crash-looped anc-hor-worker
+// in production the moment a real boot enforced flags.length === 0. No
+// on-chain values changed, only how this one known, permanent fact is
+// classified.
+const EXPECTED_EVM_MANIFEST_HASH = "1d30ea75bb419419fa746b0350835ab8ba1ab6936cc422227b3c2e5158e4f06c";
 const EXPECTED_SOLANA_MANIFEST_HASH = "93637df98778c03d223cb2258ae4098bbc67d941c0ff5a4a0376cf8c73a440b5";
 
 // Phase 1 (signer/settlement/delivery reliability), item 1's "expected
