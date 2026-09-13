@@ -1,0 +1,7 @@
+{
+  "chain": "sepolia",
+  "caseId": "cmtzvqbie0004ytozj0jnv3a5",
+  "claim": "Agent B delivered the requested dataset exactly per spec; Agent A disputes anyway (rehearsal fixture, clear-cut RELEASE_FULL).",
+  "policyId": "agent_data_task_v1",
+  "policyVersion": "1.0.0"
+}

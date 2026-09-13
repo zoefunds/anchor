@@ -29,6 +29,7 @@ import { checkAndConfirmSolanaDeposit } from "@/lib/solana-escrow";
 import { caseIdToBytes32 } from "@/lib/emergency-refund";
 import { isApprovedSettlementContract, isApprovedSolanaEscrowProgram } from "@/lib/hyperlane";
 import { sepoliaTxUrl, solanaTxUrl } from "@/lib/explorer-links";
+import { confirmTransactionBounded } from "@/lib/solana-confirm";
 
 export class DepositExecutionError extends Error {}
 
@@ -96,9 +97,6 @@ export async function executeEvmDeposit(params: {
     throw new DepositExecutionError(`CaseSettlement ${cs.id} is already ${cs.status} — refusing to execute a second deposit`);
   }
   const settlementContract = cs.integration.escrowContractAddress as Address;
-  if (!isApprovedSettlementContract("sepolia", settlementContract)) {
-    throw new DepositExecutionError(`escrow ${settlementContract} is not on the operator-approved list (lib/hyperlane.ts's isApprovedSettlementContract)`);
-  }
 
   const rpcUrl = process.env.HYPERLANE_RELAY_RPC_URL;
   if (!rpcUrl) throw new DepositExecutionError("HYPERLANE_RELAY_RPC_URL is not set — see apps/web/.env.example");
@@ -112,6 +110,34 @@ export async function executeEvmDeposit(params: {
 
   const publicClient = createPublicClient({ chain: sepolia, transport: http(rpcUrl) });
   const walletClient = createWalletClient({ account: depositorAccount, chain: sepolia, transport: http(rpcUrl) });
+
+  // Real bug found and fixed 2026-09-13 (incident recovery Phase G.4):
+  // this check used to run isApprovedSettlementContract against
+  // `settlementContract` (the ESCROW address) — but that allowlist is
+  // meant for DecisionRelay addresses (see lib/hyperlane.ts's own doc
+  // comment on isApprovedSettlementContract). An escrow will never be
+  // ON that list, so this either always throws (forcing every caller,
+  // including this session's own E2E tests, to add the escrow to the
+  // allowlist as a workaround) or, if an operator "fixes" it by adding
+  // the escrow address, silently defeats the check's actual purpose:
+  // proving the settlement contract this deposit is bound to is one
+  // Anchor's operators actually approved. The Escrow/DecisionRelay
+  // binding check and the DecisionRelay allowlist check are two
+  // genuinely separate concerns and must not be conflated into one
+  // address being checked against the wrong list.
+  const liveDecisionRelay = (await publicClient.readContract({
+    address: settlementContract,
+    abi: [{ type: "function", name: "decisionRelay", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] }] as const,
+    functionName: "decisionRelay",
+  })) as Address;
+  if (!isApprovedSettlementContract("sepolia", liveDecisionRelay)) {
+    throw new DepositExecutionError(`escrow ${settlementContract}'s decisionRelay() (${liveDecisionRelay}) is not on the operator-approved list (lib/hyperlane.ts's isApprovedSettlementContract)`);
+  }
+  if (cs.case.settlementContract && liveDecisionRelay.toLowerCase() !== cs.case.settlementContract.toLowerCase()) {
+    throw new DepositExecutionError(
+      `escrow ${settlementContract}'s decisionRelay() (${liveDecisionRelay}) does not match this case's own settlementContract (${cs.case.settlementContract}) — refusing to deposit into an escrow the case's bound DecisionRelay cannot settle`
+    );
+  }
 
   const authResult = await authorizeDepositOnChain(cs.id);
   if (authResult.outcome === "not_ready") {
@@ -244,17 +270,11 @@ export async function executeSolanaDeposit(params: {
   // subscription hung indefinitely (40+ minutes, no error, no progress)
   // against the public api.testnet.solana.com RPC — a known class of bug
   // where a free/public RPC never pushes the subscription notification.
-  // Polling getSignatureStatus with a bounded timeout is what this file's
-  // own deposit-confirmation step below already does for exactly this
-  // reason; applying the same pattern here instead of trusting the
-  // websocket-based confirm to ever resolve.
-  await pollUntil("transaction confirmation", 60_000, 2_000, async () => {
-    const { value } = await connection.getSignatureStatus(txSignature);
-    if (value?.err) throw new DepositExecutionError(`initialize_case transaction failed: ${JSON.stringify(value.err)}`);
-    if (value?.confirmationStatus === "confirmed" || value?.confirmationStatus === "finalized") return true;
-    const height = await connection.getBlockHeight("confirmed");
-    if (height > lastValidBlockHeight) throw new DepositExecutionError(`initialize_case transaction ${txSignature} expired (blockhash no longer valid) before confirming`);
-    return null;
+  // Uses the same shared bounded-polling helper as solana-settle.ts —
+  // see lib/solana-confirm.ts's own header for why this must never be a
+  // second, independently-drifting copy of this logic.
+  await confirmTransactionBounded({ connection, signature: txSignature, lastValidBlockHeight }).catch((err) => {
+    throw err instanceof Error ? new DepositExecutionError(err.message) : err;
   });
   await prisma.caseSettlement.update({ where: { id: cs.id }, data: { depositTxHash: txSignature } });
 

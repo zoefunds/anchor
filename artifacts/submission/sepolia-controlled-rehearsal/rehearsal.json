@@ -1,0 +1,18 @@
+{
+  "chain": "sepolia",
+  "caseId": "cmtzwvdui0001114k3pwc03vz",
+  "decisionId": "cmtzwx43c000c114kdvdmo26u",
+  "settlementPausedThroughout": true,
+  "dispatchFunction": "adjudication-service.ts#dispatchSettlementForDecision (real production code, unmodified call sites for every other caller)",
+  "relayTxHash": "0x9526503dec2a1e6bb5468e0274762f089da38e0ef240f3ddb95245011704272c",
+  "relayMessageId": "0x7d1903a3fdcc843b2ffa80388b967d31e2f3840295180c5f6cd63ed2178cc104",
+  "respondentAddress": "0x000000000000000000000000000000000000b0b0",
+  "respondentBalanceBeforeWei": "200000000000000",
+  "respondentBalanceAfterWei": "400000000000000",
+  "respondentDeltaWei": "200000000000000",
+  "expectedRespondentDeltaWei": "200000000000000",
+  "match": true,
+  "rehearsalTokenConsumedAt": "2026-09-13T15:05:02.024Z",
+  "replayOutcome": "no-op (relayTxHash unchanged — early-return guard held)",
+  "timestamp": "2026-09-13T15:05:06.289Z"
+}

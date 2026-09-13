@@ -178,13 +178,30 @@ export function requiredEvidenceTypesFor(policyId: string): string[] {
  * APPEAL_WINDOW. A decision that can still be appealed can still change,
  * so settling against it would let an appeal contest a verdict after
  * funds were already released against the earlier one.
+ *
+ * `rehearsalToken` (2026-09-13 remediation plan, item 3) is the ONLY way
+ * the SETTLEMENT_PAUSED check below can ever be bypassed — and even
+ * then, only for the ONE decision whose own testRehearsalAuthToken
+ * matches, never globally. Every real caller in this codebase
+ * (retryFailedSettlements, finalizeExpiredAppealWindows,
+ * runAdjudicationJob) calls this function with no third argument, so
+ * the pause continues to apply to every real case exactly as before —
+ * this parameter exists solely for
+ * scripts/rehearse-controlled-settlement.ts, a manual, human-operated,
+ * single-case, single-use CLI tool, never reachable from any HTTP route
+ * or automated sweep.
  */
-export async function dispatchSettlementForDecision(kase: Case, decision: Decision): Promise<void> {
+export async function dispatchSettlementForDecision(kase: Case, decision: Decision, rehearsalToken?: string): Promise<void> {
   if (!kase.settlementChain || !kase.settlementContract) return;
   if (decision.consensus !== "ACCEPTED") return;
   if (decision.relayTxHash) return; // already settled — retryFailedSettlements can call this again, must not double-dispatch
   if (decision.relayAttempts >= MAX_RELAY_ATTEMPTS) return; // see retryFailedSettlements' schema comment
-  if (isSettlementPaused()) {
+  const rehearsalAuthorized =
+    !!rehearsalToken &&
+    !!decision.testRehearsalAuthToken &&
+    decision.testRehearsalAuthToken === rehearsalToken &&
+    !decision.testRehearsalConsumedAt;
+  if (isSettlementPaused() && !rehearsalAuthorized) {
     // Durably record the block as a relayError (WITHOUT incrementing
     // relayAttempts) so retryFailedSettlements' periodic sweep — which
     // only looks at relayError-set/relayTxHash-null rows — picks this
@@ -259,10 +276,29 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     throw gateErr;
   }
 
+  // Real bug found 2026-09-13 (see hyperlane.ts's DispatchDecisionParams.directSettleDeadline
+  // doc comment): the deadline signed into attestedSettle()'s digest
+  // must stay STABLE across retries of the same decision, or signatures
+  // collected against one retry's hash can never combine with another's.
+  // Computed here (pure, no DB write of its own — folded into the claim
+  // update just below) and reused until it actually expires. Sepolia-only
+  // — Solana's attested_settle has no deadline field, so this is simply
+  // unused (and harmless) for that branch.
+  const DIRECT_SETTLE_DEADLINE_SECONDS = 30 * 60;
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+  let directSettleDeadline = decision.directSettleDeadline ? BigInt(decision.directSettleDeadline) : null;
+  const needsFreshDeadline = kase.settlementChain === "sepolia" && (!directSettleDeadline || directSettleDeadline <= nowSeconds);
+  if (needsFreshDeadline) {
+    directSettleDeadline = nowSeconds + BigInt(DIRECT_SETTLE_DEADLINE_SECONDS);
+  }
+
   // Atomic claim/lease (see Decision.relayClaimedAt's schema comment) —
   // only proceeds if no other worker holds an unexpired claim on this
   // decision, so a concurrent retry sweep firing at the same moment as
-  // this call can't both pass the checks above and both dispatch.
+  // this call can't both pass the checks above and both dispatch. The
+  // freshly-chosen deadline (if any) is persisted in this SAME write,
+  // not a separate one, so this remains the only DB write between the
+  // gate checks above and the real dispatch attempt below.
   const claimCutoff = new Date(Date.now() - RELAY_CLAIM_TTL_MS);
   const claimed = await withDbRetry(() =>
     prisma.decision.updateMany({
@@ -271,7 +307,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         relayTxHash: null,
         OR: [{ relayClaimedAt: null }, { relayClaimedAt: { lt: claimCutoff } }],
       },
-      data: { relayClaimedAt: new Date() },
+      data: { relayClaimedAt: new Date(), ...(needsFreshDeadline ? { directSettleDeadline: directSettleDeadline!.toString() } : {}) },
     })
   );
   if (claimed.count === 0) {
@@ -301,6 +337,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
   const totalAmountAtto = toAtomicAmount(kase.amount.toString(), settlementAssetDecimals);
   const claimantBps = BigInt(decision.claimantShareBps ?? 0);
   const respondentBps = BigInt(decision.respondentShareBps ?? 0);
+
   try {
     const { txHash, messageId, notificationTxHash } = await dispatchDecisionForCase({
       caseId: kase.id,
@@ -317,6 +354,7 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       settlementSolanaCaseId: kase.settlementSolanaCaseId,
       evidenceHash: decision.proofHash,
       decisionHash: decision.decisionHash,
+      directSettleDeadline: directSettleDeadline ?? undefined,
       externalAttestationSignatures: decision.pendingAttestationSignatures as Hex[],
       externalSolanaAttestations: (decision.pendingSolanaAttestations as SolanaAttestationRecord[] | null ?? []).map((a) => ({
         publicKey: new Uint8Array(Buffer.from(a.publicKey, "base64")),
@@ -342,6 +380,17 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
           pendingAttestationSignatures: [],
           pendingSolanaAttestationMessage: null,
           pendingSolanaAttestations: [],
+          directSettleDeadline: null,
+          // Consumed HERE, not at the top of this function: gathering
+          // attestor signatures can legitimately take several retries of
+          // this same one authorized action (InsufficientAttestorSignaturesError,
+          // waiting on the real attestor service) — those don't count as
+          // "using" the rehearsal authorization. Only a dispatch that
+          // actually reaches a real transaction hash consumes it,
+          // matching the "re-arms after one use" requirement exactly:
+          // one real settlement per authorization, however many retries
+          // it took to get there.
+          ...(rehearsalAuthorized ? { testRehearsalConsumedAt: new Date() } : {}),
         },
       })
     );

@@ -1,0 +1,10 @@
+{
+  "chain": "sepolia",
+  "attestorThreshold": 2,
+  "signaturesCollected": 3,
+  "signatures": [
+    "0x6b84b50dfb3f40c60796e862199e44a8b7ccd7ff9fec6187cfb08cde64ef9b9d7ef2f33eec579db27ea4eedce420b3ad67e0f46bbbeeae19a738099db5ead9521c",
+    "0xa565dfd69bde1fd5f3d64d39362e3c82390e7252f9ceaf3fe9ebc91d0d25352a36139f274f592f49b77c304fdd5d9368a974b188652fecb45df7f6f4ded88e321b",
+    "0x04b97800b7750c3e1c70e66f4fbf4050aa70aefdbe10261cc80cb13a2f702a29116431437a5ab4e8195fff4f4c4f82f3347752ddafd18d05e7b9dd8e7af673ea1b"
+  ]
+}

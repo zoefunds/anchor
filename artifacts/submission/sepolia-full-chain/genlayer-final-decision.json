@@ -1,0 +1,20 @@
+{
+  "decisionId": "cmtzvs09l000fytoz69rakd1v",
+  "caseId": "cmtzvqbie0004ytozj0jnv3a5",
+  "outcome": "RELEASE_FULL",
+  "consensus": "ACCEPTED",
+  "claimantShareBps": 0,
+  "respondentShareBps": 10000,
+  "adjudicateTxHash": "0x6b884f036e7881f9bf4bd8932bb95eded1646b57fff7af34a9992e942060d4d4",
+  "decisionHash": "48f21ff0a8e1f2377237ce7489e09002390824df3afb7735148be4a39418eadd",
+  "proofHash": "f970e1beccab7b7e07acf68a0e2cc8e9df26ae9cdf4d129e2111b77257ecff99",
+  "reasonCodes": [
+    "SPEC_FULLY_MET"
+  ],
+  "evidenceUsed": [
+    "task_spec:5016a2aef3a0153f14f0cbaf9627bcb80252ac5e54047b5ed50d9bb8efe02b6c",
+    "delivery_payload:0bff64e87324d35e18b5d50cf50681e5c392633edd6f0b13a32ac5d720ce4a56",
+    "claimant_statement:e02c2241efd6f1e799c04ff638579c9d9b166fdc37d97066ef680b520ef1826d",
+    "respondent_statement:2fce921f11e2e72be86f1b586ada90f12b53eedb9d2eb8ab2982d990720e0c45"
+  ]
+}

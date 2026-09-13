@@ -907,6 +907,42 @@ model Decision {
   pendingSolanaAttestationMessage String?
   pendingSolanaAttestations       Json?   @default("[]")
 
+  // Real bug found 2026-09-13 (during the controlled-rehearsal
+  // acceptance test): attestedSettle()'s signed digest now includes a
+  // deadline (a real audit fix, closing a genuine "signature valid
+  // forever" gap) — but dispatchDecisionForCase used to compute a fresh
+  // `Date.now() + 30min` deadline on EVERY call, including retries.
+  // Since deadline is part of the signed content, every retry produced
+  // a DIFFERENT attestation hash, so signatures collected against an
+  // earlier retry's hash could never combine with a later retry's
+  // signature to reach threshold — real 2-of-3 quorum was structurally
+  // unreachable across more than one poll cycle. This field persists
+  // the FIRST deadline chosen for a decision's direct-settle attestation
+  // so every retry (InsufficientAttestorSignaturesError and all) signs
+  // and re-signs the exact same hash until either quorum is reached or
+  // the deadline itself expires (at which point a fresh one is chosen
+  // and this resets) — see dispatchSettlementForDecision's own use of
+  // this field. Unix seconds, string (same atto-string discipline as
+  // this schema's amount fields), not a Prisma BigInt column.
+  directSettleDeadline String?
+
+  // Controlled-rehearsal authorization (2026-09-13 remediation plan,
+  // item 3): the ONLY way dispatchSettlementForDecision's real
+  // SETTLEMENT_PAUSED check can ever be bypassed — and even then, only
+  // for THIS specific decision, never globally. Set by a human operator
+  // via scripts/rehearse-controlled-settlement.ts's --authorize step
+  // (never by application code, never by an HTTP route), consumed
+  // (testRehearsalConsumedAt set) atomically the moment a real dispatch
+  // for this decision actually succeeds — not on every bypass attempt,
+  // since gathering attestor signatures can legitimately take several
+  // retries of the same one authorized action. Once consumed, this
+  // token can never authorize anything again; a further rehearsal on
+  // any case requires a fresh --authorize run ("re-arming"). Deliberately
+  // decision-scoped (not case-scoped): a case with multiple decisions
+  // (e.g. after an appeal) needs a fresh authorization per decision.
+  testRehearsalAuthToken    String?   @unique
+  testRehearsalConsumedAt   DateTime?
+
   @@index([caseId])
 }
 
@@ -1116,6 +1152,18 @@ enum ReconciliationFindingType {
   // manifest was last regenerated (scripts/generate-deployment-manifest.ts),
   // independent of whether that change was itself authorized.
   GOVERNANCE_DRIFT
+  // Incident recovery Phase G.5 (2026-09-13 Sepolia delivery incident):
+  // a deposit is sitting in a retired escrow's onlyDecisionRelay-gated
+  // emergencyRefund() window — not stuck forever, but not recoverable
+  // through the normal settlement path either (the DecisionRelay it's
+  // bound to is retired/unreachable). Raised once activity enters the
+  // alert window before the on-chain eligibility timestamp, so an
+  // operator has real advance notice rather than discovering it only
+  // once the timeout has already passed. detail carries the exact
+  // escrow address, escrowId, claimant, amount, deposit tx, and the
+  // on-chain readyAt timestamp — see docs/incidents/ for the full
+  // recovery procedure this was raised against.
+  OLD_ESCROW_REFUND_ELIGIBLE_SOON
 }
 
 // Priority 2: the real, on-chain ABI shapes actually deployed. V1 is

@@ -13,6 +13,7 @@
 // Run: npx tsx scripts/generate-safe-governance-txn.ts \
 //        --aws-attestor 0x... --gcp-attestor 0x... [--remove-manual-attestor 0x...]
 import { encodeFunctionData, isAddress, type Address } from "viem";
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "../src/lib/deployment-registry";
 
 const DECISION_RELAY_ABI = [
   { type: "function", name: "addAttestor", stateMutability: "nonpayable", inputs: [{ name: "_attestor", type: "address" }], outputs: [] },
@@ -20,7 +21,15 @@ const DECISION_RELAY_ABI = [
   { type: "function", name: "setAttestorThreshold", stateMutability: "nonpayable", inputs: [{ name: "_threshold", type: "uint256" }], outputs: [] },
 ] as const;
 
-const DECISION_RELAY: Address = "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2"; // from deployment-manifest.json — re-verify against a fresh manifest run before executing
+// Real gap found and fixed 2026-09-13 (incident recovery Phase 1): this
+// hardcoded the retired 0x1fc130416... DecisionRelay — a governance
+// transaction generated against the WRONG contract is exactly the kind
+// of silent mistake this script's own "never sends, only prints for
+// review" design is meant to guard against, but a stale target address
+// defeats that review entirely if the reviewer trusts the script's
+// header comment instead of re-checking. Sourced from the same single
+// registry every other consumer reads from.
+const DECISION_RELAY: Address = ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay;
 
 function arg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);

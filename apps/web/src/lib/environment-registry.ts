@@ -13,6 +13,8 @@
 // enforces its single most load-bearing invariant today: a live
 // (non-testnet) environment can never boot with settlement unpaused.
 
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "@/lib/deployment-registry";
+
 export type AnchorEnvironmentId =
   | "studio-next-testnet"
   | "sepolia"
@@ -73,11 +75,21 @@ export const ANCHOR_ENVIRONMENTS: Record<AnchorEnvironmentId, AnchorEnvironment>
     displayName: "Ethereum Sepolia testnet",
     chainIdentifier: 11155111,
     addresses: {
-      decisionRelay: "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
-      interchainSecurityModule: "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0",
+      decisionRelay: ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay,
+      interchainSecurityModule: ACTIVE_SEPOLIA_TOPOLOGY.ism,
     },
     live: true,
-    settlementPaused: false,
+    // Incident recovery (2026-09-13, auditor directive): live delivery
+    // through the active Sepolia route has not been proven end-to-end
+    // (dispatch succeeds; Mailbox.delivered/DecisionRelay.processedDecisions/
+    // Escrow settlement has not). Paused here AND via the real runtime
+    // gate (SETTLEMENT_PAUSED env var on the worker — see
+    // adjudication-service.ts's isSettlementPaused/dispatchSettlementForDecision,
+    // which is what actually blocks dispatch; this registry field alone
+    // is not yet wired into that check, see the incident doc). Do not
+    // flip this back to false until Phase 3's delivery-proof verifier
+    // and a real end-to-end settlement both pass.
+    settlementPaused: true,
   },
   "solana-testnet": {
     id: "solana-testnet",

@@ -779,6 +779,344 @@ contract DecisionRelayTest is Test {
         vm.expectRevert("insufficient valid attestations");
         relay.emergencyRefund(address(targetB), caseId, escrowId, proofHash, sigsForA);
     }
+
+    // --- Item Phase 2: attestedSettle() ---
+    //
+    // Same-chain settlement authorized purely by M-of-N attestor
+    // signatures, with no Mailbox/relayer/validator/checkpoint
+    // involvement at all — the direct answer to the Sepolia self-loop
+    // incident. Mirrors emergencyRefund()'s own test coverage shape
+    // since it's the same trust pattern (attestations are the entire
+    // authority), applied to the normal settlement path instead of the
+    // refund escape hatch.
+
+    function _directSettleHash(
+        bytes32 caseId,
+        string memory outcome,
+        uint256 claimantAmount,
+        uint256 respondentAmount,
+        bytes32 escrowId,
+        bytes32 proofHash,
+        address settlementTargetAddr,
+        uint256 deadline
+    ) internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                "ANCHOR_DIRECT_SETTLE_V1",
+                block.chainid,
+                address(relay),
+                settlementTargetAddr,
+                caseId,
+                outcome,
+                claimantAmount,
+                respondentAmount,
+                escrowId,
+                proofHash,
+                deadline
+            )
+        );
+    }
+
+    function _directSettleSigs(
+        bytes32 caseId,
+        string memory outcome,
+        uint256 claimantAmount,
+        uint256 respondentAmount,
+        bytes32 escrowId,
+        bytes32 proofHash,
+        address settlementTargetAddr,
+        uint256 deadline,
+        uint256[] memory signerKeys
+    ) internal view returns (bytes[] memory) {
+        bytes32 hash = _directSettleHash(caseId, outcome, claimantAmount, respondentAmount, escrowId, proofHash, settlementTargetAddr, deadline);
+        bytes[] memory sigs = new bytes[](signerKeys.length);
+        for (uint256 i = 0; i < signerKeys.length; i++) {
+            sigs[i] = _sign(signerKeys[i], hash);
+        }
+        return sigs;
+    }
+
+    function _futureDeadline() internal view returns (uint256) {
+        return block.timestamp + 1 hours;
+    }
+
+    function test_attestedSettle_succeedsWithThresholdSignaturesAndForwardsExactParams() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        bytes[] memory sigs =
+            _directSettleSigs(caseId, "RELEASE_FULL", 1000, 500, escrowId, proofHash, address(directTarget), deadline, _keys2());
+
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 500, escrowId, proofHash, address(directTarget), deadline, sigs);
+
+        assertEq(directTarget.settleCallCount(), 1);
+        assertEq(directTarget.lastCaseId(), caseId);
+        assertEq(directTarget.lastEscrowId(), escrowId);
+        assertEq(directTarget.lastClaimantAmount(), 1000);
+        assertEq(directTarget.lastRespondentAmount(), 500);
+        assertEq(directTarget.lastProofHash(), proofHash);
+        assertTrue(relay.processedDecisions(proofHash));
+    }
+
+    function test_attestedSettle_revertsBelowThreshold() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        uint256[] memory oneKey = new uint256[](1);
+        oneKey[0] = attestorKey1;
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, oneKey);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+        assertEq(directTarget.settleCallCount(), 0);
+    }
+
+    function test_attestedSettle_revertsOnUnregisteredSigner() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = attestorKey1;
+        keys[1] = wrongKey;
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, keys);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+    }
+
+    function test_attestedSettle_revertsOnDuplicateSignerCountedTwice() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = attestorKey1;
+        keys[1] = attestorKey1;
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, keys);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+    }
+
+    function test_attestedSettle_revertsOnAlreadyProcessedProofHash() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, _keys2());
+
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+
+        vm.expectRevert("decision already settled");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+        assertEq(directTarget.settleCallCount(), 1);
+    }
+
+    function test_attestedSettle_sameProofHashSharedWithHandleIsAlsoRejected() public {
+        // processedDecisions is one shared namespace across handle(),
+        // emergencyRefund(), and attestedSettle() — a proofHash already
+        // consumed by a Hyperlane-delivered decision must not be
+        // replayable through the direct-settlement path either.
+        bytes32 proofHash = bytes32(uint256(0xabc));
+        vm.prank(address(mailbox));
+        relay.handle(ORIGIN, TRUSTED_SENDER, _body(proofHash));
+        assertTrue(relay.processedDecisions(proofHash));
+
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        uint256 deadline = _futureDeadline();
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, _keys2());
+
+        vm.expectRevert("decision already settled");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+    }
+
+    function test_attestedSettle_revertsOnZeroDirectSettlementTarget() public {
+        // directSettlementTarget defaults to address(0). settlementTargetAddr
+        // must match the CONFIGURED target (checked before the zero-address
+        // guard), so signing over address(0) itself is what's needed to
+        // reach the "no direct settlement target configured" revert — an
+        // address mismatch would revert on the config-match check first.
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(0), deadline, _keys2());
+
+        assertEq(relay.directSettlementTarget(), address(0));
+        vm.expectRevert("no direct settlement target configured");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(0), deadline, sigs);
+    }
+
+    function test_attestedSettle_revertsWhenTargetCallReverts_andProcessedFlagRollsBack() public {
+        RevertingSettlementTarget badTarget = new RevertingSettlementTarget();
+        relay.setDirectSettlementTarget(address(badTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        bytes[] memory sigs = _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(badTarget), deadline, _keys2());
+
+        vm.expectRevert("settlement target rejected");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(badTarget), deadline, sigs);
+        assertFalse(relay.processedDecisions(proofHash));
+
+        // Retrying against a working target with the exact same
+        // proofHash must now succeed — the revert must not have
+        // permanently burned the proofHash. A fresh signature is
+        // required since settlementTargetAddr is signed content and the
+        // target address is changing.
+        RecordingSettlementTarget goodTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(goodTarget));
+        bytes[] memory sigsForGoodTarget =
+            _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(goodTarget), deadline, _keys2());
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(goodTarget), deadline, sigsForGoodTarget);
+        assertTrue(relay.processedDecisions(proofHash));
+        assertEq(goodTarget.settleCallCount(), 1);
+    }
+
+    function test_attestedSettle_signatureCannotBeReplayedAgainstDifferentOutcomeOrAmounts() public {
+        // outcome/claimantAmount/respondentAmount are all part of the
+        // signed content — a signature authorizing one payout split must
+        // not be replayable to force a different one through.
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        bytes[] memory sigsForSplitA =
+            _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, _keys2());
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 500, 500, escrowId, proofHash, address(directTarget), deadline, sigsForSplitA);
+    }
+
+    function test_attestedSettle_signatureCannotBeReplayedAgainstHandlesAttestationScheme() public {
+        // A signature computed for handle()'s "ANCHOR_DECISION_ATTESTATION_V2"
+        // scheme must not satisfy attestedSettle()'s
+        // "ANCHOR_DIRECT_SETTLE_V1" scheme, even over the same logical
+        // case/outcome/amounts/escrow/proofHash — proves the two paths'
+        // domain separation actually holds.
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+
+        bytes32 handleHash = _attestationHash(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash);
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _sign(attestorKey1, handleHash);
+        sigs[1] = _sign(attestorKey2, handleHash);
+
+        vm.expectRevert("insufficient valid attestations");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), deadline, sigs);
+    }
+
+    function test_attestedSettle_revertsOnExpiredDeadline() public {
+        // Real audit fix: a signature valid forever is a real replay
+        // risk (a stale, no-longer-intended settlement submitted years
+        // later). deadline is signed content AND independently checked
+        // against block.timestamp, so it can't just be omitted/altered
+        // after the fact either.
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 expiredDeadline = block.timestamp == 0 ? 0 : block.timestamp - 1;
+        bytes[] memory sigs =
+            _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), expiredDeadline, _keys2());
+
+        vm.expectRevert("attestation expired");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), expiredDeadline, sigs);
+        assertEq(directTarget.settleCallCount(), 0);
+    }
+
+    function test_attestedSettle_revertsWhenDeadlineTampered() public {
+        // deadline is part of the signed digest — submitting with a
+        // DIFFERENT (even later, still-valid) deadline than what was
+        // actually signed must not pass signature verification.
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(directTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 signedDeadline = _futureDeadline();
+        bytes[] memory sigs =
+            _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), signedDeadline, _keys2());
+
+        uint256 tamperedDeadline = signedDeadline + 1 hours;
+        vm.expectRevert("insufficient valid attestations");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(directTarget), tamperedDeadline, sigs);
+    }
+
+    function test_attestedSettle_revertsWhenSettlementTargetAddrDoesNotMatchConfigured() public {
+        // Real audit fix: settlementTargetAddr is checked against the
+        // LIVE configured directSettlementTarget, not just used blindly
+        // — closes the window where an owner changes
+        // directSettlementTarget between signing and submission and an
+        // already-collected signature could otherwise redirect funds to
+        // a target no attestor actually agreed to.
+        RecordingSettlementTarget signedTarget = new RecordingSettlementTarget();
+        RecordingSettlementTarget actualConfiguredTarget = new RecordingSettlementTarget();
+        relay.setDirectSettlementTarget(address(actualConfiguredTarget));
+
+        bytes32 caseId = bytes32(uint256(1));
+        bytes32 escrowId = bytes32(uint256(2));
+        bytes32 proofHash = bytes32(uint256(0xdead));
+        uint256 deadline = _futureDeadline();
+        // Attestors sign over signedTarget, but the LIVE configured
+        // target is actualConfiguredTarget (e.g. changed after signing).
+        bytes[] memory sigs =
+            _directSettleSigs(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(signedTarget), deadline, _keys2());
+
+        vm.expectRevert("settlementTargetAddr does not match configured directSettlementTarget");
+        relay.attestedSettle(caseId, "RELEASE_FULL", 1000, 0, escrowId, proofHash, address(signedTarget), deadline, sigs);
+        assertEq(signedTarget.settleCallCount(), 0);
+        assertEq(actualConfiguredTarget.settleCallCount(), 0);
+    }
+
+    function test_setDirectSettlementTarget_emitsEvent() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        vm.expectEmit(true, true, true, true);
+        emit DecisionRelay.DirectSettlementTargetChanged(address(0), address(directTarget));
+        relay.setDirectSettlementTarget(address(directTarget));
+        assertEq(relay.directSettlementTarget(), address(directTarget));
+    }
+
+    function test_setDirectSettlementTarget_revertsForNonOwner() public {
+        RecordingSettlementTarget directTarget = new RecordingSettlementTarget();
+        vm.prank(address(0xB0B));
+        vm.expectRevert("not owner");
+        relay.setDirectSettlementTarget(address(directTarget));
+    }
 }
 
 contract RevertingEmergencyRefundTarget {

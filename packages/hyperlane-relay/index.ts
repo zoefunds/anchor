@@ -144,6 +144,77 @@ export function caseIdToBytes32(caseId: string): Hex {
   return pad(`0x${Buffer.from(caseId).toString("hex")}` as Hex, { size: 32 });
 }
 
+/**
+ * Incident recovery, Phase 2, second deploy (2026-09-13, external audit
+ * fix): the exact hash DecisionRelay.sol's attestedSettle() recomputes.
+ * Must stay byte-for-byte identical to that Solidity code:
+ * `keccak256(abi.encode("ANCHOR_DIRECT_SETTLE_V1", block.chainid,
+ * address(this), settlementTargetAddr, caseId, outcome, claimantAmount,
+ * respondentAmount, escrowId, proofHash, deadline))`.
+ *
+ * Three fields an external audit found missing from this function's
+ * first version, each closing a real gap:
+ *   - chainId: without it, a signature collected here would also be
+ *     valid input to an identically-addressed DecisionRelay on a
+ *     DIFFERENT chain, if one ever existed — this contract has no other
+ *     way to scope a signature to "this specific chain."
+ *   - settlementTargetAddr: binds the signature to the EXACT escrow
+ *     address attestors saw at signing time, not whatever
+ *     directSettlementTarget happens to be configured to when the
+ *     transaction is later submitted (which the contract owner could
+ *     have changed in between).
+ *   - deadline: a signature with no expiry is valid forever; this
+ *     bounds how stale a submitted settlement instruction can be.
+ *
+ * Deliberately no `originDomain` field (unlike
+ * computeDecisionAttestationHash above): attestedSettle() is a
+ * same-chain call, not a cross-chain message, so there is no Hyperlane
+ * origin domain to bind against — chainId is the correct analogue here,
+ * not domain.
+ */
+export function computeDirectSettleAttestationHash(params: {
+  chainId: number;
+  recipientAddress: Address;
+  settlementTargetAddr: Address;
+  caseIdBytes32: Hex;
+  outcome: string;
+  claimantAmount: bigint;
+  respondentAmount: bigint;
+  escrowId: Hex;
+  proofHash: Hex;
+  deadline: bigint;
+}): Hex {
+  const encoded = encodeAbiParameters(
+    [
+      { type: "string" },
+      { type: "uint256" },
+      { type: "address" },
+      { type: "address" },
+      { type: "bytes32" },
+      { type: "string" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "uint256" },
+    ],
+    [
+      "ANCHOR_DIRECT_SETTLE_V1",
+      BigInt(params.chainId),
+      params.recipientAddress,
+      params.settlementTargetAddr,
+      params.caseIdBytes32,
+      params.outcome,
+      params.claimantAmount,
+      params.respondentAmount,
+      params.escrowId,
+      params.proofHash,
+      params.deadline,
+    ]
+  );
+  return keccak256(encoded);
+}
+
 /** Matches DecisionRelay.sol's `handle()` abi.decode shape exactly. */
 export function encodeDecisionRelayBody(payload: DecisionRelayPayload): Hex {
   const caseIdBytes32 = caseIdToBytes32(payload.caseId);
@@ -241,6 +312,97 @@ export async function dispatchDecisionRelay(
   const recipientBytes32 = pad(recipientAddress, { size: 32 });
   const body = encodeDecisionRelayBody(payload);
   return dispatchRawMessage(config, destinationDomain, recipientBytes32, body);
+}
+
+const ATTESTED_SETTLE_ABI = [
+  {
+    type: "function",
+    name: "attestedSettle",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "caseId", type: "bytes32" },
+      { name: "outcome", type: "string" },
+      { name: "claimantAmount", type: "uint256" },
+      { name: "respondentAmount", type: "uint256" },
+      { name: "escrowId", type: "bytes32" },
+      { name: "proofHash", type: "bytes32" },
+      { name: "settlementTargetAddr", type: "address" },
+      { name: "deadline", type: "uint256" },
+      { name: "attestationSignatures", type: "bytes[]" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export interface DirectSettlePayload {
+  caseId: string;
+  outcome: string;
+  claimantAmount: bigint;
+  respondentAmount: bigint;
+  escrowId: Hex;
+  proofHash: Hex;
+  settlementTargetAddr: Address;
+  deadline: bigint;
+  attestationSignatures: Hex[];
+}
+
+/**
+ * Incident recovery, Phase 2 — calls DecisionRelay.sol's attestedSettle()
+ * DIRECTLY on `config.originChain` (same chain as `recipientAddress`, the
+ * deployed DecisionRelay contract). Deliberately NOT routed through the
+ * Mailbox/dispatchRawMessage: the whole point of this path is that a
+ * same-chain settlement's AVAILABILITY must not depend on Hyperlane
+ * relayer/validator/checkpoint infrastructure at all — see
+ * DecisionRelay.sol's own `directSettlementTarget` doc comment for the
+ * full incident rationale. Mirrors dispatchDecisionRelay's shape
+ * (same config type, same simulate-then-write-then-wait pattern) so the
+ * two settlement paths stay easy to compare, but there is no
+ * destinationDomain, no fee quote, and no Hyperlane messageId — this is
+ * one ordinary contract call, not a cross-chain dispatch.
+ */
+export async function submitAttestedSettle(
+  config: DispatchConfig,
+  recipientAddress: Address,
+  payload: DirectSettlePayload
+): Promise<{ txHash: Hex }> {
+  const chain = CHAINS[config.originChain];
+  const account = privateKeyToAccount(config.privateKey);
+  const transport = http(config.rpcUrl);
+
+  const publicClient = createPublicClient({ chain, transport });
+  const walletClient = createWalletClient({ chain, transport, account });
+
+  const caseIdBytes32 = caseIdToBytes32(payload.caseId);
+  const args = [
+    caseIdBytes32,
+    payload.outcome,
+    payload.claimantAmount,
+    payload.respondentAmount,
+    payload.escrowId,
+    payload.proofHash,
+    payload.settlementTargetAddr,
+    payload.deadline,
+    payload.attestationSignatures,
+  ] as const;
+
+  await publicClient.simulateContract({
+    address: recipientAddress,
+    abi: ATTESTED_SETTLE_ABI,
+    functionName: "attestedSettle",
+    args,
+    account,
+  });
+
+  const txHash = await walletClient.writeContract({
+    address: recipientAddress,
+    abi: ATTESTED_SETTLE_ABI,
+    functionName: "attestedSettle",
+    args,
+  });
+
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+  return { txHash };
 }
 
 // --- Sealevel (Solana) destination ---

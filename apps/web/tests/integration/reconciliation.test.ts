@@ -7,6 +7,24 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest
 // and (d) self-heal the one gap this codebase genuinely has — nothing
 // ever sets CaseSettlement.status to SETTLED automatically.
 
+// This file's own timeout, not a global bump: runReconciliationSweep()
+// makes ~10 sequential DB round-trips per call, and several tests call
+// it 2-3 times — against this project's remote dev Postgres (observed
+// ~3s/query in isolation, no local/dockerized alternative configured),
+// that easily exceeds the global 15s default on the very first
+// (connection-pool-cold) test, which then cascades: a killed test's
+// cleanup never runs, and every later test in the file trips a unique
+// constraint or an inflated count against the leftover rows. Real
+// latency, not a hang — a bounded generous ceiling here is the correct
+// fix, not silently raising the suite-wide default for every other
+// file too.
+// hookTimeout is a SEPARATE default (10s) from testTimeout — afterEach's
+// own row-by-row reconciliationFinding cleanup (see below) can take
+// longer than that against this remote DB's real per-query latency when
+// many rows have accumulated, independent of how long the test body
+// itself took.
+vi.setConfig({ testTimeout: 60000, hookTimeout: 60000 });
+
 const mockReadContract = vi.fn();
 const mockSendOpsAlert = vi.fn().mockResolvedValue(true);
 // Escalation's second channel (ntfy) — not configured in these tests, so it
@@ -44,11 +62,70 @@ const integrationIds: string[] = [];
 beforeAll(async () => {
   const org = await prisma.organization.create({ data: { name: "reconciliation-test-org" } });
   orgId = org.id;
+
+  // checkOldEscrowRefundEligibility() raises (and alerts on) a durable
+  // OLD_ESCROW_REFUND_ELIGIBLE_SOON finding unconditionally on every
+  // single runReconciliationSweep() call, real production behavior this
+  // suite must not disable. Its FIRST-EVER creation in a fresh DB does
+  // send one real alert (raiseFinding only skips alerting once
+  // alertedAt is already set) — which would otherwise land inside
+  // whichever test in this file happens to call the sweep first,
+  // silently inflating that one test's mockSendOpsAlert count by 1 for
+  // a reason having nothing to do with what that test asserts. Seeding
+  // it here, already alerted, up front means every real test in this
+  // file starts from the same steady state instead of depending on
+  // file-internal test order.
+  // upsert, not create: this finding is durable and — per this file's
+  // own afterEach comment — deliberately never deleted between test
+  // runs, so a second run against the same (shared, non-ephemeral) dev
+  // database must not fail on a unique-constraint collision with a row
+  // this same seed step already created earlier.
+  await prisma.reconciliationFinding.upsert({
+    where: {
+      type_targetId: { type: "OLD_ESCROW_REFUND_ELIGIBLE_SOON", targetId: "0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7" },
+    },
+    create: {
+      type: "OLD_ESCROW_REFUND_ELIGIBLE_SOON",
+      targetType: "Escrow",
+      targetId: "0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7",
+      detail: {},
+      alertedAt: new Date(),
+    },
+    update: { alertedAt: new Date() },
+  });
 });
 
 afterEach(async () => {
   vi.clearAllMocks();
-  await prisma.reconciliationFinding.deleteMany({});
+  // OLD_ESCROW_REFUND_ELIGIBLE_SOON is a durable, always-present
+  // incident record (see reconciliation.ts's OLD_STUCK_DEPOSIT) that
+  // every runReconciliationSweep() call raises unconditionally — wiping
+  // it here would make it re-alert (and inflate mockSendOpsAlert's call
+  // count) on the very next test's first sweep, unrelated to whatever
+  // that test is actually asserting.
+  //
+  // Deleted ROW BY ROW, not one deleteMany: a real finding a real
+  // operator has actually acknowledged through the app carries a
+  // ReconciliationFindingEvent row (a separate, unrelated audit trail
+  // this test file never creates or owns), and that table's FK is
+  // RESTRICT — deleting such a finding throws. Found 2026-09-13:
+  // deleteMany is all-or-nothing against a FK violation — one
+  // undeletable real row silently left EVERY OTHER qualifying row
+  // undeleted too, for the rest of the run (worse than doing nothing:
+  // it looked like cleanup succeeded). Doing this one row at a time
+  // means only the specific real, undeletable row is ever skipped;
+  // every test-created row this file actually owns still gets removed.
+  const toDelete = await prisma.reconciliationFinding.findMany({
+    where: { type: { not: "OLD_ESCROW_REFUND_ELIGIBLE_SOON" } },
+    select: { id: true },
+  });
+  for (const { id } of toDelete) {
+    try {
+      await prisma.reconciliationFinding.delete({ where: { id } });
+    } catch (err) {
+      console.error(`reconciliation.test.ts afterEach: could not delete finding ${id} (likely a real acknowledged finding with an event row) — leaving it and continuing`, err);
+    }
+  }
   await prisma.decision.deleteMany({ where: { caseId: { in: caseIds } } });
   await prisma.caseSettlement.deleteMany({ where: { caseId: { in: caseIds } } });
   await prisma.case.deleteMany({ where: { id: { in: caseIds } } });
@@ -59,7 +136,22 @@ afterEach(async () => {
 
 afterAll(async () => {
   await prisma.auditLog.deleteMany({ where: { organizationId: orgId } });
-  await prisma.organization.delete({ where: { id: orgId } });
+  // Defensive: this org's Cases should already be gone via each test's
+  // own afterEach, but a prior afterEach failure elsewhere in this file
+  // (e.g. the reconciliationFinding cleanup above hitting a real
+  // acknowledged finding) can leave one behind — Case's FK is RESTRICT,
+  // so an unguarded delete here would fail the whole suite over
+  // leftover state this final step can just finish cleaning up itself.
+  try {
+    await prisma.organization.delete({ where: { id: orgId } });
+  } catch (err) {
+    console.error("reconciliation.test.ts afterAll: organization delete failed (leftover Case row?) — cleaning up directly", err);
+    await prisma.decision.deleteMany({ where: { case: { organizationId: orgId } } });
+    await prisma.caseSettlement.deleteMany({ where: { case: { organizationId: orgId } } });
+    await prisma.case.deleteMany({ where: { organizationId: orgId } });
+    await prisma.settlementIntegration.deleteMany({ where: { organizationId: orgId } });
+    await prisma.organization.delete({ where: { id: orgId } });
+  }
 });
 
 // checkGovernanceDrift's owner()/attestorThreshold() reads share this
@@ -67,11 +159,18 @@ afterAll(async () => {
 // settlement-target check must still answer those two calls with
 // values matching the real committed manifest, or every sweep raises a
 // spurious GOVERNANCE_DRIFT finding/alert alongside whatever the test is
-// actually asserting on.
+// actually asserting on. Read directly from the committed manifest
+// (not hardcoded here) so this never silently drifts out of sync again
+// — a real regression found 2026-09-13: this used to hardcode the
+// expected Safe address, which broke the instant the manifest was
+// regenerated against a DecisionRelay whose live owner is a known,
+// already-flagged EOA rather than the Safe (see deployment-manifest.json's
+// own "flags" array for that documented governance gap).
+const evmManifest = (await import("../../deployment-manifest.json")).default;
 function mockSettlementTargetOnly(settlementTargetValue: string): void {
   mockReadContract.mockImplementation(async (args: { functionName: string }) => {
-    if (args.functionName === "owner") return "0xc200534F7Debf2816C085c5a156AbD686FA19f4C";
-    if (args.functionName === "attestorThreshold") return 2n;
+    if (args.functionName === "owner") return evmManifest.decisionRelay.owner;
+    if (args.functionName === "attestorThreshold") return BigInt(evmManifest.decisionRelay.attestorThreshold);
     return settlementTargetValue;
   });
 }
@@ -112,7 +211,7 @@ describe("runReconciliationSweep — settlement target checks", () => {
     });
     mockSettlementTargetOnly("0x0000000000000000000000000000000000000000");
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
     expect(finding).not.toBeNull();
     expect(finding!.resolvedAt).toBeNull();
@@ -120,7 +219,7 @@ describe("runReconciliationSweep — settlement target checks", () => {
     expect(mockSendOpsAlert.mock.calls[0][0].severity).toBe("critical");
 
     // Second tick, same broken state — must NOT alert again.
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
   });
 
@@ -138,20 +237,20 @@ describe("runReconciliationSweep — settlement target checks", () => {
     mockSettlementTargetOnly("0x0000000000000000000000000000000000000000");
     mockSendOpsAlert.mockResolvedValueOnce(false); // simulates "not configured" / skipped delivery
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     let finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
     expect(finding!.alertedAt).toBeNull();
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
 
     // Same broken state, but this time delivery actually succeeds —
     // must retry, since the finding was never actually alerted.
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
     expect(finding!.alertedAt).not.toBeNull();
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(2);
 
     // Now that it's genuinely alerted, a third tick must NOT alert again.
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(2);
   });
 
@@ -163,7 +262,7 @@ describe("runReconciliationSweep — settlement target checks", () => {
     });
     mockReadContract.mockResolvedValue("0x000000000000000000000000000000deadbeef");
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "TARGET_INTEGRATION_MISMATCH" } });
     expect(finding).not.toBeNull();
   });
@@ -175,11 +274,11 @@ describe("runReconciliationSweep — settlement target checks", () => {
       data: { caseId: kase.id, integrationId: integration.id, escrowId: "0x00", expectedAmountAtto: "1", status: "PENDING_DEPOSIT", claimantAddress: CLAIMANT, respondentAddress: RESPONDENT },
     });
     mockSettlementTargetOnly("0x0000000000000000000000000000000000000000");
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
 
     mockSettlementTargetOnly(ESCROW); // now matches — fixed
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
 
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "ZERO_SETTLEMENT_TARGET" } });
     expect(finding!.resolvedAt).not.toBeNull();
@@ -208,7 +307,7 @@ describe("runReconciliationSweep — overdue deposits", () => {
     });
     mockReadContract.mockResolvedValue(ESCROW);
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "OVERDUE_DEPOSIT" } });
     expect(finding).not.toBeNull();
   });
@@ -221,7 +320,7 @@ describe("runReconciliationSweep — overdue deposits", () => {
     });
     mockReadContract.mockResolvedValue(ESCROW);
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "OVERDUE_DEPOSIT" } });
     expect(finding).toBeNull();
   });
@@ -256,7 +355,7 @@ describe("runReconciliationSweep — dispatched-but-stale self-healing", () => {
       throw new Error(`unexpected functionName ${args.functionName}`);
     });
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
 
     const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
     expect(updated.status).toBe("SETTLED");
@@ -282,7 +381,7 @@ describe("runReconciliationSweep — dispatched-but-stale self-healing", () => {
       throw new Error(`unexpected functionName ${args.functionName}`);
     });
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
     expect(updated.status).toBe("DEPOSITED");
   });
@@ -303,7 +402,7 @@ describe("runReconciliationSweep — emergency refund settlement detection", () 
       throw new Error(`unexpected functionName ${args.functionName}`);
     });
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
     expect(updated.status).toBe("SETTLED");
     expect(updated.settledAt).not.toBeNull();
@@ -323,7 +422,7 @@ describe("runReconciliationSweep — emergency refund settlement detection", () 
       throw new Error(`unexpected functionName ${args.functionName} — deposits() should never be called for a V1 integration by this check`);
     });
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
     expect(updated.status).toBe("DEPOSITED");
   });
@@ -340,22 +439,103 @@ describe("runReconciliationSweep — emergency refund settlement detection", () 
       throw new Error(`unexpected functionName ${args.functionName}`);
     });
 
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
     const updated = await prisma.caseSettlement.findUniqueOrThrow({ where: { id: cs.id } });
     expect(updated.status).toBe("DEPOSITED");
   });
 });
 
 describe("runReconciliationSweep — audit anchor staleness", () => {
-  it("flags an organization with real audit activity and a stale/never-set lastAnchoredAt", async () => {
+  // Real bug found and fixed 2026-09-13 (incident recovery Phase G.2):
+  // the old check flagged any org that had EVER had an audit log,
+  // purely on lastAnchoredAt's age — a quiet org with nothing new since
+  // its last (or only) anchor got flagged forever just because time
+  // passed, since anchorAuditChains() only anchors orgs whose hash
+  // genuinely grew. These cases replace the old single flag-on-anything
+  // test with the actual intended semantics: flag only when real
+  // unanchored backlog has itself been sitting past the SLA.
+  const OLD_ENOUGH = new Date(Date.now() - 3 * 60 * 60 * 1000); // 3h ago, past the 1h SLA
+  const RECENT = new Date(Date.now() - 5 * 60 * 1000); // 5 min ago, within the SLA
+
+  it("flags an active, never-anchored org whose unanchored activity is older than the SLA", async () => {
     await prisma.auditLog.create({
-      data: { organizationId: orgId, action: "test.action", targetType: "Test", hash: "h1", prevHash: "genesis" },
+      data: { organizationId: orgId, action: "test.action", targetType: "Test", hash: "audit-anchor-test-h1", prevHash: "genesis", createdAt: OLD_ENOUGH },
     });
     mockReadContract.mockResolvedValue(ESCROW);
 
-    await runReconciliationSweep();
-    const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: orgId } });
+    await runReconciliationSweep({ organizationIds: [orgId], escalationFindingIds: [] });
+    const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: orgId, resolvedAt: null } });
     expect(finding).not.toBeNull();
+  });
+
+  it("does NOT flag an org whose only unanchored activity is recent (within the SLA)", async () => {
+    const org = await prisma.organization.create({ data: { name: "reconciliation-test-org-recent" } });
+    await prisma.auditLog.create({
+      data: { organizationId: org.id, action: "test.action", targetType: "Test", hash: "audit-anchor-test-h2", prevHash: "genesis", createdAt: RECENT },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+
+    await runReconciliationSweep({ organizationIds: [org.id], escalationFindingIds: [] });
+    const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: org.id, resolvedAt: null } });
+    expect(finding).toBeNull();
+  });
+
+  it("does NOT flag an org whose old activity is already anchored (recovered case)", async () => {
+    const org = await prisma.organization.create({ data: { name: "reconciliation-test-org-anchored", lastAnchoredAt: new Date() } });
+    await prisma.auditLog.create({
+      data: { organizationId: org.id, action: "test.action", targetType: "Test", hash: "audit-anchor-test-h3", prevHash: "genesis", createdAt: OLD_ENOUGH },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+
+    await runReconciliationSweep({ organizationIds: [org.id], escalationFindingIds: [] });
+    const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: org.id, resolvedAt: null } });
+    expect(finding).toBeNull();
+  });
+
+  it("resolves a previously-open finding once a fresh anchor covers the old backlog", async () => {
+    const org = await prisma.organization.create({ data: { name: "reconciliation-test-org-recovering" } });
+    await prisma.auditLog.create({
+      data: { organizationId: org.id, action: "test.action", targetType: "Test", hash: "audit-anchor-test-h4", prevHash: "genesis", createdAt: OLD_ENOUGH },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+    await runReconciliationSweep({ organizationIds: [org.id], escalationFindingIds: [] });
+    expect(await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: org.id, resolvedAt: null } })).not.toBeNull();
+
+    await prisma.organization.update({ where: { id: org.id }, data: { lastAnchoredAt: new Date() } });
+    await runReconciliationSweep({ organizationIds: [org.id], escalationFindingIds: [] });
+    const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: org.id, resolvedAt: null } });
+    expect(finding).toBeNull();
+  });
+
+  it("resolves an org's open finding once the organization itself no longer exists", async () => {
+    const org = await prisma.organization.create({ data: { name: "reconciliation-test-org-deleted" } });
+    await prisma.auditLog.create({
+      data: { organizationId: org.id, action: "test.action", targetType: "Test", hash: "audit-anchor-test-h5", prevHash: "genesis", createdAt: OLD_ENOUGH },
+    });
+    mockReadContract.mockResolvedValue(ESCROW);
+    await runReconciliationSweep({ organizationIds: [org.id], escalationFindingIds: [] });
+    expect(await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: org.id, resolvedAt: null } })).not.toBeNull();
+
+    await prisma.auditLog.deleteMany({ where: { organizationId: org.id } });
+    await prisma.organization.delete({ where: { id: org.id } });
+    await runReconciliationSweep({ organizationIds: [org.id], escalationFindingIds: [] });
+    const finding = await prisma.reconciliationFinding.findFirst({ where: { type: "AUDIT_ANCHOR_STALE", targetId: org.id, resolvedAt: null } });
+    expect(finding).toBeNull();
+  });
+
+  afterEach(async () => {
+    // Each case above (except the first, which reuses the shared orgId)
+    // creates its own throwaway org — clean those up so they don't leak
+    // across the rest of this file's test suite.
+    const orgs = await prisma.organization.findMany({
+      where: { name: { in: ["reconciliation-test-org-recent", "reconciliation-test-org-anchored", "reconciliation-test-org-recovering", "reconciliation-test-org-deleted"] } },
+      select: { id: true },
+    });
+    const ids = orgs.map((o) => o.id);
+    if (ids.length > 0) {
+      await prisma.auditLog.deleteMany({ where: { organizationId: { in: ids } } });
+      await prisma.organization.deleteMany({ where: { id: { in: ids } } });
+    }
   });
 });
 
@@ -372,7 +552,7 @@ describe("runReconciliationSweep — auto-escalation of unacknowledged critical 
     });
     mockReadContract.mockResolvedValue(ESCROW); // no real drift for the other checks
 
-    const result = await runReconciliationSweep();
+    const result = await runReconciliationSweep({ organizationIds: [], escalationFindingIds: [finding.id] });
     expect(result.escalated).toBe(0);
     const updated = await prisma.reconciliationFinding.findUniqueOrThrow({ where: { id: finding.id } });
     expect(updated.lastEscalatedAt).toBeNull();
@@ -391,7 +571,7 @@ describe("runReconciliationSweep — auto-escalation of unacknowledged critical 
     });
     mockReadContract.mockResolvedValue(ESCROW);
 
-    const result = await runReconciliationSweep();
+    const result = await runReconciliationSweep({ organizationIds: [], escalationFindingIds: [finding.id] });
     expect(result.escalated).toBe(1);
     const escalationCall = mockSendOpsAlert.mock.calls.find((c) => (c[0].title as string).includes("[ESCALATION]") && (c[0].detail as string).includes(finding.id));
     expect(escalationCall).toBeDefined();
@@ -403,7 +583,7 @@ describe("runReconciliationSweep — auto-escalation of unacknowledged critical 
     // A second sweep tick immediately after must NOT escalate again —
     // real repeat-interval discipline, not "once per sweep tick."
     mockSendOpsAlert.mockClear();
-    await runReconciliationSweep();
+    await runReconciliationSweep({ organizationIds: [], escalationFindingIds: [finding.id] });
     const noRepeatCall = mockSendOpsAlert.mock.calls.find((c) => (c[0].detail as string).includes(finding.id));
     expect(noRepeatCall).toBeUndefined();
   });
@@ -423,7 +603,7 @@ describe("runReconciliationSweep — auto-escalation of unacknowledged critical 
     });
     mockReadContract.mockResolvedValue(ESCROW);
 
-    const result = await runReconciliationSweep();
+    const result = await runReconciliationSweep({ organizationIds: [], escalationFindingIds: [finding.id] });
     expect(result.escalated).toBe(0);
     const call = mockSendOpsAlert.mock.calls.find((c) => (c[0].detail as string).includes(finding.id));
     expect(call).toBeUndefined();
@@ -442,7 +622,7 @@ describe("runReconciliationSweep — auto-escalation of unacknowledged critical 
     });
     mockReadContract.mockResolvedValue(ESCROW);
 
-    const result = await runReconciliationSweep();
+    const result = await runReconciliationSweep({ organizationIds: [], escalationFindingIds: [finding.id] });
     const call = mockSendOpsAlert.mock.calls.find((c) => (c[0].detail as string).includes(finding.id));
     expect(call).toBeUndefined();
     expect(result.escalated).toBe(0);

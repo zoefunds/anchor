@@ -20,6 +20,7 @@ import {
   AddressLookupTableAccount,
   AddressLookupTableProgram,
 } from "@solana/web3.js";
+import { confirmTransactionBounded } from "@/lib/solana-confirm";
 
 const DECISION_RELAY_ATTESTED_SETTLE_VARIANT = 2; // see DecisionRelayInstruction enum's Borsh discriminant order
 
@@ -354,7 +355,7 @@ async function ensureLookupTableHasAddresses(
   // is far enough in the past; confirmed alone isn't reliably sufficient
   // in practice and this only costs extra latency on an address's FIRST
   // use, never on repeat settlements for the same party.
-  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "finalized");
+  await confirmTransactionBounded({ connection, signature: sig, lastValidBlockHeight, commitment: "finalized" });
 }
 
 /**
@@ -484,6 +485,6 @@ export async function submitAttestedSettle(
   tx.sign([payer]);
 
   const signature = await connection.sendTransaction(tx);
-  await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight });
+  await confirmTransactionBounded({ connection, signature, lastValidBlockHeight });
   return { signature };
 }

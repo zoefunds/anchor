@@ -1,10 +1,11 @@
 {
+  "_note": "Real gap found 2026-09-13 (incident recovery Phase 1): every address below had gone stale, still pointing at a retired mailbox/DecisionRelay/escrow from before the 2026-09-07 own-mailbox migration, while the actual dispatch code and relayer whitelist had already moved on. This file is NOT the authoritative source of truth — apps/web/src/lib/deployment-registry.ts (ACTIVE_SEPOLIA_TOPOLOGY) is, since it's the one TypeScript module every application code path is meant to import from. This JSON file is kept in sync by hand for chains/hyperlane-validator's own standalone scripts (not an npm workspace, can't import the TS registry directly) — if these two ever disagree, the TS registry wins and this file is wrong. Updated again 2026-09-13 (incident recovery Phase 2, SECOND deploy): decisionRelay/escrow now point at the audit-fixed attestedSettle() pair (chainid+deadline+explicit-target-binding added to the signed digest); the first Phase 2 pair (0x2d5E63ea..., never used for a real case) and the Phase 1 pair (decisionRelay 0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9, escrow 0xd848A7CA77CcaA3718d430F7D0DB62174e7a3DfC, which still holds a real unsettled deposit only its own handle()/emergencyRefund() can reach) are both retired — see deployment-registry.ts's RETIRED_SEPOLIA_ADDRESSES.",
   "sepolia": {
-    "mailbox": "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766",
-    "merkleTreeHook": "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d",
-    "validatorAnnounce": "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9",
-    "decisionRelay": "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
-    "escrow": "0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7",
+    "mailbox": "0x345E7246631ceb0300427caB75eacA10c326BB09",
+    "merkleTreeHook": "0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB",
+    "validatorAnnounce": "0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5",
+    "decisionRelay": "0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834",
+    "escrow": "0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD",
     "ism": "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0",
     "dispatcherAddress": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb"
   },

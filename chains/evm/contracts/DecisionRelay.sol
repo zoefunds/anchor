@@ -134,6 +134,28 @@ contract DecisionRelay is IMessageRecipient {
     // (mistakenly or not) sends it.
     mapping(bytes32 => bool) public processedDecisions;
 
+    // Incident recovery, Phase 2 (2026-09-13): a real, live incident
+    // exposed that using Hyperlane as a Sepolia-to-Sepolia self-loop
+    // made a same-chain payout depend on cross-chain-shaped transport
+    // (relayer indexing, S3 checkpoint publication, validator liveness)
+    // for its AVAILABILITY, not just its audit trail — a real settlement
+    // dispatched successfully and then sat undelivered for hours with no
+    // funds movement. attestedSettle() below is the same-chain answer:
+    // authority comes ENTIRELY from the same M-of-N attestor signature
+    // scheme handle() already uses (see _countValidDistinctAttestations),
+    // called directly, with no Mailbox/relayer/validator/checkpoint
+    // dependency at all — the same pattern emergencyRefund() already
+    // uses for its own escape hatch, generalized to the normal
+    // settlement path. handle()'s Hyperlane-notification role remains
+    // for cross-chain-shaped audit visibility, but per this change it is
+    // never the sole way to release a same-chain escrow. Deliberately a
+    // SEPARATE storage slot from settlementTarget/settlementMode (which
+    // stay Hyperlane-domain-keyed) rather than overloading them — same-
+    // chain settlement and cross-chain transport are two different trust
+    // models and must not share one config surface.
+    address public directSettlementTarget;
+    event DirectSettlementTargetChanged(address oldTarget, address newTarget);
+
     event DecisionReceived(bytes32 indexed caseId, string outcome, bytes32 proofHash);
     event CaseOriginated(bytes32 indexed caseId, uint32 destinationDomain, bytes32 messageId);
     event EmergencyRefundRequested(bytes32 indexed caseId, address indexed settlementTargetAddr, bytes32 proofHash);
@@ -231,6 +253,90 @@ contract DecisionRelay is IMessageRecipient {
         }
         emit SettlementModeChanged(domain, settlementMode[domain], mode);
         settlementMode[domain] = mode;
+    }
+
+    function setDirectSettlementTarget(address target) external onlyOwner {
+        emit DirectSettlementTargetChanged(directSettlementTarget, target);
+        directSettlementTarget = target;
+    }
+
+    /// Incident recovery, Phase 2 — the same-chain settlement path. See
+    /// this contract's directSettlementTarget doc comment for the full
+    /// rationale. Deliberately permissionless (no onlyMailbox, no
+    /// onlyOwner) — same reasoning as emergencyRefund(): the caller
+    /// submitting this transaction proves nothing on their own, all
+    /// authority comes from the attestor signatures verified below.
+    /// Domain-separated from handle()'s own attestation hash
+    /// ("ANCHOR_DIRECT_SETTLE_V1" vs "ANCHOR_DECISION_ATTESTATION_V2")
+    /// so a signature produced for one path can never be replayed
+    /// against the other, even though both ultimately authorize the
+    /// same kind of action (a settle() call) over similar-shaped data.
+    /// Real fix (external audit finding, 2026-09-13): the first version
+    /// of this function signed neither block.chainid nor a deadline, and
+    /// bound the settlement target only implicitly (via directSettlementTarget's
+    /// CURRENT value at call time, not the value the attestors actually
+    /// saw when they signed). Both are real gaps: (1) without chainid, a
+    /// signature collected here would also be technically well-formed
+    /// input to an identically-addressed DecisionRelay on a different
+    /// chain, if one ever existed — this contract has no other way to
+    /// scope a signature to "this specific chain"; (2) without a
+    /// deadline, a signature is valid forever, so a stale, no-longer-
+    /// intended settlement instruction could still be submitted years
+    /// later; (3) without binding the target explicitly, an owner who
+    /// changes directSettlementTarget between signing and submission
+    /// (malicious or accidental) redirects an already-signed settlement
+    /// to a DIFFERENT escrow with no attestor having agreed to that.
+    /// All three are now part of the signed content itself.
+    function attestedSettle(
+        bytes32 caseId,
+        string calldata outcome,
+        uint256 claimantAmount,
+        uint256 respondentAmount,
+        bytes32 escrowId,
+        bytes32 proofHash,
+        address settlementTargetAddr,
+        uint256 deadline,
+        bytes[] calldata attestationSignatures
+    ) external {
+        require(block.timestamp <= deadline, "attestation expired");
+        require(!processedDecisions[proofHash], "decision already settled");
+        require(attestationSignatures.length <= attestorCount, "too many signatures supplied");
+
+        require(
+            _countValidDistinctAttestations(
+                keccak256(
+                    abi.encode(
+                        "ANCHOR_DIRECT_SETTLE_V1",
+                        block.chainid,
+                        address(this),
+                        settlementTargetAddr,
+                        caseId,
+                        outcome,
+                        claimantAmount,
+                        respondentAmount,
+                        escrowId,
+                        proofHash,
+                        deadline
+                    )
+                ),
+                attestationSignatures
+            ) >= attestorThreshold,
+            "insufficient valid attestations"
+        );
+
+        // Belt-and-suspenders, same reasoning as handle()'s own
+        // re-check of settlementTarget: confirms the CURRENT configured
+        // target still matches what attestors actually signed, so a
+        // governance change to directSettlementTarget between signing
+        // and submission can't silently redirect funds even if
+        // settlementTargetAddr were ever wrong for some other reason.
+        require(settlementTargetAddr == directSettlementTarget, "settlementTargetAddr does not match configured directSettlementTarget");
+
+        processedDecisions[proofHash] = true;
+        emit DecisionReceived(caseId, outcome, proofHash);
+
+        require(settlementTargetAddr != address(0), "no direct settlement target configured");
+        ISettlementTarget(settlementTargetAddr).settle(caseId, escrowId, claimantAmount, respondentAmount, proofHash);
     }
 
     /// Called by the local Mailbox when a DecisionRelay message arrives from

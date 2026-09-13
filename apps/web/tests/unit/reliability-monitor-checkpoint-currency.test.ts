@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { ACTIVE_VALIDATORS } from "@/lib/deployment-registry";
 
 // Regression test for a real, previously-live bug (found 2026-09-06 while
 // verifying the validator2-replacement cutover): this module's
@@ -56,13 +57,21 @@ describe("reliability-monitor checkCheckpointCurrency regression: must compare a
     expect(moduleSource).not.toContain("0xf80B4De13f895ae9D3062aD78500F2C45c865109");
   });
 
-  it("VALIDATORS includes all 3 live validators, not the stale 2-validator list", () => {
-    const start = moduleSource.indexOf("const VALIDATORS = [");
-    const end = moduleSource.indexOf("] as const;", start);
-    const block = moduleSource.slice(start, end);
-    expect(block).toContain("0x2ffFd80d446835214EF87Eb3753B48935550f73f"); // validator1
-    expect(block).toContain("0xf171c23607b892797Eb5eb4e52fc668f924Df0A3"); // validator2 (post-replacement)
-    expect(block).toContain("0x4dbc8704ebD282535d64Be6daDF2a477C543114D"); // validator3
-    expect(block).not.toContain("0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3"); // retired validator2
+  it("reliability-monitor.ts sources its VALIDATORS from the shared deployment registry, not its own literal", () => {
+    // Incident recovery Phase B (2026-09-13): every hardcoded topology
+    // literal in this file (mailbox, hook, announce, DecisionRelay, ISM,
+    // validators) was migrated to import from deployment-registry.ts,
+    // so a future contract migration can't leave this file behind again
+    // without every consumer of the registry updating together.
+    expect(moduleSource).toContain('import { ACTIVE_SEPOLIA_TOPOLOGY, ACTIVE_VALIDATORS } from "@/lib/deployment-registry"');
+    expect(moduleSource).toContain("const VALIDATORS = ACTIVE_VALIDATORS;");
+  });
+
+  it("the registry's ACTIVE_VALIDATORS includes all 3 live validators, not the stale 2-validator list", () => {
+    const addresses = ACTIVE_VALIDATORS.map((v) => v.address);
+    expect(addresses).toContain("0x2ffFd80d446835214EF87Eb3753B48935550f73f"); // validator1
+    expect(addresses).toContain("0xf171c23607b892797Eb5eb4e52fc668f924Df0A3"); // validator2 (post-replacement)
+    expect(addresses).toContain("0x4dbc8704ebD282535d64Be6daDF2a477C543114D"); // validator3
+    expect(addresses).not.toContain("0x0eD86FBF8cb56622BB3094FeCde2872018e0f4B3"); // retired validator2
   });
 });

@@ -2,6 +2,8 @@ import {
   dispatchDecisionRelay,
   dispatchDecisionRelayToSealevel,
   computeDecisionAttestationHash,
+  computeDirectSettleAttestationHash,
+  submitAttestedSettle,
   caseIdToBytes32,
   HYPERLANE_DOMAIN,
   type DecisionRelayPayload,
@@ -10,6 +12,7 @@ import type { Address, Hex } from "viem";
 import { pad, isHex, createPublicClient, http, recoverAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "@/lib/deployment-registry";
 import { prisma } from "@/lib/prisma";
 
 const PROCESSED_DECISIONS_ABI = [
@@ -101,7 +104,13 @@ export function getEvmPublicClient() {
 // via env; this default matters for local/staging without that
 // override — a wrong default here fails closed (rejects legitimate case
 // creation) rather than open.
-const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = ["0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9"];
+//
+// Incident recovery Phase 1 (2026-09-13): stops hardcoding its own copy
+// of this address — every one of the three redeploys during this
+// incident (0x3AAFf2Db..., then 0x100720fe...) meant a separate literal
+// here going stale independently of the actual live contract. Sourced
+// from the same registry every other topology consumer now reads from.
+const DEFAULT_APPROVED_SEPOLIA_SETTLEMENT_CONTRACTS = [ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay];
 const DEFAULT_APPROVED_SOLANA_SETTLEMENT_PROGRAMS = ["DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"];
 // The escrow program actually invoked to move funds on Solana settlement
 // (see solana-settle.ts's submitAttestedSettle) — a separate, even more
@@ -273,6 +282,21 @@ export interface DispatchDecisionParams {
   externalAttestationSignatures?: Hex[];
   /** Sealevel-only equivalent of externalAttestationSignatures above — {publicKey, signature} pairs already collected from external Solana attestors (see Decision.pendingSolanaAttestations). Solana's Ed25519 signatures aren't recoverable, so each entry must carry its signer's public key explicitly. */
   externalSolanaAttestations?: { publicKey: Uint8Array; signature: Uint8Array }[];
+  /**
+   * Sepolia-only — the exact deadline (unix seconds) to sign into
+   * attestedSettle()'s digest. Real bug found 2026-09-13: this used to
+   * be computed fresh (`Date.now() + 30min`) on every call, including
+   * retries — since deadline is signed content, every retry produced a
+   * DIFFERENT attestation hash, so signatures from different retries
+   * could never combine to reach threshold. The caller
+   * (dispatchSettlementForDecision) now persists the first deadline
+   * chosen for a decision (Decision.directSettleDeadline) and passes it
+   * back on every subsequent retry, so the SAME hash is signed and
+   * re-signed until quorum is reached or it genuinely expires. Falls
+   * back to computing a fresh one only when omitted (e.g. a one-off
+   * manual script that doesn't need retry-stability).
+   */
+  directSettleDeadline?: bigint;
 }
 
 /** Formats a sha256 hex digest (evidenceHash or decisionHash, no 0x prefix) as a bytes32 for DecisionRelay.sol. */
@@ -444,7 +468,7 @@ export async function dispatchDecisionForCase(
     if (caseSettlement.status !== "DEPOSITED") {
       throw new Error(`CaseSettlement ${caseSettlement.id} status is ${caseSettlement.status}, not DEPOSITED — refusing to dispatch`);
     }
-    const { assertEscrowDepositMatches, assertSettlementTargetMatchesIntegration, TargetBindingError } = await import("@/lib/escrow");
+    const { assertEscrowDepositMatches, assertSettlementTargetMatchesIntegration, assertDirectSettlementTargetMatchesIntegration, TargetBindingError } = await import("@/lib/escrow");
     // The other real fix from the re-audit: prove the live
     // DecisionRelay actually points at the SAME escrow the app is
     // about to verify a deposit in — these were never compared before.
@@ -455,6 +479,16 @@ export async function dispatchDecisionForCase(
       await assertSettlementTargetMatchesIntegration({
         decisionRelayAddress: params.settlementContract as Address,
         originDomain: HYPERLANE_DOMAIN.sepolia,
+        expectedEscrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
+      });
+      // Real gap closed 2026-09-13 (remediation plan, item 4): the check
+      // above verifies the Hyperlane-notification path's settlementTarget
+      // mapping — attestedSettle() below actually pays out through
+      // directSettlementTarget, a separate storage slot the app never
+      // checked pre-dispatch until now. See assertDirectSettlementTargetMatchesIntegration's
+      // own doc comment for the two-directional check this performs.
+      await assertDirectSettlementTargetMatchesIntegration({
+        decisionRelayAddress: params.settlementContract as Address,
         expectedEscrowContractAddress: caseSettlement.integration.escrowContractAddress as Address,
       });
     } catch (err) {
@@ -490,15 +524,40 @@ export async function dispatchDecisionForCase(
       }
       throw err;
     }
-    const attestationHash = computeDecisionAttestationHash({
-      originDomain: HYPERLANE_DOMAIN.sepolia,
+    // Incident recovery, Phase 2 (2026-09-13): the REAL settlement call
+    // is now attestedSettle() — same-chain, authorized purely by M-of-N
+    // attestor signatures, no Mailbox/relayer/validator/checkpoint
+    // dependency. This mirrors the Solana branch below exactly
+    // (submitAttestedSettle is the real fund movement; the Hyperlane
+    // dispatch further down is a best-effort, non-blocking notification
+    // only) — see DecisionRelay.sol's directSettlementTarget doc comment
+    // for the incident this replaces (a real settlement dispatched via
+    // Hyperlane and then sat undelivered for hours with no funds
+    // movement, because Sepolia-to-Sepolia self-loop delivery was never
+    // a proven-supported pattern for the relayer).
+    // Real audit fix (2026-09-13): the signed digest must bind the
+    // EXACT escrow address attestors are authorizing (settlementTargetAddr),
+    // this chain's id, and a deadline — see computeDirectSettleAttestationHash's
+    // own doc comment for why each closes a real gap. 30 minutes is
+    // deliberately short: this is a same-chain call submitted
+    // immediately after signing, not a long-lived offline-signing
+    // workflow like handle()'s cross-chain attestation.
+    const ATTESTED_SETTLE_DEADLINE_SECONDS = 30 * 60;
+    const settlementTargetAddr = caseSettlement.integration.escrowContractAddress as Address;
+    const deadline = params.directSettleDeadline ?? BigInt(Math.floor(Date.now() / 1000) + ATTESTED_SETTLE_DEADLINE_SECONDS);
+    const chainId = await getEvmPublicClient().getChainId();
+
+    const attestationHash = computeDirectSettleAttestationHash({
+      chainId,
       recipientAddress: params.settlementContract as Address,
+      settlementTargetAddr,
       caseIdBytes32: caseIdToBytes32(params.caseId),
       outcome: params.outcome,
       claimantAmount: params.claimantAmountAtto,
       respondentAmount: params.respondentAmountAtto,
       escrowId,
       proofHash: decisionHashBytes32,
+      deadline,
     });
     const backendSignatures = await Promise.all(
       getAttestorAccounts().map((account) => account.sign({ hash: attestationHash }))
@@ -517,16 +576,63 @@ export async function dispatchDecisionForCase(
       throw new InsufficientAttestorSignaturesError(attestationHash, validCount, threshold);
     }
 
-    const payload: DecisionRelayPayload = {
+    const { txHash } = await submitAttestedSettle(config, params.settlementContract as Address, {
       caseId: params.caseId,
       outcome: params.outcome,
       claimantAmount: params.claimantAmountAtto,
       respondentAmount: params.respondentAmountAtto,
       escrowId,
       proofHash: decisionHashBytes32,
+      settlementTargetAddr,
+      deadline,
       attestationSignatures,
-    };
-    return dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
+    });
+
+    // Best-effort, non-blocking Hyperlane notification — same pattern as
+    // the Solana branch below. attestedSettle() above already moved the
+    // funds; if this fails, the case loses only its explorer-visible
+    // cross-chain-shaped audit trail, never any money, and must not
+    // surface as a settlement failure. Deliberately reuses the SAME
+    // handle()-scheme attestation (recomputed here, since it's a
+    // genuinely different hash than attestedSettle()'s) and SAME
+    // settlementMode=SETTLEMENT wiring on the new relay — if this
+    // message ever does get delivered, handle() calling settle() again
+    // on an already-processed proofHash simply reverts harmlessly
+    // (shared processedDecisions idempotency), so there is no double-pay
+    // risk from running both paths.
+    let notificationTxHash: string | undefined;
+    let notificationMessageId: string | undefined;
+    try {
+      const decisionAttestationHash = computeDecisionAttestationHash({
+        originDomain: HYPERLANE_DOMAIN.sepolia,
+        recipientAddress: params.settlementContract as Address,
+        caseIdBytes32: caseIdToBytes32(params.caseId),
+        outcome: params.outcome,
+        claimantAmount: params.claimantAmountAtto,
+        respondentAmount: params.respondentAmountAtto,
+        escrowId,
+        proofHash: decisionHashBytes32,
+      });
+      const notificationSignatures = await Promise.all(
+        getAttestorAccounts().map((account) => account.sign({ hash: decisionAttestationHash }))
+      );
+      const payload: DecisionRelayPayload = {
+        caseId: params.caseId,
+        outcome: params.outcome,
+        claimantAmount: params.claimantAmountAtto,
+        respondentAmount: params.respondentAmountAtto,
+        escrowId,
+        proofHash: decisionHashBytes32,
+        attestationSignatures: [...notificationSignatures, ...(params.externalAttestationSignatures ?? [])],
+      };
+      const dispatchResult = await dispatchDecisionRelay(config, HYPERLANE_DOMAIN.sepolia, params.settlementContract as Address, payload);
+      notificationTxHash = dispatchResult.txHash;
+      notificationMessageId = dispatchResult.messageId;
+    } catch (err) {
+      console.error(`case ${params.caseId}: Hyperlane notification dispatch failed after attestedSettle() succeeded (${txHash}) — funds already moved, only the cross-chain audit trail is missing`, err);
+    }
+
+    return { txHash, messageId: notificationMessageId ?? txHash, notificationTxHash };
   }
 
   if (SEALEVEL_CHAINS.has(params.settlementChain)) {

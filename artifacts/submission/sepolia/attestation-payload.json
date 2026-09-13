@@ -1,0 +1,15 @@
+{
+  "chain": "sepolia",
+  "chainId": 11155111,
+  "decisionRelay": "0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834",
+  "settlementTargetAddr": "0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD",
+  "caseIdBytes32": "0x00000000000000636d747a6c61763770303030317563323571727a7537707674",
+  "outcome": "RELEASE_FULL",
+  "claimantAmount": "200000000000000",
+  "respondentAmount": "0",
+  "escrowId": "0xc83d0ea8a22fd9fe67d56269835f2a1286800d717901bf334a1769c10d676512",
+  "proofHash": "0x5d1316505018d402e03ed97b81366e62d89136cc3d7d08129eabda18ab4ab246",
+  "deadline": "1789292224",
+  "attestationHash": "0xf3e82ae9aa56e32a38180d87e1efe0858075e2c1cb1bef337edb10bef5403c54",
+  "hashScheme": "ANCHOR_DIRECT_SETTLE_V1"
+}

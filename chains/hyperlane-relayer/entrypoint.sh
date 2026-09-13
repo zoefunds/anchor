@@ -35,6 +35,19 @@ hexify() {
 # recipients this deployment cares about makes those old entries get
 # skipped outright instead of retried forever.
 #
+# Real incident, 2026-09-12: the old DecisionRelay
+# (0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2) was found to be
+# immutably bound to a Mailbox whose defaultHook never routes through
+# any real Merkle tree — a permanent, unfixable dead end for delivery
+# regardless of relayer/validator health. Replaced with a new
+# DecisionRelay (0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9) deployed
+# against Anchor's own working Mailbox (0x345E7246...), reusing the
+# same ISM/attestor set. This whitelist is exactly what silently
+# swallowed every dispatch to the new contract for a good while after
+# that redeploy — the mailbox/config fix alone was not enough, this
+# separate gate also had to be updated. Old recipient retired, not
+# deleted, per this file's own established history below.
+#
 # Sepolia recipient updated to the current DecisionRelay deployment
 # (0x94f3FF552CC879a36B19b829af3325Ea72cbC71C) — the real 2-of-2
 # StaticMerkleRootMultisigIsm redeploy (see
@@ -49,8 +62,34 @@ hexify() {
 # validator2 replacement (real A/B/C validator independence — see
 # chains/hyperlane-validator/VALIDATOR2_REPLACEMENT.md). Previous relay
 # 0x12495e1C55e6257fdE1e1ED0be463477DAFA9907 retired, not deleted.
+# DeliveryProofReceiver (0xc28f88a063feb0a5abbe4ba787799c9d181d26b9) added
+# 2026-09-12 — a minimal transport-only probe per the incident recovery
+# brief's Part 3, isolating relayer/validator/ISM delivery from
+# DecisionRelay/Escrow logic entirely. Remove once the incident is
+# closed if no longer needed for diagnosis.
+#
+# Real drift found 2026-09-13 (incident recovery Phase 2 / topology
+# freeze): this whitelist still only listed the Phase 1 DecisionRelay
+# (0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9), not the attestedSettle()-
+# capable pair deployed the same day. That first Phase 2 pair
+# (0x2d5E63ea1F83f6BF5a438c354454b100904896EE) was itself replaced hours
+# later by a second Phase 2 deploy fixing an external audit finding
+# (attestedSettle()'s signed digest was missing chainid/deadline/explicit-
+# target-binding) — see deployment-registry.ts's ACTIVE_SEPOLIA_TOPOLOGY
+# for the current one (0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834). All
+# retired entries kept, not deleted, per this file's own established
+# convention. NOTE: editing this file alone does not change the
+# currently-running relayer process — it takes effect only on the next
+# actual relayer redeploy, which is deliberately NOT being triggered by
+# this change (see the incident doc's standing "do not redeploy the
+# relayer" constraint pending a reviewed plan). Hyperlane notification
+# delivery to the active relay is non-blocking for settlement either way
+# (see attestedSettle()).
 WHITELIST='[
-  {"destinationDomain":"11155111","recipientAddress":"0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2"},
+  {"destinationDomain":"11155111","recipientAddress":"0x56bf62f9f4c2c316d956f9c35dd1b15be5ae9834"},
+  {"destinationDomain":"11155111","recipientAddress":"0x2d5e63ea1f83f6bf5a438c354454b100904896ee"},
+  {"destinationDomain":"11155111","recipientAddress":"0x100720fe9f0bfc83e6fdea392cb3a0905a5acea9"},
+  {"destinationDomain":"11155111","recipientAddress":"0xc28f88a063feb0a5abbe4ba787799c9d181d26b9"},
   {"destinationDomain":"1399811150","recipientAddress":"DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN"}
 ]'
 

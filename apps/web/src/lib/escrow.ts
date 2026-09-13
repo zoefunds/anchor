@@ -22,10 +22,62 @@ const DECISION_RELAY_TARGET_ABI = [
     inputs: [{ name: "", type: "uint32" }],
     outputs: [{ name: "", type: "address" }],
   },
+  {
+    type: "function",
+    name: "directSettlementTarget",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+] as const;
+
+const ESCROW_DECISION_RELAY_ABI = [
+  { type: "function", name: "decisionRelay", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
 ] as const;
 
 export class EscrowValidationError extends Error {}
 export class TargetBindingError extends Error {}
+
+/**
+ * Real gap found 2026-09-13 (remediation plan, item 4): the pre-existing
+ * assertSettlementTargetMatchesIntegration below checks
+ * DecisionRelay.settlementTarget(domain) — the Hyperlane-notification-
+ * path mapping. attestedSettle() (the actual fund-moving call since the
+ * 2026-09-13 architecture change) pays out through directSettlementTarget
+ * instead, a SEPARATE storage slot never checked before a dispatch. This
+ * closes that gap from both directions: DecisionRelay.directSettlementTarget()
+ * must equal the expected escrow, AND that escrow's own immutable
+ * decisionRelay() must equal the DecisionRelay about to call it — the
+ * two facts an owner-configuration mistake (or a stale case still
+ * pointed at a retired pair) could otherwise silently disagree on.
+ */
+export async function assertDirectSettlementTargetMatchesIntegration(params: {
+  decisionRelayAddress: Address;
+  expectedEscrowContractAddress: Address;
+}): Promise<void> {
+  const client = getEvmPublicClient();
+  const [liveDirectTarget, liveEscrowDecisionRelay] = await Promise.all([
+    client.readContract({ address: params.decisionRelayAddress, abi: DECISION_RELAY_TARGET_ABI, functionName: "directSettlementTarget" }),
+    client.readContract({ address: params.expectedEscrowContractAddress, abi: ESCROW_DECISION_RELAY_ABI, functionName: "decisionRelay" }),
+  ]);
+
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+  if (liveDirectTarget.toLowerCase() === ZERO_ADDRESS) {
+    throw new TargetBindingError(
+      `DecisionRelay ${params.decisionRelayAddress} has no directSettlementTarget configured — refusing to dispatch attestedSettle() with no configured payout target`
+    );
+  }
+  if (liveDirectTarget.toLowerCase() !== params.expectedEscrowContractAddress.toLowerCase()) {
+    throw new TargetBindingError(
+      `DecisionRelay.directSettlementTarget() is ${liveDirectTarget}, but this case's SettlementIntegration expects ${params.expectedEscrowContractAddress} — refusing to dispatch attestedSettle() against a mismatched target`
+    );
+  }
+  if (liveEscrowDecisionRelay.toLowerCase() !== params.decisionRelayAddress.toLowerCase()) {
+    throw new TargetBindingError(
+      `Escrow ${params.expectedEscrowContractAddress}'s own immutable decisionRelay() is ${liveEscrowDecisionRelay}, not ${params.decisionRelayAddress} — this DecisionRelay could never actually settle into this escrow (its settle() call would revert), refusing to dispatch`
+    );
+  }
+}
 
 /**
  * Real fix for the re-audit's Phase 1 finding: the app used to verify

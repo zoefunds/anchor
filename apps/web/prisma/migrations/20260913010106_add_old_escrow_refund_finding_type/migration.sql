@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "ReconciliationFindingType" ADD VALUE 'OLD_ESCROW_REFUND_ELIGIBLE_SOON';

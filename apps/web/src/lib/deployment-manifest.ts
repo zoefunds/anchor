@@ -10,7 +10,13 @@ import { verifyManifestHash } from "@/lib/manifest-signature";
 // regenerate either file, and update these constants in the same commit —
 // an unreviewed manifest change without a matching hash update is exactly
 // the drift verifyManifestHash() below exists to catch.
-const EXPECTED_EVM_MANIFEST_HASH = "5116cdc5249607c71269e61c84faf6655ae7e26e51fcb1078b705beaca2fc1bc";
+// Updated 2026-09-13 alongside deployment-manifest.json's regeneration
+// (incident recovery Phase 2, SECOND deploy — external audit fix adding
+// chainid/deadline/explicit-target-binding to attestedSettle()'s signed
+// digest) — the manifest now reflects 0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834,
+// replacing the short-lived, never-used first Phase 2 pair
+// (0x2d5E63ea...) — see deployment-registry.ts's RETIRED_SEPOLIA_ADDRESSES.
+const EXPECTED_EVM_MANIFEST_HASH = "cf720bb1f17beaf54a4c524132fc9d5e64d58e11345a2ad1b643f988fb70f2ce";
 const EXPECTED_SOLANA_MANIFEST_HASH = "93637df98778c03d223cb2258ae4098bbc67d941c0ff5a4a0376cf8c73a440b5";
 
 // Phase 1 (signer/settlement/delivery reliability), item 1's "expected

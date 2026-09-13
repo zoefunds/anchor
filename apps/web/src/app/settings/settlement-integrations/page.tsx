@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "@/lib/deployment-registry";
 
 interface SettlementIntegration {
   id: string;
@@ -28,8 +29,8 @@ const CHAIN_OPTIONS = [
 // per chain — this just saves an org owner from having to go find it.
 const ANCHOR_TESTNET_CONTRACTS: Record<string, { escrowContractAddress: string; decisionRelayAddress: string; assetSymbol: string; assetDecimals: number }> = {
   sepolia: {
-    escrowContractAddress: "0xd848A7CA77CcaA3718d430F7D0DB62174e7a3DfC",
-    decisionRelayAddress: "0x100720fe9f0bFc83E6FdEA392Cb3a0905A5acEa9",
+    escrowContractAddress: ACTIVE_SEPOLIA_TOPOLOGY.escrow,
+    decisionRelayAddress: ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay,
     assetSymbol: "ETH",
     assetDecimals: 18,
   },

@@ -1,0 +1,6 @@
+{
+  "settlementPausedEnvVar": true,
+  "dispatchSettlementForDecisionBlocked": true,
+  "relayErrorRecorded": "SETTLEMENT_PAUSED",
+  "note": "runAdjudicationJob's internal dispatchSettlementForDecision was invoked for real (as part of the appeal-finalization call) and correctly refused to settle. The settlement below is a separate, manual, explicitly-authorized attestedSettle() call using the real decision's real proof; SETTLEMENT_PAUSED itself was never lifted."
+}

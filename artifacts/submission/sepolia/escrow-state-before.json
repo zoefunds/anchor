@@ -1,0 +1,9 @@
+{
+  "chain": "sepolia",
+  "escrowContract": "0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD",
+  "escrowId": "0xc83d0ea8a22fd9fe67d56269835f2a1286800d717901bf334a1769c10d676512",
+  "status": 1,
+  "claimant": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb",
+  "respondent": "0x000000000000000000000000000000000000b0b0",
+  "amount": "200000000000000"
+}

@@ -1,0 +1,11 @@
+{
+  "chain": "sepolia",
+  "decisionId": "cmtzlbjdf0005uc25ofa9ondk",
+  "caseId": "cmtzlav7p0001uc25qrzu7pvt",
+  "outcome": "RELEASE_FULL",
+  "claimantShareBps": 10000,
+  "respondentShareBps": 0,
+  "decisionHash": "5d1316505018d402e03ed97b81366e62d89136cc3d7d08129eabda18ab4ab246",
+  "proofHash": "0x5d1316505018d402e03ed97b81366e62d89136cc3d7d08129eabda18ab4ab246",
+  "timestamp": "2026-09-13T09:07:54.001Z"
+}

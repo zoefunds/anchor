@@ -1,0 +1,19 @@
+{
+  "purpose": "Phase 5 acceptance: prove or disprove Sepolia-to-Sepolia same-domain Hyperlane delivery, without further chasing it if it fails.",
+  "chain": "sepolia",
+  "sourceDomain": 11155111,
+  "destinationDomain": 11155111,
+  "mailbox": "0x345E7246631ceb0300427caB75eacA10c326BB09",
+  "recipient": "0xC28f88a063fEb0A5abbE4bA787799c9D181D26b9",
+  "recipientContract": "DeliveryProofReceiver",
+  "dispatchTxHash": "0xd22903e4d55e0a8a549217b1ebc76a1a5442722489f7285f473c570723a87616",
+  "messageId": "0x52abe2344d2548bac637f2c3320c0282a9e5d31e1a1a10178c2c8169ef148956",
+  "dispatchBlock": 11696200,
+  "probeStartedUtc": "2026-09-13T13:31:12Z",
+  "probeEndedUtc": "2026-09-13T13:40:56Z",
+  "probeDurationSeconds": 600,
+  "pollIntervalSeconds": 30,
+  "delivered": false,
+  "conclusion": "Same-domain (Sepolia-to-Sepolia) Hyperlane delivery through the active relayer/validator/ISM configuration is UNPROVEN/UNSUPPORTED for this deployment as of this probe. Per the remediation plan's explicit Phase 5 instruction, this is not being chased further (no relayer restarts, no further funded self-loop tests, no repeated probes). It is permanently out of the payout critical path: attestedSettle() (Sepolia) and attested_settle() (Solana) never depend on this route for fund movement, only for a best-effort notification/audit trail.",
+  "note": "The relayer's own whitelist already includes this recipient (see chains/hyperlane-relayer/entrypoint.sh) and the relayer process was not restarted or otherwise touched to run this probe, per the standing constraint against relayer redeploys/config-reload during this remediation window."
+}

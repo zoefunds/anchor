@@ -2,6 +2,7 @@ import { type Address, keccak256, decodeAbiParameters } from "viem";
 import { getEvmPublicClient } from "@/lib/hyperlane";
 import { prisma } from "@/lib/prisma";
 import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
+import { ACTIVE_SEPOLIA_TOPOLOGY, ACTIVE_VALIDATORS } from "@/lib/deployment-registry";
 
 // Re-audit response (Phase 0 — reliability evidence exporter). Ports
 // the core, continuously-meaningful checks from
@@ -31,41 +32,24 @@ import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 // that script, so it works in the deployed worker with zero extra
 // packaging.
 
-const MAILBOX = "0xfFAEF09B3cd11D9b20d1a19bECca54EEC2884766" as Address;
-// The tree leaf count any validator can ever checkpoint to — NOT
-// Mailbox.nonce(), which counts every dispatch from every user of this
-// shared canonical testnet mailbox, not just Anchor's own traffic. This
-// was a real false-alarm root cause found and fixed in
-// chains/hyperlane-validator/scripts/verify-deployment.ts earlier this
-// project; this module is a separate implementation (see header) that
-// carried the same bug independently until this fix (2026-09-06) — it
-// was producing a fake ~1370-leaf "lag" and a false DELIVERY_BLOCKED
-// state on the live dashboard.
-const MERKLE_TREE_HOOK = "0x4917a9746A7B6E0A57159cCb7F5a6744247f2d0d" as Address;
-const VALIDATOR_ANNOUNCE = "0xE6105C59480a1B7DD3E4f28153aFdbE12F4CfCD9" as Address;
-// Current as of the validator2-replacement cutover (2026-09-06) — see
-// chains/hyperlane-validator/deployment.json (source of truth) and
-// VALIDATOR2_REPLACEMENT.md. These were also stale here (still pointing
-// at the pre-validator3 relay/ISM) until this fix.
-const DECISION_RELAY = "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2" as Address;
-const ISM = "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0" as Address;
-const TRUSTED_SENDER_ADDRESS = "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb" as Address;
-const SEPOLIA_DOMAIN = 11155111;
+// Real incident, 2026-09-12: every address below used to be a separate
+// hardcoded literal in this file, and had gone stale (still pointing at
+// the retired canonical mailbox/hook/announce/DecisionRelay) without
+// this monitor ever noticing — meaning the dashboard could report the
+// RETIRED system healthy while the ACTIVE one was failing delivery
+// entirely. Now sourced from the one shared topology registry so a
+// future migration can't silently leave this file behind again.
+const MAILBOX = ACTIVE_SEPOLIA_TOPOLOGY.mailbox;
+const MERKLE_TREE_HOOK = ACTIVE_SEPOLIA_TOPOLOGY.merkleTreeHook;
+const VALIDATOR_ANNOUNCE = ACTIVE_SEPOLIA_TOPOLOGY.validatorAnnounce;
+const DECISION_RELAY = ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay;
+const ISM = ACTIVE_SEPOLIA_TOPOLOGY.ism;
+const TRUSTED_SENDER_ADDRESS = ACTIVE_SEPOLIA_TOPOLOGY.trustedSenderAddress;
+const SEPOLIA_DOMAIN = ACTIVE_SEPOLIA_TOPOLOGY.sourceDomain;
 const MAX_CHECKPOINT_LAG_LEAVES = 100;
 
-// Mirrors chains/hyperlane-validator/deployment.json's validators array
-// (kept as a separate literal here rather than importing that file,
-// per this module's own "intentionally self-contained" note above).
-// flyApp is only present for Fly-hosted validators — validator2 and
-// validator3 run on their own independent AWS EC2 instances instead
-// (see VALIDATOR2_REPLACEMENT.md / VALIDATOR3_CUTOVER.md), so
-// checkValidatorMachineMetadata below treats its absence as "not
-// applicable," not an error.
-const VALIDATORS = [
-  { address: "0x2ffFd80d446835214EF87Eb3753B48935550f73f" as Address, label: "validator1", operator: "anchor-operator", account: "fly:priscilla-george-personal", provider: "fly.io", flyApp: "anc-hor-validator1" as string | undefined },
-  { address: "0xf171c23607b892797Eb5eb4e52fc668f924Df0A3" as Address, label: "validator2", operator: "independent-operator-gideon820001", account: "aws:069066994101", provider: "aws-ec2", flyApp: undefined as string | undefined },
-  { address: "0x4dbc8704ebD282535d64Be6daDF2a477C543114D" as Address, label: "validator3", operator: "independent-operator-bard775", account: "aws:269469928649", provider: "aws-ec2", flyApp: undefined as string | undefined },
-] as const;
+// flyApp is only present for Fly-hosted validators; checkValidatorMachineMetadata below treats its absence as "not applicable," not an error.
+const VALIDATORS = ACTIVE_VALIDATORS;
 
 type CheckStatus = "pass" | "warn" | "fail";
 interface CheckResult {

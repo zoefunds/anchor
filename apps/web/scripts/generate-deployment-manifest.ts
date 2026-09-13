@@ -13,15 +13,18 @@
 import { createPublicClient, http, type Address } from "viem";
 import { sepolia } from "viem/chains";
 import { writeFileSync } from "fs";
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "../src/lib/deployment-registry";
 
 const RPC_URL = process.env.HYPERLANE_RELAY_RPC_URL ?? "https://ethereum-sepolia.publicnode.com";
 
-// Only the CONTRACT ADDRESSES themselves are hardcoded here — these are
-// not "trusted defaults" the app falls back to, they are simply which
-// contracts this specific audit run is pointed at. Everything else
-// (owner, attestor membership, threshold, Safe owners/threshold,
-// codehash) is read live, not assumed.
-const DECISION_RELAY: Address = "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2";
+// Real gap found and fixed 2026-09-13 (incident recovery Phase 1): this
+// used to hardcode its own DecisionRelay literal, which went stale
+// (pointed at the retired 0x1fc130416... relay) the moment a new
+// DecisionRelay was deployed elsewhere in this session — a manifest
+// generated from a stale address is worse than no manifest, since it
+// looks authoritative. Sourced from the same single registry every
+// other consumer now reads from.
+const DECISION_RELAY: Address = ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay;
 const SAFE: Address = "0xc200534F7Debf2816C085c5a156AbD686FA19f4C";
 // Known historical attestor candidates to check membership for — this
 // list is a starting point for a human reviewing the manifest, NOT an

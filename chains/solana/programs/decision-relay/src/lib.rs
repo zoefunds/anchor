@@ -70,8 +70,10 @@ const TRUSTED_ISM: Pubkey = solana_program::pubkey!("PNMVXEfSvLYhF917ViQTSTf4MVm
 /// program, which is already initialized by Hyperlane's own team — see
 /// chains/solana/ISM_MIGRATION.md's git history for that finding),
 /// configured with the SAME validator set/threshold already running for
-/// the EVM DecisionRelay ISM (2-of-2: anc-hor-validator1/validator2 —
-/// see docs/self-hosted-validator-setup.md). Verified on-chain (not
+/// the EVM DecisionRelay ISM (2-of-3: anc-hor-validator1/validator2/
+/// validator3 — see docs/self-hosted-validator-setup.md; corrected
+/// 2026-09-13, this comment had gone stale after validator3 was added).
+/// Verified on-chain (not
 /// assumed) via a direct account-data read of its sepolia domain PDA
 /// before this cutover. See chains/solana/ISM_MIGRATION.md for what this
 /// migration does and does NOT change — handle() below stays
@@ -1149,9 +1151,18 @@ mod attestation_tests {
     /// paired with the real deployed values.
     #[test]
     fn count_distinct_registered_signers_counts_distinct_known_signers() {
-        assert_eq!(ATTESTOR_PUBKEYS.len(), 2, "test assumes exactly 2 configured attestors — update if that changes");
+        // Real bug found and fixed 2026-09-13 (external audit): this
+        // still asserted exactly 2 configured attestors after the move
+        // to 3 (see ATTESTOR_PUBKEYS above, extended when
+        // anc-hor-attestor3 was added) — this test-driven sanity check
+        // is exactly what should have caught that drift and didn't,
+        // since nobody updated it alongside the real constant.
+        assert_eq!(ATTESTOR_PUBKEYS.len(), 3, "test assumes exactly 3 configured attestors — update if that changes");
+        // Exercises ALL configured attestors, not just 2 of them — a
+        // fixed literal of "2" here would silently stop testing the
+        // full happy path the moment a 4th attestor is ever added.
         let count = count_distinct_registered_signers(ATTESTOR_PUBKEYS.into_iter());
-        assert_eq!(count, 2);
+        assert_eq!(count, ATTESTOR_PUBKEYS.len());
     }
 
     /// The same registered signer appearing twice in the candidate list

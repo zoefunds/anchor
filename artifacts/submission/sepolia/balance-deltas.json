@@ -1,0 +1,17 @@
+{
+  "chain": "sepolia",
+  "claimant": {
+    "address": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb",
+    "before": "3082880159953950414",
+    "after": "3082605712831016640",
+    "note": "claimant is also the depositAuthorizer/dispatcher key in this rehearsal — its delta includes gas spent on all transactions, not just the settlement payout"
+  },
+  "respondent": {
+    "address": "0x000000000000000000000000000000000000b0b0",
+    "before": "0",
+    "after": "0",
+    "delta": "0",
+    "expectedDelta": "0",
+    "match": true
+  }
+}

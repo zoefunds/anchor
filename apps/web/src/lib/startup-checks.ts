@@ -1,5 +1,6 @@
 import { loadEvmDeploymentManifest, loadSolanaDeploymentManifest } from "@/lib/deployment-manifest";
 import { ANCHOR_ENVIRONMENTS, isTestnetEnvironment, type AnchorEnvironmentId } from "@/lib/environment-registry";
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "@/lib/deployment-registry";
 
 // Phase 1, item 1: startup checks every signing/worker process runs
 // BEFORE it signs or dispatches anything. Every function here either
@@ -24,7 +25,40 @@ export class StartupCheckError extends Error {}
  * has no way to know whether the specific mismatch also compromises the
  * property this check exists to protect.
  */
+/**
+ * Runtime topology enforcement (2026-09-13 remediation plan, item 4):
+ * the committed manifest and deployment-registry.ts's ACTIVE_SEPOLIA_TOPOLOGY
+ * are two independently-maintained sources of the same facts (the
+ * manifest is regenerated FROM the registry, but nothing previously
+ * stopped the two files drifting apart after that point — exactly the
+ * class of bug this whole incident kept re-discovering by hand, three
+ * relay/escrow generations in two days). Purely static (no RPC call,
+ * safe and fast to run on every process boot) — this is deliberately
+ * NOT the same check as verify-active-topology.ts's live chain reads;
+ * it only proves the two COMMITTED sources agree with each other.
+ */
+export function assertManifestMatchesRegistry(): void {
+  const manifest = loadEvmDeploymentManifest();
+  const t = ACTIVE_SEPOLIA_TOPOLOGY;
+  if (manifest.decisionRelay.address.toLowerCase() !== t.decisionRelay.toLowerCase()) {
+    throw new StartupCheckError(
+      `committed deployment-manifest.json's DecisionRelay (${manifest.decisionRelay.address}) does not match deployment-registry.ts's ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay (${t.decisionRelay}) — regenerate the manifest (scripts/generate-deployment-manifest.ts) before starting`
+    );
+  }
+  if (manifest.decisionRelay.interchainSecurityModule.toLowerCase() !== t.ism.toLowerCase()) {
+    throw new StartupCheckError(
+      `committed deployment-manifest.json's ISM (${manifest.decisionRelay.interchainSecurityModule}) does not match the registry's ACTIVE_SEPOLIA_TOPOLOGY.ism (${t.ism}) — refusing to start`
+    );
+  }
+  if (Number(manifest.decisionRelay.attestorThreshold) !== t.attestorThreshold) {
+    throw new StartupCheckError(
+      `committed deployment-manifest.json's attestorThreshold (${manifest.decisionRelay.attestorThreshold}) does not match the registry's (${t.attestorThreshold}) — refusing to start`
+    );
+  }
+}
+
 export function assertEvmSignerRegistered(signerAddress: string): void {
+  assertManifestMatchesRegistry();
   const manifest = loadEvmDeploymentManifest();
   if (manifest.flags.length > 0) {
     throw new StartupCheckError(
@@ -113,6 +147,11 @@ export function assertEnvironmentSafeToBoot(envId: AnchorEnvironmentId): void {
   if (!env) {
     throw new StartupCheckError(`unknown Anchor environment id "${envId}" — refusing to start`);
   }
+  // Runtime topology enforcement (2026-09-13 remediation plan, item 4):
+  // every worker boot, not just attestor signer processes, refuses to
+  // start against a stale committed manifest — see
+  // assertManifestMatchesRegistry's own doc comment.
+  if (envId === "sepolia") assertManifestMatchesRegistry();
   if (isTestnetEnvironment(envId)) return;
   if (env.settlementPaused !== true) {
     throw new StartupCheckError(

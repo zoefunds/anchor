@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-09T04:16:05.716Z",
+  "generatedAt": "2026-09-13T08:41:06.748Z",
   "generatedBy": "scripts/generate-deployment-manifest.ts",
   "network": {
     "chain": "sepolia",
@@ -7,9 +7,9 @@
     "rpcHost": "ethereum-sepolia.publicnode.com"
   },
   "decisionRelay": {
-    "address": "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
-    "codehash": "0x819bb5e028030cf7f77091aa66d12b55f3f73450d7819f47a47c2937f55c47e5",
-    "owner": "0xc200534F7Debf2816C085c5a156AbD686FA19f4C",
+    "address": "0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834",
+    "codehash": "0xc1d84ed0dc5f633b0a5c659322af508de4fda2366a2b50e1090c4c844b52c22c",
+    "owner": "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb",
     "attestorThreshold": "2",
     "interchainSecurityModule": "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0",
     "attestors": {
@@ -33,7 +33,9 @@
     "threshold": "2",
     "nonce": "17"
   },
-  "flags": [],
+  "flags": [
+    "DecisionRelay.owner() (0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb) is NOT the expected Safe (0xc200534F7Debf2816C085c5a156AbD686FA19f4C) — governance may have been reassigned to an EOA or a different contract."
+  ],
   "knownLimitations": [
     "Safe is 2-of-2 with only 2 owners — no redundancy if either owner's key is lost; operator independence between these two owners is UNVERIFIED (see docs/mainnet-custody-design.md for tracked status)."
   ]

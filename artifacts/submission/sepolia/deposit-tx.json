@@ -1,0 +1,8 @@
+{
+  "chain": "sepolia",
+  "contract": "0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD",
+  "authorizeDepositTxHash": "0x91fa27d6ed54ab1cf473c0afb49747bf647bd95da7fae5f7573168976fdf8c35",
+  "depositTxHash": "0x5aa5108c69feb2c48f51ba2f9988a8d16353f529a3507a52a4defa6c5c741ad4",
+  "blockNumber": "11694929",
+  "timestamp": "2026-09-13T09:07:54.001Z"
+}

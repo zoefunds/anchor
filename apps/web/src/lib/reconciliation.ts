@@ -53,6 +53,7 @@ export const FINDING_SEVERITY: Record<string, "info" | "warning" | "critical"> =
   STALE_PENDING_SIGNATURE: "critical",
   LATE_HYPERLANE_DELIVERY: "warning",
   GOVERNANCE_DRIFT: "critical",
+  OLD_ESCROW_REFUND_ELIGIBLE_SOON: "warning",
 };
 
 const DECISION_RELAY_ABI = [
@@ -118,15 +119,15 @@ export async function tryAlert(findingId: string, alert: { severity: "info" | "w
  * finding itself was already real and already open.
  */
 async function raiseFinding(params: {
-  type:
-    | "ZERO_SETTLEMENT_TARGET"
-    | "TARGET_INTEGRATION_MISMATCH"
-    | "OVERDUE_DEPOSIT"
-    | "DISPATCHED_BUT_DB_STALE"
-    | "AUDIT_ANCHOR_STALE"
-    | "STALE_PENDING_SIGNATURE"
-    | "LATE_HYPERLANE_DELIVERY"
-    | "GOVERNANCE_DRIFT";
+  // Real bug found and fixed 2026-09-13: this was a hand-duplicated
+  // union of the Prisma enum that had already drifted — it was missing
+  // ESCROW_VERSION_MISMATCH, RELAY_RETRIES_EXHAUSTED, and
+  // CANARY_SLA_BREACH (all real, already-used finding types elsewhere
+  // in this file), silently relying on `as any`-shaped call sites or
+  // just not being caught because those call sites happened to compile
+  // against a wider inferred type. Deriving from the Prisma enum
+  // directly means this can never drift from schema.prisma again.
+  type: ReconciliationFindingType;
   targetType: string;
   targetId: string;
   detail: Record<string, unknown>;
@@ -178,10 +179,10 @@ async function resolveFinding(type: string, targetId: string, resolutionNote: st
  * (settlementContract, domain) so the same DecisionRelay isn't read
  * from chain once per case.
  */
-async function checkSettlementTargets(): Promise<void> {
+async function checkSettlementTargets(organizationIds?: string[]): Promise<void> {
   const client = getClient();
   const unresolved = await prisma.caseSettlement.findMany({
-    where: { status: { in: ["PENDING_DEPOSIT", "DEPOSITED"] } },
+    where: { status: { in: ["PENDING_DEPOSIT", "DEPOSITED"] }, ...(organizationIds ? { case: { organizationId: { in: organizationIds } } } : {}) },
     include: { case: true, integration: true },
   });
 
@@ -237,7 +238,7 @@ async function checkSettlementTargets(): Promise<void> {
 }
 
 /** A deposit that's been awaited too long — both parties set their address, but nothing has arrived on-chain. */
-async function checkOverdueDeposits(): Promise<void> {
+async function checkOverdueDeposits(organizationIds?: string[]): Promise<void> {
   const cutoff = new Date(Date.now() - OVERDUE_DEPOSIT_MS);
   const overdue = await prisma.caseSettlement.findMany({
     where: {
@@ -245,6 +246,7 @@ async function checkOverdueDeposits(): Promise<void> {
       claimantAddress: { not: null },
       respondentAddress: { not: null },
       OR: [{ claimantAddressSetAt: { lt: cutoff } }, { respondentAddressSetAt: { lt: cutoff } }],
+      ...(organizationIds ? { case: { organizationId: { in: organizationIds } } } : {}),
     },
   });
 
@@ -280,10 +282,13 @@ async function checkOverdueDeposits(): Promise<void> {
  * successful dispatch; this sweep is what actually closes that gap,
  * by re-deriving the real answer from Escrow.deposits() itself.
  */
-async function checkDispatchedButStale(): Promise<void> {
+async function checkDispatchedButStale(organizationIds?: string[]): Promise<void> {
   const client = getClient();
   const candidates = await prisma.decision.findMany({
-    where: { relayTxHash: { not: null }, case: { settlement: { status: "DEPOSITED" } } },
+    where: {
+      relayTxHash: { not: null },
+      case: { settlement: { status: "DEPOSITED" }, ...(organizationIds ? { organizationId: { in: organizationIds } } : {}) },
+    },
     include: { case: { include: { settlement: { include: { integration: true } } } } },
     orderBy: { createdAt: "desc" },
   });
@@ -359,10 +364,13 @@ async function checkDispatchedButStale(): Promise<void> {
  * to CaseSettlements with NO Decision at all bearing a relayTxHash, so
  * this and checkDispatchedButStale never both claim the same case.
  */
-async function checkEmergencyRefundsSettled(): Promise<void> {
+async function checkEmergencyRefundsSettled(organizationIds?: string[]): Promise<void> {
   const client = getClient();
   const candidates = await prisma.caseSettlement.findMany({
-    where: { status: "DEPOSITED", case: { decisions: { none: { relayTxHash: { not: null } } } } },
+    where: {
+      status: "DEPOSITED",
+      case: { decisions: { none: { relayTxHash: { not: null } } }, ...(organizationIds ? { organizationId: { in: organizationIds } } : {}) },
+    },
     include: { case: true, integration: true },
   });
 
@@ -406,13 +414,39 @@ async function checkEmergencyRefundsSettled(): Promise<void> {
   }
 }
 
-/** The audit-anchoring sweep (worker.ts's anchorAuditChains) appears to have stopped running for an organization with real audit-log activity. */
-async function checkAuditAnchorStaleness(): Promise<void> {
-  const orgs = await prisma.organization.findMany({ where: { auditLogs: { some: {} } } });
+/**
+ * The audit-anchoring sweep (worker.ts's anchorAuditChains) appears to
+ * have stopped running for an organization with real UNANCHORED
+ * activity waiting.
+ *
+ * Real bug found and fixed 2026-09-13 (incident recovery Phase G.2):
+ * this used to flag any org that had EVER had any audit log at all,
+ * purely based on lastAnchoredAt's age — meaning a quiet org with zero
+ * new activity since its last (or only) anchor got flagged forever,
+ * simply because time passed. anchorAuditChains() itself only anchors
+ * orgs whose audit-log hash has genuinely grown, so "nothing new to
+ * anchor" is the CORRECT, healthy state for an inactive org, not a
+ * failure. This now only flags an org when it has at least one audit
+ * log CREATED AFTER its last anchor that has itself been sitting
+ * unanchored longer than the SLA — i.e., there is real backlog the
+ * sweep should have picked up and hasn't.
+ */
+async function checkAuditAnchorStaleness(organizationIds?: string[]): Promise<void> {
+  const orgs = await prisma.organization.findMany({
+    where: { auditLogs: { some: {} }, ...(organizationIds ? { id: { in: organizationIds } } : {}) },
+  });
   const cutoff = new Date(Date.now() - AUDIT_ANCHOR_STALE_MS);
 
   for (const org of orgs) {
-    const isStale = !org.lastAnchoredAt || org.lastAnchoredAt < cutoff;
+    const oldestUnanchored = await prisma.auditLog.findFirst({
+      where: {
+        organizationId: org.id,
+        ...(org.lastAnchoredAt ? { createdAt: { gt: org.lastAnchoredAt } } : {}),
+      },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    });
+    const isStale = !!oldestUnanchored && oldestUnanchored.createdAt < cutoff;
     if (isStale) {
       await raiseFinding({
         type: "AUDIT_ANCHOR_STALE",
@@ -424,7 +458,15 @@ async function checkAuditAnchorStaleness(): Promise<void> {
         alertDetail: `Organization ${org.id}'s lastAnchoredAt is ${org.lastAnchoredAt ? org.lastAnchoredAt.toISOString() : "never set"} — the audit-anchor sweep may have stopped running.`,
       });
     } else {
-      await resolveFinding("AUDIT_ANCHOR_STALE", org.id, `lastAnchoredAt is now ${org.lastAnchoredAt!.toISOString()}`);
+      // Real bug in this fix's own first pass: this used to assume
+      // lastAnchoredAt is always set once isStale is false, but that's
+      // no longer true — a never-anchored org whose only activity is
+      // recent is also correctly "not stale."
+      await resolveFinding(
+        "AUDIT_ANCHOR_STALE",
+        org.id,
+        org.lastAnchoredAt ? `lastAnchoredAt is now ${org.lastAnchoredAt.toISOString()}` : "no unanchored activity has exceeded the SLA"
+      );
     }
   }
 
@@ -436,7 +478,7 @@ async function checkAuditAnchorStaleness(): Promise<void> {
   // (see api/reconciliation-findings), only real state-driven
   // resolution, so this is the only path back to a clean state.
   const openOrgFindings = await prisma.reconciliationFinding.findMany({
-    where: { type: "AUDIT_ANCHOR_STALE", resolvedAt: null },
+    where: { type: "AUDIT_ANCHOR_STALE", resolvedAt: null, ...(organizationIds ? { targetId: { in: organizationIds } } : {}) },
     select: { targetId: true },
   });
   const openTargetIds = [...new Set(openOrgFindings.map((f) => f.targetId))];
@@ -459,14 +501,15 @@ async function checkAuditAnchorStaleness(): Promise<void> {
  * "no signer has responded at all" from "quorum is one signature short"
  * in the alert text, since those need different operators paged.
  */
-async function checkStalePendingSignatures(): Promise<void> {
+async function checkStalePendingSignatures(organizationIds?: string[]): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_PENDING_SIGNATURE_MS);
+  const orgFilter = organizationIds ? { case: { organizationId: { in: organizationIds } } } : {};
 
   const evmStuck = await prisma.decision.findMany({
-    where: { pendingAttestationHash: { not: null }, relayTxHash: null, createdAt: { lt: cutoff } },
+    where: { pendingAttestationHash: { not: null }, relayTxHash: null, createdAt: { lt: cutoff }, ...orgFilter },
   });
   const solanaStuck = await prisma.decision.findMany({
-    where: { pendingSolanaAttestationMessage: { not: null }, relayTxHash: null, createdAt: { lt: cutoff } },
+    where: { pendingSolanaAttestationMessage: { not: null }, relayTxHash: null, createdAt: { lt: cutoff }, ...orgFilter },
   });
 
   // Batched existing-finding lookup, same reasoning as
@@ -543,10 +586,14 @@ async function checkStalePendingSignatures(): Promise<void> {
  * duplicating it would race the same on-chain reads for two different
  * findings.
  */
-async function checkLateHyperlaneDelivery(): Promise<void> {
+async function checkLateHyperlaneDelivery(organizationIds?: string[]): Promise<void> {
   const cutoff = new Date(Date.now() - HYPERLANE_DELIVERY_SLA_MS);
   const dispatched = await prisma.decision.findMany({
-    where: { relayTxHash: { not: null }, createdAt: { lt: cutoff } },
+    where: {
+      relayTxHash: { not: null },
+      createdAt: { lt: cutoff },
+      ...(organizationIds ? { case: { organizationId: { in: organizationIds } } } : {}),
+    },
     select: { id: true, caseId: true, relayTxHash: true, createdAt: true },
     orderBy: { createdAt: "desc" },
     take: 100,
@@ -668,7 +715,17 @@ async function checkGovernanceDrift(): Promise<void> {
 const ESCALATION_THRESHOLD_MS = Number(process.env.RECONCILIATION_ESCALATION_THRESHOLD_MS ?? 30 * 60 * 1000); // 30 min default
 const ESCALATION_REPEAT_INTERVAL_MS = Number(process.env.RECONCILIATION_ESCALATION_REPEAT_INTERVAL_MS ?? 30 * 60 * 1000); // repeat every 30 min while still unacknowledged
 
-async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
+// findingIds, when provided, narrows escalation to exactly those
+// findings — unlike organizationIds elsewhere in this file, a
+// finding's targetId means a different thing per type (Organization
+// id, CaseSettlement id, Decision id, a composite "decisionrelay:0x.."
+// string, a raw contract address), so there is no single cheap join
+// back to an organization generically across every type. Real
+// production callers never pass this; it exists so this project's own
+// test suite can escalate deterministically against a shared,
+// non-ephemeral dev database that also carries real, pre-existing
+// critical findings unrelated to any given test.
+async function escalateUnacknowledgedCriticalFindings(findingIds?: string[]): Promise<number> {
   const now = Date.now();
   const critical = Object.entries(FINDING_SEVERITY)
     .filter(([, severity]) => severity === "critical")
@@ -680,6 +737,7 @@ async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
       acknowledgedAt: null,
       type: { in: critical as ReconciliationFindingType[] },
       alertedAt: { not: null, lt: new Date(now - ESCALATION_THRESHOLD_MS) },
+      ...(findingIds ? { id: { in: findingIds } } : {}),
     },
   });
 
@@ -725,16 +783,95 @@ async function escalateUnacknowledgedCriticalFindings(): Promise<number> {
 }
 
 /** Runs every real check and returns how many findings are currently open, for the worker's own log line. */
-export async function runReconciliationSweep(): Promise<{ openFindings: number; escalated: number }> {
-  await checkSettlementTargets();
-  await checkOverdueDeposits();
-  await checkDispatchedButStale();
-  await checkEmergencyRefundsSettled();
-  await checkAuditAnchorStaleness();
-  await checkStalePendingSignatures();
-  await checkLateHyperlaneDelivery();
+// Incident recovery Phase G.5 (2026-09-13 Sepolia delivery incident) —
+// the one known, real deposit stuck in a retired escrow whose
+// DecisionRelay is unreachable (see docs/incidents/2026-09-12-sepolia-
+// delivery-incident.md for the full story). Recorded as a literal
+// constant, not a generic "any old escrow" scan, because this is a
+// single specific incident artifact, not a recurring pattern — a new
+// instance of "an escrow got retired mid-flight" should get its own
+// deliberately-added entry here, never an automatic guess.
+const OLD_STUCK_DEPOSIT = {
+  escrowContractAddress: "0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7",
+  escrowId: "0xa866d50c8cf906d4d757cbbeb76aa0005728fb7fc11776073bb7b4dee72a6e6c",
+  claimant: "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb",
+  amountWei: "2000000000000000", // 0.002 ETH
+  depositTxHash: "0x8bf05b223759c49fad53486a2050ea90c4a466c5c0d18a7b331db1e36a06aab2",
+  // Escrow.sol's own deposits(escrowId).depositedAt + its immutable
+  // emergencyRefundTimeoutSeconds (30 days) — read directly on-chain,
+  // not computed from an assumption. This escrow's DecisionRelay
+  // (0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2) is retired and can
+  // never deliver a real settlement, so emergencyRefund() via that
+  // DecisionRelay (still gated by the same 2-of-3 attestor threshold —
+  // see Escrow.sol's onlyDecisionRelay comment) is the ONLY recovery
+  // path; it is not callable before this timestamp regardless of any
+  // other fix, and requires real attestor signatures when it is.
+  refundEligibleAt: "2026-10-12T13:35:24.000Z",
+  retiredDecisionRelay: "0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2",
+} as const;
+
+/**
+ * Durable, dashboard-visible reminder that a specific deposit is stuck
+ * behind a retired DecisionRelay's emergency-refund timeout. Raised
+ * once (raiseFinding's own alert-dedup means only one alert ever goes
+ * out for this while the finding stays open) so an operator has real
+ * advance notice — not auto-executed, per the incident brief's explicit
+ * instruction: recovery requires separately authorized governance
+ * approval and a rehearsal against the deployed contract's actual
+ * access/attestation requirements before ever being run for real.
+ */
+async function checkOldEscrowRefundEligibility(): Promise<void> {
+  await raiseFinding({
+    type: "OLD_ESCROW_REFUND_ELIGIBLE_SOON",
+    targetType: "Escrow",
+    targetId: OLD_STUCK_DEPOSIT.escrowContractAddress,
+    detail: OLD_STUCK_DEPOSIT,
+    severity: "warning",
+    title: "A deposit is locked behind a retired escrow's emergency-refund timeout",
+    alertDetail: `Escrow ${OLD_STUCK_DEPOSIT.escrowContractAddress} (escrowId ${OLD_STUCK_DEPOSIT.escrowId}, claimant ${OLD_STUCK_DEPOSIT.claimant}, ${OLD_STUCK_DEPOSIT.amountWei} wei) is unrecoverable through normal settlement (its DecisionRelay, ${OLD_STUCK_DEPOSIT.retiredDecisionRelay}, is retired). emergencyRefund() becomes callable at ${OLD_STUCK_DEPOSIT.refundEligibleAt} and requires real 2-of-3 attestor signatures — this is not automatic. See docs/incidents/2026-09-12-sepolia-delivery-incident.md for the full recovery procedure.`,
+  });
+}
+
+/**
+ * `scope.organizationIds`, when provided, narrows every check that
+ * scans organization-owned data (settlements/decisions/orgs) to just
+ * those organizations — real production behavior (an unscoped sweep)
+ * is exactly what running with no scope, or omitting it, still does.
+ * Added for two reasons at once: (1) it's a legitimate operational
+ * capability (re-check a single organization on demand, e.g. from an
+ * admin action, without a full global sweep), and (2) it's what makes
+ * this function's own test suite (tests/integration/reconciliation.test.ts)
+ * deterministic against this project's shared, non-ephemeral dev
+ * database — real fix for a genuine flake found 2026-09-13: several
+ * checks scan ALL organizations/decisions globally with no filter,
+ * so as real historical data (accumulated over the project's whole
+ * history) aged past staleness/SLA thresholds, sweep tests calling the
+ * unscoped function picked up spurious extra alerts that had nothing
+ * to do with what each test itself set up, non-deterministically
+ * (varying run to run with wall-clock time).
+ *
+ * checkOldEscrowRefundEligibility and checkGovernanceDrift are
+ * deliberately NOT org-scoped — neither is an organization-scan check
+ * at all (one fixed record, one fixed contract address). Escalation is
+ * scoped differently, via `scope.escalationFindingIds` rather than
+ * organizationIds: it scans findings by type/alertedAt/acknowledgedAt
+ * with no cheap, generic way to resolve an arbitrary finding's
+ * targetId back to an organization across every finding type, so a
+ * caller that wants a deterministic escalation count passes the exact
+ * finding ids it cares about instead.
+ */
+export async function runReconciliationSweep(scope?: { organizationIds?: string[]; escalationFindingIds?: string[] }): Promise<{ openFindings: number; escalated: number }> {
+  const orgIds = scope?.organizationIds;
+  await checkOldEscrowRefundEligibility();
+  await checkSettlementTargets(orgIds);
+  await checkOverdueDeposits(orgIds);
+  await checkDispatchedButStale(orgIds);
+  await checkEmergencyRefundsSettled(orgIds);
+  await checkAuditAnchorStaleness(orgIds);
+  await checkStalePendingSignatures(orgIds);
+  await checkLateHyperlaneDelivery(orgIds);
   await checkGovernanceDrift();
-  const escalated = await escalateUnacknowledgedCriticalFindings();
+  const escalated = await escalateUnacknowledgedCriticalFindings(scope?.escalationFindingIds);
 
   const openFindings = await prisma.reconciliationFinding.count({ where: { resolvedAt: null } });
   return { openFindings, escalated };

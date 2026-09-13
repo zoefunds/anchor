@@ -1,0 +1,10 @@
+{
+  "chain": "sepolia",
+  "caseId": "cmtzlav7p0001uc25qrzu7pvt",
+  "organizationId": "cmtzl7upk0000j6z73svr1fyo",
+  "integrationId": "cmtzl7vh90002j6z72wexzm1m",
+  "claim": "Phase 2 acceptance rehearsal — attestedSettle() direct payout proof",
+  "currency": "ETH",
+  "amount": "0.0002",
+  "timestamp": "2026-09-13T09:07:53.998Z"
+}
