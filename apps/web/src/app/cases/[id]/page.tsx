@@ -115,6 +115,59 @@ export default function CaseDetailPage() {
   const [confirmingDeposit, setConfirmingDeposit] = useState(false);
   const [escrowNote, setEscrowNote] = useState<string | null>(null);
 
+  const [partyTokens, setPartyTokens] = useState<{ claimant?: string; respondent?: string }>({});
+  const [partyLinkBusy, setPartyLinkBusy] = useState<{ claimant?: boolean; respondent?: boolean }>({});
+
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string[] | null>(null);
+
+  // On-demand version of the worker's periodic sweeps, scoped to this
+  // case (see api/cases/:id/sync's own doc comment) — a convenience for
+  // staff who don't want to wait out a sweep's interval, never a
+  // replacement for those sweeps, which keep running unattended either
+  // way.
+  async function syncNow() {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch(`/api/cases/${id}/sync`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "sync failed");
+      setSyncResult(body.actions ?? []);
+      await Promise.all([load(), loadEscrow()]);
+    } catch (err) {
+      setSyncResult([err instanceof Error ? err.message : String(err)]);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  // Reissues (or re-displays, if already fetched this page-load) a
+  // party's capability token and builds their public case link from it.
+  // Each reissue invalidates whatever raw token that role held before
+  // (see api/cases/:id/party-tokens's own doc comment) — fine here since
+  // the only other place a token is shown is the one-time creation
+  // response, which staff can't get back to anyway; this is the actual
+  // durable way to hand a party their link after the fact.
+  async function getPartyLink(role: "claimant" | "respondent") {
+    setPartyLinkBusy((s) => ({ ...s, [role]: true }));
+    try {
+      const res = await fetch(`/api/cases/${id}/party-tokens`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to issue party link");
+      const token = role === "claimant" ? body.claimantToken : body.respondentToken;
+      setPartyTokens((s) => ({ ...s, [role]: token }));
+    } catch (err) {
+      setEscrowNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPartyLinkBusy((s) => ({ ...s, [role]: false }));
+    }
+  }
+
   async function loadEscrow() {
     const res = await fetch(`/api/cases/${id}/settlement`);
     if (res.ok) {
@@ -417,8 +470,26 @@ export default function CaseDetailPage() {
       <header className="mt-8 border-b border-line pb-8 dark:border-line-dark">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="font-mono text-xs text-muted dark:text-muted-dark">{kase.id}</p>
-          <StatusStamp status={kase.status} />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className="font-mono text-xs text-seal-500 hover:underline disabled:opacity-50 dark:text-seal-400"
+              onClick={syncNow}
+              disabled={syncing}
+              title="Runs the deposit-check / appeal-finalize / settlement-retry sweeps for this case right now, instead of waiting for their periodic schedule"
+            >
+              {syncing ? "syncing…" : "↻ sync now"}
+            </button>
+            <StatusStamp status={kase.status} />
+          </div>
         </div>
+        {syncResult && (
+          <ul className="mt-3 flex flex-col gap-1 border-l-2 border-seal-500 bg-seal-500/5 py-2 pl-4 font-mono text-xs text-muted dark:border-seal-400 dark:text-muted-dark">
+            {syncResult.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+        )}
         <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight text-ink-950 dark:text-ink">
           {kase.claim}
         </h1>
@@ -444,10 +515,10 @@ export default function CaseDetailPage() {
             <ExplorerLink href={genlayerAddressUrl(kase.contractAddress)}>{kase.contractAddress}</ExplorerLink>
           </p>
         )}
-        <p className="mt-2 font-mono text-[11px] text-muted dark:text-muted-dark">
-          Party links require a token — see the panel shown once when this case was filed, or reissue
-          via <code className="font-mono">POST /api/cases/{kase.id}/party-tokens</code>.
-        </p>
+        <div className="mt-4 flex flex-wrap gap-6">
+          <PartyLinkControl role="claimant" caseId={kase.id} token={partyTokens.claimant} busy={Boolean(partyLinkBusy.claimant)} onFetch={getPartyLink} />
+          <PartyLinkControl role="respondent" caseId={kase.id} token={partyTokens.respondent} busy={Boolean(partyLinkBusy.respondent)} onFetch={getPartyLink} />
+        </div>
       </header>
 
       {isOwner && (
@@ -514,6 +585,9 @@ export default function CaseDetailPage() {
           confirmingDeposit={confirmingDeposit}
           onCheckDeposit={checkDeposit}
           escrowNote={escrowNote}
+          partyTokens={partyTokens}
+          partyLinkBusy={partyLinkBusy}
+          onGetPartyLink={getPartyLink}
         />
       )}
 
@@ -817,6 +891,9 @@ function EscrowPanel({
   confirmingDeposit,
   onCheckDeposit,
   escrowNote,
+  partyTokens,
+  partyLinkBusy,
+  onGetPartyLink,
 }: {
   kase: CaseDetail;
   isOwner: boolean;
@@ -829,6 +906,9 @@ function EscrowPanel({
   confirmingDeposit: boolean;
   onCheckDeposit: () => void;
   escrowNote: string | null;
+  partyTokens: { claimant?: string; respondent?: string };
+  partyLinkBusy: { claimant?: boolean; respondent?: boolean };
+  onGetPartyLink: (role: "claimant" | "respondent") => void;
 }) {
   const usable = availableIntegrations.filter((i) => i.active && i.chain === kase.settlementChain);
 
@@ -905,7 +985,12 @@ function EscrowPanel({
                       caseSettlement.claimantAddress
                     )
                   ) : (
-                    "waiting — the claimant sets this from their own case link"
+                    <>
+                      waiting — the claimant sets this from their own case link{" "}
+                      {isOwner && (
+                        <PartyLinkControl role="claimant" caseId={kase.id} token={partyTokens.claimant} busy={Boolean(partyLinkBusy.claimant)} onFetch={onGetPartyLink} inline />
+                      )}
+                    </>
                   )
                 }
               />
@@ -922,7 +1007,12 @@ function EscrowPanel({
                       caseSettlement.respondentAddress
                     )
                   ) : (
-                    "waiting — the respondent sets this from their own case link"
+                    <>
+                      waiting — the respondent sets this from their own case link{" "}
+                      {isOwner && (
+                        <PartyLinkControl role="respondent" caseId={kase.id} token={partyTokens.respondent} busy={Boolean(partyLinkBusy.respondent)} onFetch={onGetPartyLink} inline />
+                      )}
+                    </>
                   )
                 }
               />
@@ -931,6 +1021,22 @@ function EscrowPanel({
                 pending={caseSettlement.status === "PENDING_DEPOSIT" && Boolean(caseSettlement.claimantAddress) && Boolean(caseSettlement.respondentAddress)}
                 failed={caseSettlement.status === "MISMATCH_BLOCKED"}
                 label="Deposit confirmed on-chain"
+                detail={
+                  caseSettlement.status === "PENDING_DEPOSIT" && caseSettlement.claimantAddress && isOwner ? (
+                    <>
+                      the claimant deposits from their own wallet at their deposit link{" "}
+                      <PartyLinkControl
+                        role="claimant"
+                        caseId={kase.id}
+                        token={partyTokens.claimant}
+                        busy={Boolean(partyLinkBusy.claimant)}
+                        onFetch={onGetPartyLink}
+                        path="deposit"
+                        inline
+                      />
+                    </>
+                  ) : undefined
+                }
               />
               <PipelineStep done={caseSettlement.status === "SETTLED"} label="Settled" />
             </ol>
@@ -1121,6 +1227,76 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
         )}
       </div>
     </section>
+  );
+}
+
+// Fetching a link reissues that role's capability token (see
+// api/cases/:id/party-tokens), invalidating whatever raw token they held
+// before — deliberate, since this is the only durable way to get a
+// party their link again once the one-time case-creation response is
+// gone. `path` selects which public page the link points at: the main
+// case page (set address / evidence) by default, or the wallet-connect
+// deposit page when asked for near the deposit step.
+function PartyLinkControl({
+  role,
+  caseId,
+  token,
+  busy,
+  onFetch,
+  path,
+  inline,
+}: {
+  role: "claimant" | "respondent";
+  caseId: string;
+  token: string | undefined;
+  busy: boolean;
+  onFetch: (role: "claimant" | "respondent") => void;
+  path?: "deposit";
+  inline?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const link = token ? `${origin}/public/cases/${caseId}${path ? `/${path}` : ""}?token=${token}` : null;
+
+  if (!link) {
+    return (
+      <button
+        type="button"
+        className="font-mono text-[11px] text-seal-500 hover:underline disabled:opacity-50 dark:text-seal-400"
+        onClick={() => onFetch(role)}
+        disabled={busy}
+      >
+        {busy ? "issuing…" : path === "deposit" ? `get ${role} deposit link →` : `get ${role} link →`}
+      </button>
+    );
+  }
+
+  return (
+    <span className={inline ? "inline-flex items-center gap-2" : "flex flex-wrap items-center gap-2"}>
+      <a href={link} target="_blank" rel="noreferrer" className="break-all font-mono text-[11px] text-seal-500 underline dark:text-seal-400">
+        {link}
+      </a>
+      <button
+        type="button"
+        className="font-mono text-[11px] text-muted hover:underline dark:text-muted-dark"
+        onClick={() => {
+          navigator.clipboard.writeText(link);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? "copied" : "copy"}
+      </button>
+      <button
+        type="button"
+        className="font-mono text-[11px] text-muted hover:underline dark:text-muted-dark"
+        onClick={() => onFetch(role)}
+        disabled={busy}
+        title="Issues a fresh link and invalidates this one"
+      >
+        {busy ? "reissuing…" : "reissue"}
+      </button>
+    </span>
   );
 }
 

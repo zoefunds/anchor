@@ -658,6 +658,73 @@ export async function finalizeExpiredAppealWindows(): Promise<number> {
   return finalizedCount;
 }
 
+export interface SyncCaseResult {
+  actions: string[];
+}
+
+/**
+ * On-demand version of the three periodic sweeps above
+ * (confirmPendingDeposits, finalizeExpiredAppealWindows,
+ * retryFailedSettlements), scoped to one case instead of scanning every
+ * case in the org. Exists so staff aren't stuck waiting out a sweep's
+ * own interval (up to 10 minutes for settlement retry) to see a case
+ * move forward — the periodic sweeps still run unchanged and remain the
+ * real safety net; this is purely a "check this one case right now"
+ * convenience, deliberately not a replacement for them (a case nobody
+ * ever manually syncs must still resolve on its own).
+ *
+ * Each step only fires if that step's real precondition already holds
+ * (e.g. deposit-check only runs if a settlement is still
+ * PENDING_DEPOSIT) — calling this on a case with nothing to do is a
+ * harmless no-op, safe to invoke repeatedly.
+ */
+export async function syncCase(caseId: string): Promise<SyncCaseResult> {
+  const actions: string[] = [];
+
+  let kase = await prisma.case.findUniqueOrThrow({
+    where: { id: caseId },
+    include: { settlement: true, decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
+  });
+
+  if (kase.settlement && kase.settlement.status === "PENDING_DEPOSIT" && kase.settlement.claimantAddress && kase.settlement.respondentAddress) {
+    const { checkAndConfirmDeposit } = await import("@/lib/case-settlement");
+    const result = await checkAndConfirmDeposit(kase.settlement.id);
+    actions.push(`deposit check: ${result.outcome}`);
+  }
+
+  kase = await prisma.case.findUniqueOrThrow({
+    where: { id: caseId },
+    include: { settlement: true, decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
+  });
+
+  const latestDecision = kase.decisions[0];
+
+  if (kase.status === "APPEAL_WINDOW" && latestDecision?.appealWindowClosesAt && latestDecision.appealWindowClosesAt <= new Date()) {
+    const claimed = await prisma.case.updateMany({ where: { id: kase.id, status: "APPEAL_WINDOW" }, data: { status: "FINALIZED" } });
+    if (claimed.count > 0) {
+      actions.push("appeal window closed — finalized");
+      dispatchWebhookEvent({ organizationId: kase.organizationId, event: "case.status_changed", data: { caseId: kase.id, status: "FINALIZED" } });
+      kase = await prisma.case.findUniqueOrThrow({
+        where: { id: caseId },
+        include: { settlement: true, decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
+      });
+    }
+  }
+
+  const decision = kase.decisions[0];
+  if (kase.status === "FINALIZED" && decision && decision.consensus === "ACCEPTED" && !decision.relayTxHash) {
+    const before = decision.relayError;
+    await dispatchSettlementForDecision(kase, decision);
+    const after = await prisma.decision.findUniqueOrThrow({ where: { id: decision.id } });
+    if (after.relayTxHash) actions.push(`settlement dispatched: ${after.relayTxHash}`);
+    else if (after.relayError !== before) actions.push(`settlement not yet dispatched: ${after.relayError}`);
+    else actions.push("settlement retry attempted — no change yet");
+  }
+
+  if (actions.length === 0) actions.push("nothing to do — case is not waiting on any sync-eligible step");
+  return { actions };
+}
+
 /**
  * Runs the actual GenLayer round trip (deploy -> adjudicate -> persist
  * decision) for a case that's already past evidence validation and
