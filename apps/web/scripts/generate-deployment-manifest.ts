@@ -93,7 +93,18 @@ async function main() {
   const flags: string[] = [];
   const knownLimitations: string[] = [];
   if (owner.toLowerCase() !== SAFE.toLowerCase()) {
-    flags.push(`DecisionRelay.owner() (${owner}) is NOT the expected Safe (${SAFE}) — governance may have been reassigned to an EOA or a different contract.`);
+    // Miscategorized as a `flags` entry until 2026-09-13, which took
+    // down anc-hor-worker in production the moment a process actually
+    // enforced flags.length === 0 (the exact failure mode the 2026-09-09
+    // incident note above warns about, for the same reason). Confirmed
+    // by reading DecisionRelay.sol directly: `owner` is set once in the
+    // constructor with no setter of any kind (no transferOwnership,
+    // no two-step handoff) — this can NEVER resolve back to the Safe on
+    // the currently-deployed contract without a full redeploy, which is
+    // out of scope while the topology is frozen. A condition that can
+    // only ever be "fixed" by an action this project has explicitly
+    // ruled out belongs in knownLimitations, not flags.
+    knownLimitations.push(`DecisionRelay.owner() (${owner}) is the tracked backend EOA, not the expected Safe (${SAFE}) — permanent for this deployment (the contract has no ownership-transfer function); tracked in docs/incidents/2026-09-12-sepolia-delivery-incident.md.`);
   }
   if (Number(attestorThreshold) > activeAttestors.length) {
     flags.push(`attestorThreshold (${attestorThreshold}) exceeds the number of confirmed-active candidate attestors (${activeAttestors.length}) — settlement may be permanently unable to reach quorum.`);
