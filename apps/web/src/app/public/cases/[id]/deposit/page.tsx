@@ -64,7 +64,17 @@ function DepositPageInner() {
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const expectedClaimant = kase?.settlement?.claimantAddress ? getAddress(kase.settlement.claimantAddress) : null;
+  // Real bug found 2026-09-14: this page is EVM/viem-only throughout
+  // (AppKit's EVM adapter, viem's Sepolia chain, getAddress() checksum
+  // validation). kase.settlement.chain === "solanatestnet" carries a
+  // base58 Solana pubkey, not a hex EVM address — getAddress() on one
+  // throws synchronously, which without this guard would crash the
+  // whole page (an uncaught error before any of the render-time checks
+  // below even run) instead of showing a controlled message. Solana
+  // doesn't have a wallet-connect deposit UI yet; this page only ever
+  // supported Sepolia.
+  const isSepolia = kase?.settlement ? kase.settlement.chain === "sepolia" : true;
+  const expectedClaimant = kase?.settlement?.claimantAddress && isSepolia ? getAddress(kase.settlement.claimantAddress) : null;
   const connectedAddress = address ? getAddress(address) : null;
   const isCorrectWallet = !!connectedAddress && !!expectedClaimant && isAddressEqual(connectedAddress, expectedClaimant);
   const isOnSepolia = Number(chainId) === sepolia.id;
@@ -132,6 +142,29 @@ function DepositPageInner() {
     return (
       <main className="mx-auto max-w-xl px-8 py-16">
         <p className="text-sm text-muted dark:text-muted-dark">This case has no on-chain settlement configured.</p>
+      </main>
+    );
+  }
+  if (!isSepolia) {
+    return (
+      <main className="mx-auto max-w-xl px-8 py-16">
+        <p className="kicker mb-2 text-seal-500 dark:text-seal-400">Deposit</p>
+        <h1 className="font-display text-2xl font-semibold text-ink-950 dark:text-ink">{kase.claim}</h1>
+        <div className="dossier mt-8">
+          <p className="text-sm text-muted dark:text-muted-dark">
+            This wallet-connect deposit page only supports Sepolia — Solana deposits aren&apos;t available through
+            this UI yet. Use the exact values below to deposit manually (e.g. via a Solana CLI script or the
+            organization handling this case).
+          </p>
+          <div className="mt-4 flex flex-col gap-2 font-mono text-xs text-muted dark:text-muted-dark">
+            <p>Escrow program: {kase.settlement.escrowContractAddress}</p>
+            <p>Escrow case ID: {kase.settlement.escrowId}</p>
+            <p>Claimant: {kase.settlement.claimantAddress ?? "not set yet"}</p>
+            <p>
+              Amount: {Number(kase.settlement.expectedAmountAtto) / 1e9} {kase.settlement.assetSymbol}
+            </p>
+          </div>
+        </div>
       </main>
     );
   }
