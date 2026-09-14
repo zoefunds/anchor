@@ -315,7 +315,7 @@ export default function CasesPage() {
               >
                 <option value="">None — record the decision only, don&apos;t settle cross-chain</option>
                 <option value="sepolia">Sepolia (EVM) — DecisionRelay.sol</option>
-                <option value="solanatestnet">Solana Testnet — decision-relay program</option>
+                <option value="solanatestnet">Solana Devnet — decision-relay program</option>
               </select>
               <span className="mt-1 text-xs text-muted dark:text-muted-dark">
                 When set, a finalized decision on GenLayer gets relayed via Hyperlane to this
@@ -336,7 +336,7 @@ export default function CasesPage() {
                 }}
                 className="self-start rounded-md border border-seal-500/40 px-3 py-1.5 text-xs font-medium text-seal-600 hover:bg-seal-50 dark:border-seal-400/40 dark:text-seal-400 dark:hover:bg-seal-500/10"
               >
-                Use Anchor&apos;s testnet contract for {settlementChain === "sepolia" ? "Sepolia (EVM)" : "Solana Testnet"}
+                Use Anchor&apos;s testnet contract for {settlementChain === "sepolia" ? "Sepolia (EVM)" : "Solana Devnet"}
               </button>
               <label className="flex flex-col gap-2">
                 <span className="field-label">

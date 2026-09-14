@@ -15,9 +15,17 @@ interface SettlementIntegration {
   createdAt: string;
 }
 
+// The "solanatestnet" value is a legacy identifier baked into the DB
+// schema, case/settlement chain field, and Hyperlane domain config —
+// left as-is to avoid a schema-touching rename under time pressure.
+// Only the user-facing label changed: SOLANA_RPC_URL now actually
+// points at Devnet (2026-09-14, since public Testnet was confirmed down
+// across two independent RPC operators), and the program IDs are
+// identical on both clusters (deterministic addresses from the same
+// deploy authority), so nothing else needed to change.
 const CHAIN_OPTIONS = [
   { value: "sepolia", label: "Sepolia (EVM)" },
-  { value: "solanatestnet", label: "Solana Testnet" },
+  { value: "solanatestnet", label: "Solana Devnet" },
 ];
 
 // Anchor's own operator-approved contracts for this testnet deployment —

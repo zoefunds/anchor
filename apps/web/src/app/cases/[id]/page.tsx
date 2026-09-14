@@ -843,7 +843,9 @@ function BackLink() {
 
 const SETTLEMENT_CHAIN_LABELS: Record<string, string> = {
   sepolia: "Sepolia (EVM) — DecisionRelay.sol",
-  solanatestnet: "Solana Testnet — decision-relay program",
+  // Label only — the "solanatestnet" value itself stays as the DB/schema
+  // identifier; SOLANA_RPC_URL actually points at Devnet as of 2026-09-14.
+  solanatestnet: "Solana Devnet — decision-relay program",
 };
 
 // Settlement always moves the chain's own native asset — real ETH via
