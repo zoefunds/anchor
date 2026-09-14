@@ -70,6 +70,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       contract: decision.case.settlementContract,
       relayTxHash: decision.relayTxHash,
       relayMessageId: decision.relayMessageId,
+      relayNotificationTxHash: decision.relayNotificationTxHash,
       note:
         decision.case.settlementChain === "sepolia" && decision.case.settlementContract
           ? `Cross-check storedDecisionHash against ${decision.case.settlementContract}'s processedDecisions(bytes32) mapping on Sepolia — it should be true iff this decision genuinely settled, and the settlement's own on-chain proofHash argument should equal storedDecisionHash.`

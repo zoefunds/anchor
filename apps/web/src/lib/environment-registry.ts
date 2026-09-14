@@ -19,6 +19,7 @@ export type AnchorEnvironmentId =
   | "studio-next-testnet"
   | "sepolia"
   | "solana-testnet"
+  | "solana-devnet"
   | "genlayer-mainnet"
   | "ethereum-mainnet"
   | "solana-mainnet";
@@ -91,12 +92,44 @@ export const ANCHOR_ENVIRONMENTS: Record<AnchorEnvironmentId, AnchorEnvironment>
     // and a real end-to-end settlement both pass.
     settlementPaused: true,
   },
+  // Retired 2026-09-14: public Solana Testnet suffered a multi-day
+  // cluster-wide halt with no ETA — see
+  // docs/incidents/2026-09-14-solana-devnet-migration.md. Kept (not
+  // deleted) as an accurate historical record of what this environment
+  // was; `live: false` so anything that actually consults this registry
+  // treats it as not the current target. The `solanatestnet` string used
+  // throughout the DB schema and Hyperlane domain config is unrelated to
+  // this registry entry's id — it's a separate, deliberately-unchanged
+  // internal identifier (see solana-devnet's own comment below).
   "solana-testnet": {
     id: "solana-testnet",
     chainFamily: "solana",
-    displayName: "Solana testnet",
+    displayName: "Solana testnet (RETIRED 2026-09-14 — cluster halted)",
     chainIdentifier: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
     addresses: {
+      escrowProgram: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn",
+    },
+    live: false,
+    settlementPaused: true,
+  },
+  // The live Solana environment as of 2026-09-14. `chainIdentifier` is
+  // the cluster's REAL genesis hash (confirmed live via getGenesisHash()
+  // — see solana-settle.ts's assertConnectedToExpectedSolanaCluster,
+  // which independently enforces this same value at the point of
+  // signing, not just here). This is deliberately a different concept
+  // from the `solanatestnet` string in Case.settlementChain/the DB
+  // schema/Hyperlane domain config, which remains unchanged as a plain
+  // internal route identifier — renaming that would touch migrations for
+  // zero behavioral benefit. Do not confuse the two: this registry entry
+  // describes which real cluster Anchor talks to; the DB string
+  // describes which internal settlement route a case uses.
+  "solana-devnet": {
+    id: "solana-devnet",
+    chainFamily: "solana",
+    displayName: "Solana Devnet",
+    chainIdentifier: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    addresses: {
+      decisionRelay: "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN",
       escrowProgram: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn",
     },
     live: true,
@@ -146,6 +179,7 @@ const TESTNET_ENVIRONMENTS: ReadonlySet<AnchorEnvironmentId> = new Set([
   "studio-next-testnet",
   "sepolia",
   "solana-testnet",
+  "solana-devnet", // devnet counts as a testnet-class (non-mainnet, no real funds) environment for this flag's purpose
 ]);
 
 export function isTestnetEnvironment(id: AnchorEnvironmentId): boolean {

@@ -20,6 +20,7 @@ import { PublicKey, Keypair, SystemProgram, Connection } from "@solana/web3.js";
 import { readFileSync } from "fs";
 import path from "path";
 import os from "os";
+import { confirmTransactionBounded } from "../src/lib/solana-confirm";
 
 const RPC_URL = "https://api.devnet.solana.com";
 const DECISION_RELAY_PROGRAM_ID = "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN";
@@ -92,7 +93,7 @@ async function main() {
   const tx = new anchor.web3.Transaction({ recentBlockhash: blockhash, feePayer: claimant.publicKey }).add(depositIx);
   tx.sign(claimant);
   const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  await confirmTransactionBounded({ connection, signature: sig, lastValidBlockHeight, commitment: "confirmed" });
 
   console.log(`deposit confirmed: ${sig}`);
   console.log(`https://explorer.solana.com/tx/${sig}?cluster=devnet`);

@@ -88,6 +88,13 @@ describe("submitAttestedSettle's Address Lookup Table extension includes casePda
     });
 
     const fakeConnection = {
+      // Real Devnet genesis hash — submitAttestedSettle now verifies the
+      // connected cluster's live identity before signing/submitting
+      // anything (2026-09-14 fix, see solana-settle.ts's
+      // assertConnectedToExpectedSolanaCluster); without this, the fake
+      // connection's undefined getGenesisHash() throws before ever
+      // reaching the ALT extension code this test actually covers.
+      getGenesisHash: vi.fn().mockResolvedValue("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"),
       getAddressLookupTable: vi.fn().mockResolvedValue({ value: { state: { addresses: [] } } }),
       getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 1 }),
       sendTransaction: vi.fn().mockResolvedValue("fake-signature-1111111111111111111111111111111111111111111111111"),

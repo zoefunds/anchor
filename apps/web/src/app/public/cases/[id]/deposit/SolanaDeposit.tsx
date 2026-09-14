@@ -10,6 +10,7 @@ import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import type { Wallet } from "@coral-xyz/anchor";
 import { getEscrowProgram, buildInitializeCaseInstruction } from "@anchor/solana-escrow-client";
+import { confirmTransactionBounded } from "@/lib/solana-confirm";
 import { WalletMultiButton } from "@/lib/wallet-solana";
 import type { PublicSettlement } from "../usePublicCase";
 
@@ -77,7 +78,13 @@ export function SolanaDeposit({ settlement }: { settlement: PublicSettlement }) 
       setTxSignature(signature);
       setIsSubmitting(false);
       setIsConfirming(true);
-      await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+      // Bounded polling, not connection.confirmTransaction's websocket
+      // subscription — the 2026-09-12 Sepolia delivery incident found
+      // that subscription can hang indefinitely (40+ minutes observed)
+      // against a public RPC that never pushes the notification; a
+      // wallet-connected browser tab is exactly where a silent hang
+      // would be worst (the user has no server log to check).
+      await confirmTransactionBounded({ connection, signature, lastValidBlockHeight, commitment: "confirmed" });
       setIsConfirming(false);
       setIsConfirmed(true);
     } catch (err) {

@@ -60,7 +60,7 @@ let worker: Worker | null = null;
  * not to require every worker-capable process to be a settlement
  * signer.
  */
-function assertWorkerStartupInvariants(): void {
+async function assertWorkerStartupInvariants(): Promise<void> {
   let evmSignerAddresses: string[] = [];
   try {
     evmSignerAddresses = getAttestorAccounts().map((a) => a.address);
@@ -75,6 +75,19 @@ function assertWorkerStartupInvariants(): void {
 
   if (evmSignerAddresses.length === 0 && solanaSignerPublicKey === null) return;
   assertWorkerKeyCountBelowThreshold({ evmSignerAddresses, solanaSignerPublicKey });
+
+  // Real gap closed 2026-09-14 (external re-review): a worker capable of
+  // Solana settlement never verified at boot that SOLANA_RPC_URL
+  // actually points at the intended cluster — the same check
+  // submitAttestedSettle now runs before every individual dispatch (see
+  // solana-settle.ts), run once here too so a misconfigured RPC URL
+  // fails the whole process closed at startup, not just at the first
+  // real settlement attempt.
+  if (solanaSignerPublicKey && process.env.SOLANA_RPC_URL) {
+    const { assertConnectedToExpectedSolanaCluster } = await import("@/lib/solana-settle");
+    const { Connection } = await import("@solana/web3.js");
+    await assertConnectedToExpectedSolanaCluster(new Connection(process.env.SOLANA_RPC_URL, "confirmed"));
+  }
 }
 
 async function processJob(job: Job): Promise<void> {
@@ -329,7 +342,7 @@ export async function startAdjudicationWorker(): Promise<Worker> {
 
   try {
     await assertDatabaseMatchesAppEnv();
-    assertWorkerStartupInvariants();
+    await assertWorkerStartupInvariants();
   } catch (err) {
     await w.close();
     // Signer-unavailable / quorum-unavailable at boot: this process is

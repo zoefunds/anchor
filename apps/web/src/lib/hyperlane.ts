@@ -394,7 +394,7 @@ async function isDecisionSettledOnSepolia(settlementContract: Address, decisionH
  */
 export async function dispatchDecisionForCase(
   params: DispatchDecisionParams
-): Promise<{ txHash: string; messageId: string; notificationTxHash?: string }> {
+): Promise<{ txHash: string; messageId: string | null; notificationTxHash?: string }> {
   // Real gate, checked before any chain interaction: see
   // lib/settlement-kyc.ts's own header comment. No-ops unless an
   // operator has actually opted this case's SettlementIntegration into
@@ -632,7 +632,17 @@ export async function dispatchDecisionForCase(
       console.error(`case ${params.caseId}: Hyperlane notification dispatch failed after attestedSettle() succeeded (${txHash}) — funds already moved, only the cross-chain audit trail is missing`, err);
     }
 
-    return { txHash, messageId: notificationMessageId ?? txHash, notificationTxHash };
+    // Real bug found by a 2026-09-14 re-review: this used to fall back
+    // to `txHash` (the settlement transaction) when the Hyperlane
+    // notification dispatch above failed or was never attempted — a
+    // field literally called `messageId` (persisted as
+    // Decision.relayMessageId) must never silently hold a settlement
+    // transaction hash instead of a real Hyperlane message ID. The
+    // schema column is already nullable; there was never a reason for
+    // this fallback to exist. A null messageId here correctly means
+    // "no Hyperlane notification was recorded for this decision," which
+    // is a true and useful fact, not something to paper over.
+    return { txHash, messageId: notificationMessageId ?? null, notificationTxHash };
   }
 
   if (SEALEVEL_CHAINS.has(params.settlementChain)) {
@@ -662,32 +672,39 @@ export async function dispatchDecisionForCase(
 
     // Real deposit-confirmation gate, mirroring the sepolia branch's
     // assertSettlementTargetMatchesIntegration/assertEscrowDepositMatches
-    // above — added 2026-09-06, closing a real gap: this branch used to
-    // dispatch straight off the Case row's own settlementSolana* fields
-    // with no on-chain deposit check at all, unlike the EVM path.
-    // Only enforced when a CaseSettlement is actually bound (a case
-    // that never registered one keeps its prior, pre-tracking
-    // behavior — dispatch straight from Case fields — so this is
-    // additive, not a breaking change for existing Solana cases).
+    // above. Originally added 2026-09-06 with an opt-in fallback for
+    // cases with no bound CaseSettlement (dispatch straight off the
+    // Case row's own settlementSolana* fields, no on-chain check at
+    // all) — a real gap a 2026-09-14 re-review correctly flagged: unlike
+    // the EVM branch above (which has required a CaseSettlement since
+    // the same finding was fixed there), a Solana case with no
+    // CaseSettlement could still settle with zero on-chain deposit
+    // verification, contradicting this app's own case-to-escrow binding
+    // invariant. There is no fallback anymore; every Solana settlement
+    // requires the same verified chain as EVM.
     const caseSettlement = await prisma.caseSettlement.findUnique({ where: { caseId: params.caseId }, include: { integration: true } });
-    if (caseSettlement && caseSettlement.integration.chain === "solanatestnet") {
-      if (caseSettlement.status !== "DEPOSITED") {
-        throw new Error(
-          `case ${params.caseId} has a bound Solana settlement integration but its CaseSettlement status is ${caseSettlement.status}, not DEPOSITED — refusing to dispatch a settlement with no confirmed deposit`
-        );
-      }
-      if (!caseSettlement.claimantAddress || !caseSettlement.respondentAddress) {
-        throw new Error(`case ${params.caseId}'s CaseSettlement is DEPOSITED but missing claimantAddress/respondentAddress — inconsistent record, refusing to dispatch`);
-      }
-      const { assertSolanaEscrowDepositMatches } = await import("@/lib/solana-escrow");
-      await assertSolanaEscrowDepositMatches({
-        escrowProgramId: caseSettlement.integration.escrowContractAddress,
-        onChainCaseId: caseSettlement.escrowId,
-        expectedClaimant: caseSettlement.claimantAddress,
-        expectedRespondent: caseSettlement.respondentAddress,
-        expectedAmountLamports: BigInt(caseSettlement.expectedAmountAtto),
-      });
+    if (!caseSettlement) {
+      throw new Error(
+        `case ${params.caseId} has no CaseSettlement — refusing to dispatch a real settlement with no verified on-chain escrow to bind it to`
+      );
     }
+    if (!caseSettlement.integration.active) {
+      throw new Error(`SettlementIntegration ${caseSettlement.integration.id} is not active — refusing to dispatch against a retired/disabled integration`);
+    }
+    if (caseSettlement.status !== "DEPOSITED") {
+      throw new Error(`CaseSettlement ${caseSettlement.id} status is ${caseSettlement.status}, not DEPOSITED — refusing to dispatch`);
+    }
+    if (!caseSettlement.claimantAddress || !caseSettlement.respondentAddress) {
+      throw new Error(`case ${params.caseId}'s CaseSettlement is DEPOSITED but missing claimantAddress/respondentAddress — inconsistent record, refusing to dispatch`);
+    }
+    const { assertSolanaEscrowDepositMatches } = await import("@/lib/solana-escrow");
+    await assertSolanaEscrowDepositMatches({
+      escrowProgramId: caseSettlement.integration.escrowContractAddress,
+      onChainCaseId: caseSettlement.escrowId,
+      expectedClaimant: caseSettlement.claimantAddress,
+      expectedRespondent: caseSettlement.respondentAddress,
+      expectedAmountLamports: BigInt(caseSettlement.expectedAmountAtto),
+    });
 
     const { submitAttestedSettle } = await import("@/lib/solana-settle");
     const { signature } = await submitAttestedSettle(
@@ -770,13 +787,13 @@ export async function dispatchDecisionForCase(
       console.warn(`HYPERLANE_RELAY_PRIVATE_KEY not set — skipping Hyperlane notification dispatch for case ${params.caseId} (settlement itself still succeeded)`);
     }
 
-    // messageId falls back to the settle signature only when the
-    // notification never went out at all (no relay key configured, or
-    // the dispatch itself failed) — better than null for callers that
-    // treat messageId as required, but never confused with a real
-    // Hyperlane message ID: notificationTxHash being undefined is the
-    // signal that this fallback happened.
-    return { txHash: signature, messageId: hyperlaneMessageId ?? signature, notificationTxHash };
+    // Real bug found by a 2026-09-14 re-review, same as the EVM branch
+    // above: this used to fall back to `signature` (the Solana
+    // attested_settle transaction) when no Hyperlane notification went
+    // out — mislabeling a settlement transaction as a Hyperlane message
+    // ID in a field literally named for the latter. Decision.relayMessageId
+    // is nullable; null correctly means "no notification recorded."
+    return { txHash: signature, messageId: hyperlaneMessageId ?? null, notificationTxHash };
   }
 
   throw new Error(

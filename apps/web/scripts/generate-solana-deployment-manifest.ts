@@ -23,8 +23,13 @@ import { Connection } from "@solana/web3.js";
 import { writeFileSync } from "fs";
 import { ATTESTOR_PUBKEYS, getSolanaAttestorThreshold } from "../src/lib/solana-settle";
 
-const RPC_URL = process.env.SOLANA_RPC_URL ?? "https://api.testnet.solana.com";
-const EXPECTED_GENESIS_HASH = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"; // Solana testnet
+const RPC_URL = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com"; // Devnet since 2026-09-14 — see docs/incidents/2026-09-14-solana-devnet-migration.md
+// Live cluster's real genesis hash — NOT the same as decision-relay's
+// TESTNET_GENESIS_HASH domain-tag constant (solana-settle.ts), which is
+// a fixed build-time attestation tag, not a live cluster identity check.
+// This script independently confirms which cluster RPC_URL actually
+// points at, regardless of what the domain tag says.
+const EXPECTED_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"; // Solana Devnet
 
 async function main() {
   const connection = new Connection(RPC_URL, "confirmed");
@@ -32,13 +37,13 @@ async function main() {
 
   const flags: string[] = [];
   if (genesisHash !== EXPECTED_GENESIS_HASH) {
-    flags.push(`RPC endpoint ${RPC_URL}'s genesis hash (${genesisHash}) does not match the expected testnet genesis hash (${EXPECTED_GENESIS_HASH}) — this RPC is pointed at a different cluster than intended.`);
+    flags.push(`RPC endpoint ${RPC_URL}'s genesis hash (${genesisHash}) does not match the expected Devnet genesis hash (${EXPECTED_GENESIS_HASH}) — this RPC is pointed at a different cluster than intended.`);
   }
 
   const manifest = {
     generatedAt: new Date().toISOString(),
     generatedBy: "scripts/generate-solana-deployment-manifest.ts",
-    network: { cluster: "testnet", rpcHost: new URL(RPC_URL).hostname, genesisHash },
+    network: { cluster: "devnet", rpcHost: new URL(RPC_URL).hostname, genesisHash },
     decisionRelay: {
       attestors: {
         expected: ATTESTOR_PUBKEYS,

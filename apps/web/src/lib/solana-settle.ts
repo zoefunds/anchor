@@ -35,11 +35,53 @@ export interface SolanaAttestedSettleParams {
   decisionHash: Buffer; // 32 raw bytes
 }
 
-// Solana Testnet's real genesis hash — confirmed live via the
-// `getGenesisHash` RPC method, not guessed. Must match the
-// TESTNET_GENESIS_HASH constant in decision-relay's Rust
-// decision_attestation_message exactly.
+// A fixed domain-separator tag baked into both this file and
+// decision-relay's Rust decision_attestation_message — NOT a live check
+// against whatever cluster SOLANA_RPC_URL actually points at (a Solana
+// program cannot query its own cluster's genesis hash via syscall, so
+// this could never be one). Originally confirmed live against Testnet's
+// real genesis hash at the time this was written; left byte-for-byte
+// unchanged during the 2026-09-14 Devnet migration on purpose (changing
+// it would require re-deploying decision-relay with a new tag AND
+// re-collecting every external attestor's signature under the new
+// message format — see docs/incidents/2026-09-14-solana-devnet-migration.md).
+// This constant's name is legacy — it does not mean "the tag only works
+// on Testnet" or "the code only runs on Testnet." Real cluster identity
+// is verified separately, at the point of signing, by
+// assertConnectedToExpectedSolanaCluster below — that's the check that
+// actually catches an RPC pointed at the wrong cluster; this constant
+// by itself cannot.
 const TESTNET_GENESIS_HASH = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
+
+// The cluster Anchor's Solana settlement path actually, live, submits
+// real transactions against — checked independently of
+// TESTNET_GENESIS_HASH above (which is a fixed attestation-message tag,
+// not a cluster check) so that a misconfigured SOLANA_RPC_URL pointed at
+// the wrong cluster is caught before ever signing or submitting,
+// instead of silently producing a transaction that either fails to
+// verify or — worse — succeeds against a cluster nobody intended.
+// Update this alongside SOLANA_RPC_URL on the next cluster migration.
+const EXPECTED_LIVE_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"; // Solana Devnet, confirmed live via getGenesisHash()
+
+/**
+ * Real gap closed 2026-09-14 (external re-review): nothing previously
+ * verified that SOLANA_RPC_URL's configured endpoint actually pointed at
+ * the cluster Anchor intended before signing and submitting a real
+ * settlement transaction. A misconfigured RPC URL (typo, stale copy-paste,
+ * a future migration only half-applied across env vars) could have
+ * silently signed and dispatched against an unintended cluster with no
+ * error at all. Called once per submitAttestedSettle invocation — a
+ * single extra RPC round-trip, cheap relative to everything else this
+ * function already does.
+ */
+export async function assertConnectedToExpectedSolanaCluster(connection: Connection): Promise<void> {
+  const liveGenesisHash = await connection.getGenesisHash();
+  if (liveGenesisHash !== EXPECTED_LIVE_GENESIS_HASH) {
+    throw new Error(
+      `Solana RPC endpoint's live genesis hash (${liveGenesisHash}) does not match the expected cluster (${EXPECTED_LIVE_GENESIS_HASH}, Devnet) — refusing to sign or submit a settlement transaction against an unexpected cluster. Update EXPECTED_LIVE_GENESIS_HASH in solana-settle.ts if this cluster change is intentional.`
+    );
+  }
+}
 
 /**
  * The exact bytes decision-relay's `decision_attestation_message` Rust
@@ -384,6 +426,7 @@ export async function submitAttestedSettle(
   externalAttestations: ExternalSolanaAttestation[] = []
 ): Promise<{ signature: string }> {
   const connection = new Connection(rpcUrl, "confirmed");
+  await assertConnectedToExpectedSolanaCluster(connection);
   const attestor = getAttestorKeypair();
   const payer = getRelayPayerKeypair();
 

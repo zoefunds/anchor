@@ -13,6 +13,23 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockSubmitAttestedSettle = vi.fn();
 const mockDispatchToSealevel = vi.fn();
 const mockCaseSettlementFindUnique = vi.fn();
+const mockAssertSolanaEscrowDepositMatches = vi.fn();
+
+// A bound, DEPOSITED CaseSettlement with both party addresses set — the
+// minimum this suite's target function now unconditionally requires
+// (see hyperlane.ts's 2026-09-14 fix removing the old "no CaseSettlement
+// -> skip the deposit gate" fallback, a real P0 found by an external
+// re-review: a Solana case with no CaseSettlement could settle with zero
+// on-chain deposit verification, unlike the EVM branch).
+const BOUND_CASE_SETTLEMENT = {
+  id: "cs-1",
+  status: "DEPOSITED",
+  claimantAddress: "8uxqqnAUCwn4LuFE3iQvXA4kr6cMhjZdqsSPHHRLUdmX",
+  respondentAddress: "EBea3UVndSrNdgdtfuXC6PoN7573GdS43XDoB6pja9fh",
+  escrowId: "case-1",
+  expectedAmountAtto: "1000000000000000",
+  integration: { active: true, chain: "solanatestnet", escrowContractAddress: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn" },
+};
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -28,6 +45,10 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/solana-settle", () => ({
   submitAttestedSettle: mockSubmitAttestedSettle,
+}));
+
+vi.mock("@/lib/solana-escrow", () => ({
+  assertSolanaEscrowDepositMatches: mockAssertSolanaEscrowDepositMatches,
 }));
 
 vi.mock("@anchor/hyperlane-relay", () => ({
@@ -66,7 +87,9 @@ describe("dispatchDecisionForCase — Solana settlement identifiers stay distinc
     mockSubmitAttestedSettle.mockReset();
     mockDispatchToSealevel.mockReset();
     mockCaseSettlementFindUnique.mockReset();
-    mockCaseSettlementFindUnique.mockResolvedValue(null); // no bound CaseSettlement — skip deposit gate
+    mockAssertSolanaEscrowDepositMatches.mockReset();
+    mockCaseSettlementFindUnique.mockResolvedValue(BOUND_CASE_SETTLEMENT);
+    mockAssertSolanaEscrowDepositMatches.mockResolvedValue(undefined); // deposit verified — this suite's scope is identifier distinctness, not deposit-matching itself
   });
 
   it("returns a real settle signature, a distinct notification tx hash, and a distinct Hyperlane message ID", async () => {
@@ -89,7 +112,13 @@ describe("dispatchDecisionForCase — Solana settlement identifiers stay distinc
     expect(result.notificationTxHash).not.toBe(result.messageId);
   });
 
-  it("falls back messageId to the settle signature (never to a fabricated value) when the Hyperlane dispatch fails", async () => {
+  it("returns a null messageId (never the settle signature) when the Hyperlane dispatch fails", async () => {
+    // Real bug found by a 2026-09-14 re-review: this used to fall back to
+    // the settlement transaction signature, mislabeling it as a Hyperlane
+    // message ID in a field literally named for the latter
+    // (Decision.relayMessageId). null is correct here — it means "no
+    // Hyperlane notification was recorded for this decision," a true and
+    // useful fact, not something to paper over with a fabricated value.
     const settleSignature = "5xJ3z" + "s".repeat(80);
     mockSubmitAttestedSettle.mockResolvedValue({ signature: settleSignature });
     mockDispatchToSealevel.mockRejectedValue(new Error("relay rpc unreachable"));
@@ -97,7 +126,7 @@ describe("dispatchDecisionForCase — Solana settlement identifiers stay distinc
     const result = await dispatchDecisionForCase(DECISION_PARAMS);
 
     expect(result.txHash).toBe(settleSignature);
-    expect(result.messageId).toBe(settleSignature); // documented fallback, not silently wrong
-    expect(result.notificationTxHash).toBeUndefined(); // the absence is the signal the fallback happened
+    expect(result.messageId).toBeNull();
+    expect(result.notificationTxHash).toBeUndefined(); // the absence is the signal the notification dispatch failed
   });
 });

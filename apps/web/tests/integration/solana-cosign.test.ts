@@ -18,12 +18,28 @@ import { prisma } from "@/lib/prisma";
 // itself, which chains/solana/'s own tests already cover.
 
 const submitAttestedSettle = vi.fn();
+// dispatchDecisionForCase's Solana branch now unconditionally requires a
+// bound, DEPOSITED CaseSettlement AND a verified on-chain deposit match
+// (2026-09-14 fix, closing a real P0: it used to skip both checks
+// entirely for a case with no CaseSettlement). This suite's fixtures now
+// create a real CaseSettlement (see makeSolanaDecision below), but the
+// on-chain deposit verification itself still needs mocking — this test
+// is about the co-signing wiring, not live Solana RPC connectivity.
+const assertSolanaEscrowDepositMatches = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/solana-settle", async () => {
   const actual = await vi.importActual<typeof import("@/lib/solana-settle")>("@/lib/solana-settle");
   return {
     ...actual,
     submitAttestedSettle: (...args: unknown[]) => submitAttestedSettle(...args),
+  };
+});
+
+vi.mock("@/lib/solana-escrow", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/solana-escrow")>("@/lib/solana-escrow");
+  return {
+    ...actual,
+    assertSolanaEscrowDepositMatches: (...args: unknown[]) => assertSolanaEscrowDepositMatches(...args),
   };
 });
 
@@ -56,6 +72,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   submitAttestedSettle.mockReset();
+  assertSolanaEscrowDepositMatches.mockReset();
+  assertSolanaEscrowDepositMatches.mockResolvedValue(undefined);
   // Each test creates its own case/decision; clear out prior tests'
   // rows first so retryFailedSettlements' sweep query (which matches
   // ANY decision with relayError set across the whole org) only ever
@@ -63,12 +81,16 @@ beforeEach(async () => {
   // "awaiting signatures" state by an earlier test gets swept up
   // alongside the one this test is actually asserting on.
   await prisma.decision.deleteMany({ where: { case: { organizationId: orgId } } });
+  await prisma.caseSettlement.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.case.deleteMany({ where: { organizationId: orgId } });
+  await prisma.settlementIntegration.deleteMany({ where: { organizationId: orgId } });
 });
 
 afterAll(async () => {
   await prisma.decision.deleteMany({ where: { case: { organizationId: orgId } } });
+  await prisma.caseSettlement.deleteMany({ where: { case: { organizationId: orgId } } });
   await prisma.case.deleteMany({ where: { organizationId: orgId } });
+  await prisma.settlementIntegration.deleteMany({ where: { organizationId: orgId } });
   await prisma.organization.delete({ where: { id: orgId } });
   await prisma.$disconnect();
 });
@@ -90,6 +112,32 @@ async function makeSolanaDecision() {
       settlementSolanaRespondent: "11111111111111111111111111111113",
       settlementSolanaEscrowProgram: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn",
       settlementSolanaCaseId: "CASE-TEST-SOLANA-COSIGN",
+    },
+  });
+  // A bound, DEPOSITED CaseSettlement is now unconditionally required
+  // (2026-09-14 fix — see this file's top-of-file comment update). The
+  // real on-chain deposit-match check is mocked above
+  // (assertSolanaEscrowDepositMatches); this row only needs to exist and
+  // report DEPOSITED with both party addresses set.
+  const integration = await prisma.settlementIntegration.create({
+    data: {
+      organizationId: orgId,
+      chain: "solanatestnet",
+      escrowContractAddress: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn",
+      assetSymbol: "SOL",
+      assetDecimals: 9,
+      createdByMemberId: "test-member",
+    },
+  });
+  await prisma.caseSettlement.create({
+    data: {
+      caseId: kase.id,
+      integrationId: integration.id,
+      status: "DEPOSITED",
+      escrowId: "CASE-TEST-SOLANA-COSIGN",
+      expectedAmountAtto: "100000000000",
+      claimantAddress: "11111111111111111111111111111112",
+      respondentAddress: "11111111111111111111111111111113",
     },
   });
   const decision = await prisma.decision.create({

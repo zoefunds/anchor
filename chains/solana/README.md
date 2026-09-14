@@ -80,6 +80,16 @@ below for why) at `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN`.
   verified, CPIs into `escrow.settle()`, signing as `adjudicator` via
   its own PDA.
 
+**Operational constraint, stated plainly**: `ATTESTOR_PUBKEYS`/
+`ATTESTOR_THRESHOLD` are compiled-in Rust consts, not an on-chain
+governed mapping the way EVM's `DecisionRelay.sol` has (a real Safe-owned
+`addAttestor`/`removeAttestor`/`setAttestorThreshold`). Rotating a Solana
+attestor key requires editing these consts and redeploying the program
+via its own upgrade authority — no on-chain governance action, no
+timelock, no multisig approval on the rotation itself. Acceptable for a
+testnet/hackathon prototype; a real production deployment would need an
+on-chain governed attestor set here too, matching the EVM side.
+
 ### Why `handle()` stopped moving funds
 
 Earlier in this project, `handle()` itself CPI'd into `escrow.settle()`

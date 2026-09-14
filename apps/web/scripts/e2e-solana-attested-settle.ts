@@ -34,7 +34,7 @@ import { decisionAttestationMessage, submitAttestedSettle, getSolanaAttestorThre
 import { confirmTransactionBounded } from "../src/lib/solana-confirm";
 import { prisma } from "../src/lib/prisma";
 
-const RPC_URL = process.env.SOLANA_RPC_URL ?? "https://api.testnet.solana.com";
+const RPC_URL = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com"; // Devnet since 2026-09-14 — see docs/incidents/2026-09-14-solana-devnet-migration.md
 const DECISION_RELAY_PROGRAM_ID = "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN";
 const ESCROW_PROGRAM_ID = "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn";
 const DEPOSIT_LAMPORTS = new anchor.BN(0.001 * LAMPORTS_PER_SOL); // small, fixed — a rehearsal, not a real dispute

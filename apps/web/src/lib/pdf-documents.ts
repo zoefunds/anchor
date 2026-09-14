@@ -278,8 +278,9 @@ export async function generateSettlementReceiptPdf(caseId: string, organizationI
   w.field("Outcome", doc.outcome);
   w.field("Claimant share (bps)", doc.claimantShareBps);
   w.field("Respondent share (bps)", doc.respondentShareBps);
-  w.field("Relay tx hash", doc.relayTxHash);
-  w.field("Relay message ID", doc.relayMessageId);
+  w.field("Relay tx hash (settlement)", doc.relayTxHash);
+  w.field("Relay notification tx hash", doc.relayNotificationTxHash);
+  w.field("Hyperlane message ID", doc.relayMessageId);
   w.field("Settled tx hash", doc.settledTxHash);
   w.field("Settled at", doc.settledAt);
   return w.finalize(doc.generatedAt);

@@ -186,6 +186,7 @@ export async function buildSettlementReceipt(caseId: string, organizationId: str
     respondentShareBps: latestDecision.respondentShareBps,
     relayTxHash: latestDecision.relayTxHash,
     relayMessageId: latestDecision.relayMessageId,
+    relayNotificationTxHash: latestDecision.relayNotificationTxHash,
     settledTxHash: kase.settlement?.settledTxHash ?? null,
     settledAt: kase.settlement?.settledAt?.toISOString() ?? null,
   };

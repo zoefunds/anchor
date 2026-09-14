@@ -50,23 +50,31 @@ anything out — deeper detail on any one piece lives in the linked docs.
    structured, appealable decision (`docs/decision-schema.md`).
 5. If nobody appeals within the appeal window (48h), or once an appeal
    resolves, the decision is **finalized**.
-6. A finalized decision with a settlement target configured is **relayed
-   cross-chain** via Hyperlane to either a Sepolia `DecisionRelay` contract
-   or a Solana `decision-relay` program, which — once independently
-   attested by a real M-of-N set of attestor keys — actually moves funds in
-   an escrow.
-7. The claimant deposits the disputed amount into escrow themselves,
-   using their own wallet — a dedicated, non-embedded page
-   (`/public/cases/[id]/deposit`) connects a real wallet (Reown AppKit
-   for Sepolia; `@solana/wallet-adapter` for Solana Devnet — Phantom/
-   Solflare/any wallet-standard wallet) and signs the real on-chain
-   deposit transaction. This is the only page in the app that ever
-   connects a wallet; everywhere else (case page, embeddable widget)
-   stays wallet-connect-free by design.
+6. Before or during adjudication, the claimant deposits the disputed
+   amount into escrow themselves, using their own wallet — a dedicated,
+   non-embedded page (`/public/cases/[id]/deposit`) connects a real
+   wallet (Reown AppKit for Sepolia; `@solana/wallet-adapter` for Solana
+   Devnet — Phantom/Solflare/any wallet-standard wallet) and signs the
+   real on-chain deposit transaction. This is the only page in the app
+   that ever connects a wallet; everywhere else (case page, embeddable
+   widget) stays wallet-connect-free by design.
+7. A finalized decision with a settlement target configured **settles
+   directly, same-chain**: `attestedSettle()` (Sepolia's `DecisionRelay`
+   contract) or `attested_settle()` (Solana's `decision-relay` program)
+   is authorized by a real M-of-N set of attestor signatures over the
+   decision's own content and moves the escrowed funds immediately —
+   this does **not** wait on, or depend on, cross-chain message
+   delivery. Hyperlane is dispatched in parallel, afterward, purely as a
+   best-effort, non-blocking cross-chain notification/audit record (see
+   "Trust boundary" below for exactly what this does and doesn't gate).
 
-Steps 1-5 are the original MVP. Step 6 (real cross-chain settlement with a
-genuine, independently-verifiable trust model) is what the most recent
-phase of work built and hardened.
+Steps 1-5 are the original MVP. Steps 6-7 (real wallet-connect deposit
+and direct, same-chain, attestor-authorized settlement with a genuine,
+independently-verifiable trust model) are what the most recent phases of
+work built and hardened. Despite the name, "cross-chain" here describes
+GenLayer's decision reaching a *different* chain's escrow than the one
+GenLayer itself runs on — not that Hyperlane cross-chain message
+delivery is required to move funds; see step 7 and "Trust boundary."
 
 ---
 
@@ -153,7 +161,13 @@ docs/                          Policy specs, decision schema, architecture
 ## Trust boundary
 
 No single actor — Anchor's own backend included — can unilaterally move
-funds:
+funds. **Two structurally separate paths exist, and only one of them is
+on the critical path for moving funds.** This distinction was
+historically blurred in this README (fixed 2026-09-14, after a Sepolia
+incident led to the direct-settlement architecture below, but the
+README/diagrams weren't updated to match at the time) — see
+`docs/incidents/2026-09-14-solana-devnet-migration.md`'s note and the
+Sepolia incident doc for the full history:
 
 ```mermaid
 flowchart LR
@@ -164,23 +178,47 @@ flowchart LR
         Relayer["Self-hosted relayer<br/>(constructs metadata, doesn't sign)"]
     end
 
-    subgraph Trusted["Required together to settle"]
+    subgraph Trusted["Required together to settle — FUNDS-MOVING PATH"]
         GenLayer["GenLayer Optimistic Democracy<br/>(produces the decision itself)"]
+        AttestorQuorum["attestedSettle()/attested_settle():<br/>2-of-3 attestor signatures"]
+    end
+
+    subgraph Notification["Asynchronous, non-blocking — NOT on the funds-moving path"]
         ISMQuorum["ISM: 2-of-3 validator<br/>checkpoint signatures"]
-        AttestorQuorum["DecisionRelay: 2-of-3<br/>attestor signatures"]
     end
 
     Backend -.->|"1 of 3 needed"| AttestorQuorum
-    OneValidator -.->|"1 of 3 needed"| ISMQuorum
     OneAttestor -.->|"1 of 3 needed"| AttestorQuorum
+    OneValidator -.->|"1 of 3 needed"| ISMQuorum
     Relayer -->|"delivers, doesn't authorize"| ISMQuorum
 
     GenLayer --> Decision["Decision"]
-    Decision --> AttestorQuorum
-    ISMQuorum --> Delivery["Message delivered"]
-    Delivery --> AttestorQuorum
-    AttestorQuorum --> Settle["Escrow.settle()"]
+    Decision -->|"funds-moving"| AttestorQuorum
+    AttestorQuorum --> Settle["Escrow.settle()<br/>(the ONLY thing that moves funds)"]
+
+    Decision -.->|"best-effort, non-blocking"| ISMQuorum
+    ISMQuorum -.-> Delivery["Message delivered to<br/>handle() — notification/audit only,<br/>settle() is NOT reachable from here"]
 ```
+
+Same-chain settlement (Sepolia decision → Sepolia escrow, or Solana
+decision → Solana escrow) is authorized directly by M-of-N attestor
+signatures over the decision's own content — `attestedSettle()` (EVM) /
+`attested_settle()` (Solana) — and does **not** wait on, or depend on,
+Hyperlane message delivery at all. Hyperlane is dispatched in parallel,
+after settlement, purely as a best-effort cross-chain notification/audit
+record; if it fails, the settlement that already happened is unaffected
+(see `dispatchDecisionForCase`'s own comment in `lib/hyperlane.ts`: "funds
+already moved, only the cross-chain audit trail is missing"). A
+Hyperlane message reaching `handle()` on either chain cannot itself move
+funds — `handle()` is notification-only, gated by the ISM shown above,
+which is why the ISM's current Sepolia-real/Solana-not-yet-proven status
+(see "Known gaps" #2) does not threaten actual settlement safety, only
+audit-trail completeness. The **only** thing that ever calls
+`Escrow.settle()`/CPIs into it is the direct attested-settle path.
+Sepolia→Sepolia Hyperlane self-loop transport specifically is unproven
+end-to-end for this deployment (see the 2026-09-12 incident doc) and is
+not used for payout — same-chain settlement never depended on it in the
+first place.
 
 ```
 YOUR INFRASTRUCTURE (apps/web, packages/*)
@@ -234,48 +272,69 @@ map) — kept in sync with this section and with
         every 5 min) finalizes it, or
      b. Someone appeals → a fresh adjudication round runs, decision may
         change, THEN finalizes
-4. dispatchSettlementForDecision() (apps/web/src/lib/adjudication-service.ts):
-     - EVM (sepolia): dispatchDecisionForCase() in lib/hyperlane.ts
-         - computes the attestation hash (decision content + origin +
-           recipient contract address, binding it to exactly this
-           decision and this deployed contract)
-         - signs with whatever ATTESTOR_PRIVATE_KEYS the backend holds
-         - if that's fewer than attestorThreshold, throws
-           InsufficientAttestorSignaturesError — as of 2026-09-07 two
-           other automated signers (`anc-hor-attestor2`/`anc-hor-attestor3`)
-           normally close that gap on their own within their polling
-           interval, so most decisions never actually wait on a human;
-           see "Co-signing" below for the exception path — otherwise
-           dispatches immediately via Hyperlane's Mailbox
+4. dispatchSettlementForDecision() (apps/web/src/lib/adjudication-service.ts)
+   calls dispatchDecisionForCase() in lib/hyperlane.ts, which — on
+   **both** chains — settles directly, same-chain, with no Mailbox/
+   relayer/validator/checkpoint dependency on the critical path:
+     - EVM (sepolia): computes a direct-settle attestation hash (decision
+       content + this exact chain id + the exact escrow address being
+       authorized + a 30-minute deadline), signs with whatever
+       `ATTESTOR_PRIVATE_KEYS` the backend holds, and — once
+       `countValidDistinctSigners` confirms threshold-many *distinct,
+       registered* signers (never raw signature-array length, which a
+       duplicate or stale signature can inflate) — calls
+       `attestedSettle()` on `DecisionRelay.sol` directly. If that's
+       fewer than `attestorThreshold`, throws
+       `InsufficientAttestorSignaturesError` — as of 2026-09-07 two other
+       automated signers (`anc-hor-attestor2`/`anc-hor-attestor3`)
+       normally close that gap on their own within their polling
+       interval, so most decisions never actually wait on a human; see
+       "Co-signing" below for the exception path. This replaced an
+       earlier architecture where settlement only happened inside
+       `handle()` after Hyperlane delivery — see the 2026-09-12 incident
+       doc for why that self-loop pattern was abandoned for Sepolia
+       same-chain settlement specifically.
      - Solana (`solanatestnet` — the legacy DB/schema chain identifier;
        `SOLANA_RPC_URL` has pointed at **Devnet**, not Testnet, since
-       2026-09-14): submitAttestedSettle() in lib/solana-settle.ts
-         - same pattern: computes the attestation message, signs with
-           the backend's one Solana attestor key, needs enough of the
-           other two automated signers' signatures to reach the real
-           2-of-3 threshold (same `anc-hor-attestor2`/`anc-hor-attestor3`
-           processes also run the Solana auto-signer)
-         - builds a versioned Solana transaction (Address Lookup
-           Table–based, since 2+ Ed25519 verify instructions exceed
-           Solana's 1232-byte legacy transaction limit) containing the
-           Ed25519 verify instructions + the AttestedSettle instruction,
-           and submits it DIRECTLY (not via Hyperlane) — see
-           docs/multisig-attestor-setup.md's Solana section for why
-5. Hyperlane's Mailbox (Sepolia) or the direct Solana transaction carries
-   the decision to the destination
-6. Destination-side verification:
-     - EVM: DecisionRelay.sol's handle() — requires the message came
-       via the Mailbox from a trusted sender AND passed the real
-       multisig ISM (2-of-3 validator checkpoints) AND carries
-       attestorThreshold-many valid attestor signatures over its own
-       content
-     - Solana: decision-relay's attested_settle() — requires
-       attestorThreshold-many real, non-redirected Ed25519 signatures
-       from registered attestor keys, verified via Solana instruction
-       introspection
-7. Only once both checks pass does the destination contract/program
-   actually move funds (CPI into escrow's settle() on Solana; a
-   configurable settlement target's settle() call on EVM)
+       2026-09-14): same pattern via `submitAttestedSettle()` in
+       lib/solana-settle.ts — computes the attestation message, signs
+       with the backend's one Solana attestor key, needs enough of the
+       other two automated signers' signatures to reach the real 2-of-3
+       threshold, builds a versioned Solana transaction (Address Lookup
+       Table–based, since 2+ Ed25519 verify instructions exceed Solana's
+       1232-byte legacy transaction limit) containing the Ed25519 verify
+       instructions + the `AttestedSettle` instruction, and submits it
+       directly. Also independently verifies the connected RPC's live
+       genesis hash matches the expected cluster before ever signing
+       (added 2026-09-14 — see the incident doc).
+5. Immediately after settlement succeeds on either chain, a Hyperlane
+   message is dispatched **in parallel, best-effort, non-blocking** —
+   purely a cross-chain notification/audit record, carrying the same
+   decision content and signatures to the other chain's
+   `DecisionRelay.sol`/`decision-relay`'s `handle()` entry point. If this
+   dispatch fails, the case loses only its explorer-visible cross-chain
+   audit trail — the funds already moved in step 4 and this failure
+   cannot be, and never is, retried into re-settling them.
+6. `handle()` on the receiving side requires the message came via the
+   Mailbox from a trusted sender and passed the ISM (real 2-of-3
+   validator checkpoints on Sepolia; still the older always-accepting
+   `TrustedRelayer`-only ISM on Solana, see "Known gaps" below), then
+   sets `processedDecisions[proofHash] = true` and — on Sepolia,
+   currently configured `settlementMode = SETTLEMENT` for the live
+   domain — would itself call `settle()` too, **if** it ever ran for a
+   decision that hadn't already settled. In practice it never does:
+   `attestedSettle()` in step 4 sets that exact same
+   `processedDecisions[proofHash]` flag *before* the parallel Hyperlane
+   message is even dispatched, so by the time (if ever) that message is
+   delivered, `handle()`'s own idempotency check
+   (`require(!processedDecisions[proofHash])`) reverts before reaching
+   `settle()` at all — not because `handle()` is configured as
+   notification-only, but because the decision it would settle is always
+   already marked settled by then. Solana's `decision-relay` `handle()`
+   is unconditionally notification-only by contrast (no settlement-mode
+   branch exists in that program's code at all). Sepolia→Sepolia
+   Hyperlane self-loop delivery is specifically unproven end-to-end for
+   this deployment and is not used for payout either way.
 ```
 
 ### Co-signing when the backend can't reach threshold alone

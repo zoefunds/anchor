@@ -3,14 +3,23 @@
 //! Anchor) because Hyperlane's own Sealevel libraries are native — see
 //! chains/solana/README.md for why.
 //!
-//! Two directions:
+//! Three entry points:
 //!   - dispatch_case_originate: raises a dispute on Solana, sends a
 //!     CASE_ORIGINATE message to Anchor's EVM domain via the Hyperlane
 //!     Mailbox (CPI into OutboxDispatch, same pattern as Hyperlane's own
 //!     reference `test-send-receiver` program).
 //!   - handle: receives a DECISION_RELAY message from EVM once GenLayer's
-//!     adjudication finalizes, then CPIs into escrow's `settle` instruction
-//!     to actually move funds.
+//!     adjudication finalizes. NOTIFICATION-ONLY as of the 2026-09-13
+//!     incident-recovery architecture change — records the decision but
+//!     no longer CPIs into escrow's `settle` instruction or moves any
+//!     funds (see `handle`'s own doc comment below for why: Hyperlane
+//!     delivery alone was never a sufficient trust condition for real
+//!     fund movement on its own).
+//!   - attested_settle: the REAL fund-moving entry point. Submitted
+//!     directly by Anchor's backend (never via Hyperlane), authorized by
+//!     a real M-of-N set of independently-held Ed25519 attestor
+//!     signatures over the decision's own content — this, not `handle`,
+//!     is what actually CPIs into escrow's `settle` instruction.
 //!
 //! Verified against real, fetched source (not memory):
 //!   - rust/sealevel/programs/test-send-receiver/src/program.rs — the

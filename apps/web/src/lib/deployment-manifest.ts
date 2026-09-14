@@ -25,7 +25,7 @@ import { verifyManifestHash } from "@/lib/manifest-signature";
 // on-chain values changed, only how this one known, permanent fact is
 // classified.
 const EXPECTED_EVM_MANIFEST_HASH = "1d30ea75bb419419fa746b0350835ab8ba1ab6936cc422227b3c2e5158e4f06c";
-const EXPECTED_SOLANA_MANIFEST_HASH = "93637df98778c03d223cb2258ae4098bbc67d941c0ff5a4a0376cf8c73a440b5";
+const EXPECTED_SOLANA_MANIFEST_HASH = "4e82dd6c5a4e2bf430151c731f3b1af37d73e5e7afc3e14c2f4a71f614e1f671";
 
 // Phase 1 (signer/settlement/delivery reliability), item 1's "expected
 // deployment manifest": a COMMITTED file, imported at build time, never
