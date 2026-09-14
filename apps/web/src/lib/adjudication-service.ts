@@ -769,7 +769,36 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       if (!contractAddress) {
         throw new Error("cannot appeal a case with no deployed contract");
       }
-      await genlayer.appealCase(contractAddress);
+      // Real bug found and fixed 2026-09-14 (case cmu0fuxzy0002xq5dzk6y95po):
+      // unlike the non-appeal retry branch below, this had no protection
+      // against calling appeal() a second time after a prior attempt's
+      // appeal() succeeded but the FOLLOWING adjudicate() call failed
+      // (timed out, transient GenLayer error, etc.) — a bare retry would
+      // call appeal() again, which the contract correctly rejects
+      // (`status != "DECIDED"`, since a successful appeal() already
+      // flipped it to "PENDING"), throwing and landing the case in
+      // UNDETERMINED with no recovery path, exactly the failure mode
+      // documented above for the non-appeal branch. Adjudicator.py's
+      // appeal() raises a UserError containing this exact substring for
+      // that specific condition (see adjudicator.py's own appeal()) —
+      // caught here and treated as "already appealed, proceed to
+      // adjudicate()" rather than a real failure. Any other error
+      // (e.g. genuine appeal-limit-reached) still propagates.
+      try {
+        await genlayer.appealCase(contractAddress);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes("is not in a decided state")) {
+          throw err;
+        }
+      }
+      // Same reasoning as the non-appeal branch's recovery check just
+      // below: a prior attempt's appeal() AND adjudicate() may both have
+      // already succeeded, with only the DB write after that lost — in
+      // which case a fresh adjudicate() call here would hit the
+      // contract's own "already decided" guard. Checking first recovers
+      // that real decision instead of throwing.
+      recoveredDecision = await genlayer.getDecision(contractAddress);
     } else if (contractAddress) {
       // A retry: this case already has a deployed contract from a prior
       // attempt. Check whether that attempt actually landed a real
