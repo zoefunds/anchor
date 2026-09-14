@@ -1,12 +1,25 @@
 # Solana side
 
-## Status: real, deployed, and settling funds on Solana Testnet
+## Status: real, deployed, and settling funds on Solana Devnet
 
-Both programs below are deployed to **Solana Testnet** (moved from the
-original devnet deployment) and have moved real funds in a real
-disputed-escrow test case. See the root `README.md`'s "Live deployment"
-section for every current address, and `../../docs/multisig-attestor-setup.md`
-for the full M-of-N attestation story that gates real settlement.
+Both programs below are deployed to **Solana Devnet** (moved back from
+Testnet on 2026-09-14, after public Testnet suffered a multi-day
+cluster-wide halt with no ETA — see
+`../../docs/incidents/2026-09-14-solana-devnet-migration.md` for the full
+writeup, including how the outage was confirmed as a genuine cluster
+halt rather than an RPC-specific issue) and have moved real funds in a
+real disputed-escrow test case, end to end (adjudication → deposit →
+attested settlement), verified directly on-chain. See the root
+`README.md`'s "Live deployment" section for every current address, and
+`../../docs/multisig-attestor-setup.md` for the full M-of-N attestation
+story that gates real settlement.
+
+`decision-relay`'s program account on Devnet was found stale (missing
+`attested_settle` entirely) during the 2026-09-14 migration and had to be
+redeployed fresh — see the incident doc. `escrow`'s address is
+deterministic from the deploy authority keypair and was already
+deployed to Devnet independently of Testnet (see `Anchor.toml`'s
+`[programs.devnet]` entry below).
 
 ## `programs/escrow` — the fund-holding program
 
@@ -102,14 +115,18 @@ in `programs/decision-relay/src/lib.rs`'s test module).
 
 ### Cluster and program binding
 
-The attestation message includes Solana Testnet's real genesis hash
-(confirmed live via `getGenesisHash` RPC, not guessed) and the
-executing program's own `program_id` — so a signature minted for this
-exact deployment on this exact cluster can never be replayed against a
-different cluster or a different `decision-relay` deployment of the
-same code, even though a program can't query its own genesis hash at
-runtime (this is a compile-time tag, defense in depth rather than a
-live runtime check).
+The attestation message includes a `TESTNET_GENESIS_HASH` domain-separator
+constant (originally confirmed live via `getGenesisHash` RPC against
+Testnet, then hardcoded into both this program's Rust source and
+`apps/web/src/lib/solana-settle.ts`'s TypeScript) and the executing
+program's own `program_id` — so a signature minted for this exact
+deployment can never be replayed against a different `decision-relay`
+deployment of the same code. This is a fixed, compile-time tag, not a
+live check against the actual cluster (a Solana program cannot query its
+own cluster's genesis hash at runtime) — confirmed safe to leave
+completely unchanged during the 2026-09-14 Testnet→Devnet migration,
+since it was never doing cluster verification in the first place, only
+domain separation between deployments of this program's code.
 
 ### Transaction-size limit — a real constraint, worked around
 
@@ -212,14 +229,17 @@ solana program deploy \
   --program-id target/deploy/decision_relay-keypair.json \
   --upgrade-authority ~/.config/solana/id.json \
   --keypair ~/.config/solana/id.json \
-  --url https://api.testnet.solana.com \
+  --url https://api.devnet.solana.com \
   target/deploy/decision_relay.so
 ```
 If the new binary is larger than the currently allocated program data
 account, extend it first (a real step hit during this work):
 ```bash
-solana program extend <PROGRAM_ID> <ADDITIONAL_BYTES> --url https://api.testnet.solana.com --keypair ~/.config/solana/id.json
+solana program extend <PROGRAM_ID> <ADDITIONAL_BYTES> --url https://api.devnet.solana.com --keypair ~/.config/solana/id.json
 ```
+(Substitute `--url https://api.testnet.solana.com` if redeploying to
+Testnet specifically — e.g. once/if it recovers — but Devnet is the
+live target as of 2026-09-14.)
 
 ### Automated co-signing — DONE
 

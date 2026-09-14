@@ -1,5 +1,14 @@
 # ReplayGuard Testnet deployment procedure
 
+> **2026-09-14: superseded.** Anchor's live Solana deployment moved from
+> Testnet to Devnet after a multi-day Testnet cluster halt — see
+> `../../docs/incidents/2026-09-14-solana-devnet-migration.md`. Every
+> `--url https://api.testnet.solana.com` command below targets a cluster
+> Anchor no longer settles on; substitute `https://api.devnet.solana.com`
+> (or the live target at the time you're reading this) if repeating any
+> of these steps today. Kept as-is below as an accurate historical
+> record of what was actually run and verified on 2026-09-02.
+
 Status: **executed on Testnet, 2026-09-02.** Real transaction
 signatures and verified on-chain state below. `decision-relay`'s ISM,
 attestor set, and Safe governance were untouched by this deployment —

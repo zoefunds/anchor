@@ -101,9 +101,15 @@ testnet activity yourself:
 - **Sepolia ETH**: use a public Sepolia faucet (e.g. the one listed at
   `https://sepoliafaucet.com` or your RPC provider's own faucet — Anchor
   does not operate a faucet itself).
-- **Solana testnet SOL**: `solana airdrop` against `https://api.testnet.solana.com`,
-  or the public web faucet at `https://faucet.solana.com` (select
-  "Testnet").
+- **Solana Devnet SOL**: `solana airdrop` against
+  `https://api.devnet.solana.com`, or the public web faucet at
+  `https://faucet.solana.com` (select "Devnet"). Anchor's live
+  deployment moved from Solana Testnet to Devnet on 2026-09-14 after a
+  multi-day Testnet cluster halt with no ETA — see
+  `../incidents/2026-09-14-solana-devnet-migration.md`. The Devnet
+  faucet is also rate-limited; if it declines your request, Anchor's own
+  operator can send a small amount directly from an already-funded
+  Devnet wallet instead.
 
 Neither faucet involves real value; do not send real funds to any
 address used in this pilot.

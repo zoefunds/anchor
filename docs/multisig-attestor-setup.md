@@ -185,8 +185,13 @@ on-chain governance account for this set (unlike the EVM Safe) — it's
 consts, rotated by redeploying via this program's own upgrade
 authority.
 
-**Live state (2026-09-07: retired the offline key — see below):**
-- Program: `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN` (Solana Testnet)
+**Live state (2026-09-07: retired the offline key — see below; 2026-09-14:
+migrated from Testnet to Devnet after a multi-day Testnet cluster halt —
+see `docs/incidents/2026-09-14-solana-devnet-migration.md`):**
+- Program: `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN` (Solana Devnet
+  as of 2026-09-14 — redeployed fresh on Devnet during the migration
+  after the existing Devnet copy of this address was found to be a stale
+  build missing `attested_settle` entirely)
 - Attestors: 2-of-3 — `4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq`
   (backend-held, `SOLANA_ATTESTOR_PRIVATE_KEY` on `anc-hor-worker`),
   `4eCqu5xB2EoLFw5AfSyjTm3cRnjdocs6wfwGaSp7rigZ` (automated, `anc-hor-attestor2`,
@@ -211,16 +216,26 @@ verification**: each Ed25519 native-program instruction embeds the
 full attestation message inline (Solana's architecture gives no way
 around this), so 2+ of them plus `AttestedSettle` reliably exceeds the
 1232-byte legacy-transaction limit for any realistic `case_id`. Fixed
-with a real Address Lookup Table,
-`DRSsBj3qsZ3YG2EmAivLPp4vjtJu54FmeZRaWqobeFEs`, pre-loaded with the
-static accounts (`Sysvar1nstructions`, the Ed25519 native program, the
-escrow program, decision-relay's own program id, and its two PDAs) —
-`solana-settle.ts` builds a v0 (versioned) transaction against it, and
-auto-extends the same table with a decision's specific
-claimant/respondent the first time each address is seen (one small
-extra transaction + ~1 slot of latency, never repeated for that
-address again). `SOLANA_DECISION_RELAY_LOOKUP_TABLE` in
-`apps/web/.env.example` documents this.
+with a real Address Lookup Table — `ARa48N2LsaA3D9uZDRkauTCLy8szbox7yWwVyZb9W7Qy`
+on Devnet as of 2026-09-14 (the old Testnet ALT,
+`DRSsBj3qsZ3YG2EmAivLPp4vjtJu54FmeZRaWqobeFEs`, is retired — an ALT is a
+cluster-specific account, not portable across clusters) — pre-loaded
+with the static accounts (`Sysvar1nstructions`, the escrow program,
+decision-relay's own program id, and its storage + escrow_authority
+PDAs). **Real gap found and fixed during the Devnet migration**: the
+fresh Devnet ALT was created but never pre-loaded with these static
+accounts (only `solana-settle.ts`'s own dynamic auto-extend for
+claimant/respondent/case-PDA ran against it), so real 2-signature
+settlements still overflowed the 1232-byte limit until a one-off script
+extended it with the five static entries — see the incident doc for the
+exact symptom and fix. `solana-settle.ts` builds a v0 (versioned)
+transaction against the ALT, and auto-extends the same table with a
+decision's specific claimant/respondent/case-PDA the first time each is
+seen (one small extra transaction + ~1 slot of latency, never repeated
+for that case/address again). `SOLANA_DECISION_RELAY_LOOKUP_TABLE` in
+`apps/web/.env.example` documents this — as of 2026-09-14 it must be set
+identically on **both** the Fly worker and Vercel (a real drift between
+the two was found and fixed the same day; see the incident doc).
 
 **Live-verified end-to-end**, using a realistic-length case ID (25
 chars, matching real production case IDs like `CASE-RELAY-...`): a

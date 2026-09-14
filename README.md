@@ -55,6 +55,14 @@ anything out — deeper detail on any one piece lives in the linked docs.
    or a Solana `decision-relay` program, which — once independently
    attested by a real M-of-N set of attestor keys — actually moves funds in
    an escrow.
+7. The claimant deposits the disputed amount into escrow themselves,
+   using their own wallet — a dedicated, non-embedded page
+   (`/public/cases/[id]/deposit`) connects a real wallet (Reown AppKit
+   for Sepolia; `@solana/wallet-adapter` for Solana Devnet — Phantom/
+   Solflare/any wallet-standard wallet) and signs the real on-chain
+   deposit transaction. This is the only page in the app that ever
+   connects a wallet; everywhere else (case page, embeddable widget)
+   stays wallet-connect-free by design.
 
 Steps 1-5 are the original MVP. Step 6 (real cross-chain settlement with a
 genuine, independently-verifiable trust model) is what the most recent
@@ -124,7 +132,9 @@ chains/evm/                    DecisionRelay.sol, TrustedRelayerIsm.sol,
                                 AuditAnchor.sol, SolanaCaseReceiver.sol —
                                 Foundry project, Sepolia
 chains/solana/                 escrow + decision-relay native Solana programs
-                                — Testnet
+                                — Devnet (migrated off Testnet 2026-09-14
+                                after a multi-day public Testnet cluster
+                                halt — see "Known gaps" below)
 chains/hyperlane-relayer/       Self-hosted Hyperlane relayer (Fly app
                                 anc-hor-relayer) — delivers messages the
                                 public relayer network won't touch
@@ -184,7 +194,7 @@ GENLAYER (genlayer/*)
   Optimistic Democracy consensus, appeals, finality
 
 HYPERLANE (chains/hyperlane-relayer/, chains/hyperlane-validator/)
-  Cross-chain message transport (Sepolia <-> Solana Testnet) —
+  Cross-chain message transport (Sepolia <-> Solana Devnet) —
   self-hosted relayer + self-hosted validators, no public/paid vendor
 
 DESTINATION CHAINS (chains/evm/, chains/solana/)
@@ -237,8 +247,9 @@ map) — kept in sync with this section and with
            interval, so most decisions never actually wait on a human;
            see "Co-signing" below for the exception path — otherwise
            dispatches immediately via Hyperlane's Mailbox
-     - Solana (solanatestnet): submitAttestedSettle() in
-       lib/solana-settle.ts
+     - Solana (`solanatestnet` — the legacy DB/schema chain identifier;
+       `SOLANA_RPC_URL` has pointed at **Devnet**, not Testnet, since
+       2026-09-14): submitAttestedSettle() in lib/solana-settle.ts
          - same pattern: computes the attestation message, signs with
            the backend's one Solana attestor key, needs enough of the
            other two automated signers' signatures to reach the real
@@ -510,15 +521,27 @@ Operator independence between these two owners is unverified.
 (validator2, AWS), `0x4dbc8704ebD282535d64Be6daDF2a477C543114D`
 (validator3, AWS, different account than validator2).
 
-### Solana Testnet
+### Solana Devnet
+
+**Migrated from Testnet to Devnet on 2026-09-14.** Public Solana Testnet
+suffered a multi-day cluster-wide halt (confirmed via two independent RPC
+providers agreeing on an identical frozen slot across days — not an
+RPC-specific outage), with no ETA from the network. `SOLANA_RPC_URL` now
+points at `https://api.devnet.solana.com` everywhere (Vercel, the Fly
+worker, and local `.env`). The `solanatestnet` string itself remains the
+DB/schema chain identifier and Hyperlane domain-config key — left
+unchanged deliberately, to avoid a schema-touching rename; only the RPC
+target moved. `decision-relay`'s `TESTNET_GENESIS_HASH` domain-separator
+constant is a fixed build-time tag, not a live check against the actual
+cluster, so it was safe to leave unchanged across the migration.
 
 | Program/account | Address | Purpose |
 |---|---|---|
-| `decision-relay` program | `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN` | Notification handling + AttestedSettle |
-| `escrow` program | `825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn` | Actual case/fund escrow, settled via CPI |
+| `decision-relay` program | `DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN` | Notification handling + AttestedSettle (redeployed fresh on Devnet 2026-09-14 — the Devnet copy of this program ID was stale/missing `attested_settle` until then) |
+| `escrow` program | `825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn` | Actual case/fund escrow, settled via CPI (deterministic address from the same deploy authority key as the Testnet deployment — already tracked as a Devnet target in `chains/solana/Anchor.toml`) |
 | Hyperlane Mailbox | `75HBBLae3ddeneJVrZeyrDfv6vb7SMC3aCpBucSXS5aR` | Canonical Hyperlane infra |
 | Hyperlane ValidatorAnnounce | `8qNYSi9EP1xSnRjtMpyof88A26GBbdcrsa61uSaHiwx3` | Canonical Hyperlane infra |
-| Address Lookup Table | `DRSsBj3qsZ3YG2EmAivLPp4vjtJu54FmeZRaWqobeFEs` | Keeps AttestedSettle transactions under the 1232-byte limit |
+| Address Lookup Table | `ARa48N2LsaA3D9uZDRkauTCLy8szbox7yWwVyZb9W7Qy` | Keeps AttestedSettle transactions under the 1232-byte limit — a fresh Devnet-only ALT (the Testnet one, `DRSsBj3qsZ3YG2EmAivLPp4vjtJu54FmeZRaWqobeFEs`, is retired and no longer referenced anywhere). Must be pre-populated with the static accounts (decision-relay program id, storage PDA, escrow program id, escrow_authority PDA, the `Sysvar1nstructions` sysvar) in addition to the per-case dynamic accounts `submitAttestedSettle` adds automatically — see the 2026-09-14 incident below for what happens when it isn't. |
 
 **Attestor addresses (Solana, 2-of-3, fully automated as of 2026-09-07)**:
 `4EnM9nxVcWoaRRsEZnq2otdVrQLiwdBsBkqxdmRoVBCq` (backend, `anc-hor-worker`),
@@ -702,6 +725,23 @@ Stated plainly, not swept under anything:
    escalation to a human reviewer is triggered by policy rules (amount
    thresholds, disagreement among validators, appeal filed), not by the
    adjudicator itself reporting low confidence.
+10. **No CI/CD — Vercel and the Fly worker are two independently
+    deployed targets that must be kept in sync by hand**, and real
+    drift between them has bitten this app more than once. On
+    2026-09-14, Vercel's `SOLANA_DECISION_RELAY_LOOKUP_TABLE` and
+    `SOLANA_RPC_URL` env vars were both found empty in production
+    (correctly set on the Fly worker) — meaning any Solana settlement
+    whose dispatch happened to run through a Vercel API route (rather
+    than the Fly worker's own periodic sweep) would have silently
+    failed. Both are now fixed and verified equal across both targets,
+    but nothing currently prevents them from drifting apart again on
+    the next env-var change. See "2026-09-14 Solana Devnet migration"
+    in `docs/incidents/` for the full incident writeup, including a
+    second, independent bug found in the same pass: the reconciliation
+    sweep that self-heals a stuck `CaseSettlement.status` only ever
+    implemented a Sepolia branch, so a Solana case that settled
+    correctly on-chain could sit at `DEPOSITED` in the database forever
+    with no automatic correction.
 
 ---
 
@@ -716,6 +756,10 @@ Stated plainly, not swept under anything:
 - `docs/self-hosted-validator-setup.md` — the complete validator +
   multisig ISM story: what's live, the R2-vs-S3 bug, the day-2 runbook
   for adding another validator
+- `docs/incidents/2026-09-14-solana-devnet-migration.md` — the Testnet
+  outage, the Devnet pivot, and four real bugs found and fixed along the
+  way (a missing ALT static-accounts step, two Vercel/Fly env-var drifts,
+  and a Solana-side gap in the `CaseSettlement` self-healing sweep)
 - `chains/evm/README.md`, `chains/solana/README.md` — contract/program-level notes
 - `chains/hyperlane-relayer/README.md` — the relayer's own history,
   every bug found and fixed along the way, exact deploy commands

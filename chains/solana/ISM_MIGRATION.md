@@ -1,5 +1,13 @@
 # Solana ISM migration: trusted-relayer → real multisig
 
+> **2026-09-14: the live Solana deployment moved from Testnet to Devnet**
+> after a multi-day Testnet cluster halt — see
+> `../../docs/incidents/2026-09-14-solana-devnet-migration.md`. Every
+> "Testnet proof" step below refers to Testnet specifically because that
+> was the live cluster when this doc was written; it has **not** been
+> re-run against Devnet. Treat the checklist below as still fully
+> outstanding on whichever cluster Anchor currently settles on.
+
 Status: **stale header, corrected 2026-09-12 — this line previously said
 "design only — not implemented, not deployed," which is no longer true
 and should not have been trusted at face value.** The migration described

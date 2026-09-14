@@ -15,6 +15,17 @@ removed entirely: `config.json`'s `solanadevnet` chain entry, the
 `apps/web`, and `chains/solana`'s deploy/dispatch scripts. If you need it
 back, `git log` has the removal commit and the working config it reverts.)
 
+**2026-09-14 update — do not confuse this with the above.** Anchor's
+live Solana settlement cluster moved from Testnet to Devnet after a
+multi-day Testnet cluster halt (see
+`../../docs/incidents/2026-09-14-solana-devnet-migration.md`) — but this
+was done by repointing `SOLANA_RPC_URL` under the *existing*
+`solanatestnet` chain identifier, not by reviving the separate
+`solanadevnet` relayer config removed above. This relayer's own
+`config.json` and `--relayChains`/`--chains.*` flags below still say
+`solanatestnet` throughout and needed no changes for the migration —
+only the app-level `SOLANA_RPC_URL` env var moved.
+
 **Update (this session, further continued): a real forgery vulnerability
 in the Solana attestation parser, found by a re-audit before the
 AttestedSettle path was ever used for anything but this session's own

@@ -74,7 +74,7 @@ flowchart TB
 
     Relayer["Self-hosted relayer<br/>(Fly anc-hor-relayer)"]
 
-    subgraph SolanaChain["Solana Testnet"]
+    subgraph SolanaChain["Solana Devnet (migrated from Testnet 2026-09-14 — see docs/incidents/2026-09-14-solana-devnet-migration.md)"]
         DecisionRelaySol["decision-relay program"]
         ReplayGuard["ReplayGuard PDA"]
         TrustedISM["TRUSTED_ISM<br/>(relayer-trust, NOT quorum-verified —<br/>see mainnet-readiness-runbook.md §0)"]
