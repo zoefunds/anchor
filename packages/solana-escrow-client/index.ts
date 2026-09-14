@@ -57,6 +57,19 @@ export function deriveCasePda(programId: PublicKey, onChainCaseId: string): Publ
   return pda;
 }
 
+/** The escrow program's own source of truth for whether a case has actually settled on-chain — see chains/solana/programs/escrow/src/lib.rs's CaseStatus enum (Active/Disputed/Settled). Returns null if the case account doesn't exist (never deposited into). */
+export async function fetchCaseStatus(
+  program: Program<Escrow>,
+  casePda: PublicKey
+): Promise<"active" | "disputed" | "settled" | null> {
+  const account = await program.account.case.fetchNullable(casePda);
+  if (!account) return null;
+  const status = account.status as unknown as { active?: object; disputed?: object; settled?: object };
+  if ("settled" in status) return "settled";
+  if ("disputed" in status) return "disputed";
+  return "active";
+}
+
 /** Typed initialize_case instruction — replaces every hand-rolled sighash+Borsh encoder that used to live in apps/web/scripts/e2e-solana-live.ts. */
 export async function buildInitializeCaseInstruction(params: {
   program: Program<Escrow>;

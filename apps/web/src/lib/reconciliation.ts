@@ -1,6 +1,8 @@
 import type { Prisma, ReconciliationFindingType } from "@prisma/client";
 import { type Address, createPublicClient, http } from "viem";
 import { sepolia } from "viem/chains";
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { getEscrowProgram, deriveCasePda, fetchCaseStatus, keypairWallet } from "@anchor/solana-escrow-client";
 import { prisma } from "@/lib/prisma";
 import { sendOpsAlert, sendNtfyAlert } from "@/lib/alerts";
 import { depositsAbiForVersion } from "@/lib/escrow-version";
@@ -296,7 +298,13 @@ async function checkDispatchedButStale(organizationIds?: string[]): Promise<void
   for (const decision of candidates) {
     const cs = decision.case.settlement;
     const kase = decision.case;
-    if (!cs || !decision.decisionHash || kase.settlementChain !== "sepolia" || !kase.settlementContract) continue;
+    if (!cs || !decision.decisionHash || !kase.settlementContract) continue;
+
+    if (kase.settlementChain === "solanatestnet") {
+      await checkSolanaDispatchedButStale(cs, kase.settlementContract, decision.relayTxHash);
+      continue;
+    }
+    if (kase.settlementChain !== "sepolia") continue;
 
     let processed: boolean;
     try {
@@ -351,6 +359,60 @@ async function checkDispatchedButStale(organizationIds?: string[]): Promise<void
     });
     await resolveFinding("DISPATCHED_BUT_DB_STALE", cs.id, "database corrected to SETTLED by this sweep");
   }
+}
+
+/**
+ * Solana counterpart to the sepolia-only self-healing loop above —
+ * checkDispatchedButStale's own doc comment ("nothing in this codebase
+ * automatically advances CaseSettlement to SETTLED after a successful
+ * dispatch") applied unconditionally to every non-sepolia chain, when
+ * only Sepolia was actually implemented. Confirmed live: case
+ * cmu0xelfd000u6sh8rrl5kskz settled on-chain (attested_settle succeeded,
+ * respondent balance moved) but sat at DEPOSITED indefinitely because
+ * this branch didn't exist. Re-derives the real answer from the escrow
+ * program's own Case.status account field (see chains/solana/programs/
+ * escrow/src/lib.rs), the same "never trust the DB's own claim" pattern
+ * as the Sepolia check.
+ */
+async function checkSolanaDispatchedButStale(
+  cs: Prisma.CaseSettlementGetPayload<{ include: { integration: true } }>,
+  decisionRelayProgramId: string,
+  relayTxHash: string | null
+): Promise<void> {
+  const rpcUrl = process.env.SOLANA_RPC_URL;
+  if (!rpcUrl) {
+    console.error(`reconciliation: SOLANA_RPC_URL not set, cannot check CaseSettlement ${cs.id} for stale status`);
+    return;
+  }
+  const connection = new Connection(rpcUrl, "confirmed");
+  const escrowProgramId = new PublicKey(cs.integration.escrowContractAddress);
+  const program = getEscrowProgram(connection, keypairWallet(Keypair.generate()), escrowProgramId.toBase58());
+  const casePda = deriveCasePda(escrowProgramId, cs.escrowId);
+
+  let status: "active" | "disputed" | "settled" | null;
+  try {
+    status = await fetchCaseStatus(program, casePda);
+  } catch (err) {
+    console.error(`reconciliation: failed to read escrow case status for CaseSettlement ${cs.id}`, err);
+    return;
+  }
+  if (status !== "settled") return;
+
+  await raiseFinding({
+    type: "DISPATCHED_BUT_DB_STALE",
+    targetType: "CaseSettlement",
+    targetId: cs.id,
+    detail: { caseId: cs.caseId, escrowId: cs.escrowId, decisionRelayProgramId },
+    severity: "warning",
+    title: "CaseSettlement is SETTLED on-chain (Solana) but the database still shows DEPOSITED — self-healing",
+    alertDetail: `CaseSettlement ${cs.id} (case ${cs.caseId}) was found SETTLED on Solana but stale in the database; corrected automatically by this sweep.`,
+  });
+
+  await prisma.caseSettlement.update({
+    where: { id: cs.id },
+    data: { status: "SETTLED", settledTxHash: relayTxHash, settledAt: new Date() },
+  });
+  await resolveFinding("DISPATCHED_BUT_DB_STALE", cs.id, "database corrected to SETTLED by this sweep");
 }
 
 /**
