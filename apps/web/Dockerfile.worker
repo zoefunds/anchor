@@ -1,5 +1,6 @@
 # Standalone job worker (src/worker.ts) — built from the repo root so npm
-# workspaces resolve (@anchor/hyperlane-relay, @anchor/genlayer-sdk). Runs
+# workspaces resolve (@anchor/hyperlane-relay, @anchor/genlayer-sdk,
+# @anchor/solana-escrow-client). Runs
 # via tsx (no build step needed — worker.ts and its lib/ dependencies are
 # plain TS, transpiled on the fly), not the Next.js build, since this
 # image never serves HTTP.
@@ -18,14 +19,16 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/hyperlane-relay/package.json packages/hyperlane-relay/package.json
 COPY packages/genlayer-sdk/package.json packages/genlayer-sdk/package.json
+COPY packages/solana-escrow-client/package.json packages/solana-escrow-client/package.json
 
-RUN npm ci --workspace=@anchor/web --workspace=@anchor/hyperlane-relay --workspace=@anchor/genlayer-sdk --include-workspace-root
+RUN npm ci --workspace=@anchor/web --workspace=@anchor/hyperlane-relay --workspace=@anchor/genlayer-sdk --workspace=@anchor/solana-escrow-client --include-workspace-root
 
 # Now the actual source. genlayer/contracts is a runtime read (see
 # lib/genlayer.ts's ADJUDICATOR_CONTRACT_PATH) — the contract source is
 # uploaded as part of every deploy/appeal call, not just build-time.
 COPY packages/hyperlane-relay packages/hyperlane-relay
 COPY packages/genlayer-sdk packages/genlayer-sdk
+COPY packages/solana-escrow-client packages/solana-escrow-client
 COPY apps/web apps/web
 COPY genlayer/contracts genlayer/contracts
 
