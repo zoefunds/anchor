@@ -90,6 +90,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
           // Escrow contract's own events), not secrets.
           escrowContractAddress: kase.settlement.integration.escrowContractAddress,
           escrowId: kase.settlement.escrowId,
+          // Solana only — decision-relay's own program id, needed
+          // client-side to derive the escrow_authority PDA that
+          // initializeCase's `adjudicator` arg must be set to. Same
+          // "public on-chain fact" justification as the two fields
+          // above; null for Sepolia, where the deposit page never uses it.
+          decisionRelayProgramId: kase.settlement.integration.chain === "solanatestnet" ? kase.settlementContract : null,
         }
       : null,
     evidence: kase.evidence.map((e) => ({

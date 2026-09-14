@@ -39,6 +39,8 @@ export interface PublicSettlement {
   /** Public on-chain facts (see the /deposit page) — not present on the embeddable widget's own display, only used by the dedicated deposit page. */
   escrowContractAddress: string;
   escrowId: string;
+  /** decision-relay program id (Solana only) — needed client-side to derive the escrow_authority PDA that initializeCase's `adjudicator` arg must be. Null for Sepolia, where the deposit page never needs it. */
+  decisionRelayProgramId: string | null;
 }
 
 export interface PublicPolicy {

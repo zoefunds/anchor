@@ -5,17 +5,20 @@
 // separate from CasePanel.tsx (used by both the full case page and the
 // embeddable widget), which has its own documented decision to stay
 // wallet-connect-free — this page reverses that decision for itself
-// only, not for the embed. Reown AppKit (WalletConnect) for connect/
-// account UI, viem (this project's standard everywhere else, not
-// ethers) for the actual signed transaction. Sepolia-only, matching
-// this project's testnet-only scope everywhere else.
+// only, not for the embed. Reown AppKit (WalletConnect) + viem for
+// Sepolia; @solana/wallet-adapter (see SolanaDeposit.tsx) for Solana —
+// two unrelated wallet-connect stacks, since EVM and Sealevel share no
+// account/provider abstraction. Testnet/devnet only, matching this
+// project's testnet-only scope everywhere else.
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { useAppKitAccount, useAppKitProvider, useAppKitNetwork } from "@reown/appkit/react";
 import { createWalletClient, createPublicClient, custom, http, getAddress, isAddressEqual, encodeFunctionData, type Address, type EIP1193Provider } from "viem";
 import { sepolia } from "viem/chains";
 import { ensureAppKitInitialized } from "@/lib/wallet-appkit";
+import { SolanaWalletProvider } from "@/lib/wallet-solana";
 import { usePublicCase } from "../usePublicCase";
+import { SolanaDeposit } from "./SolanaDeposit";
 
 const ESCROW_DEPOSIT_ABI = [
   {
@@ -44,7 +47,11 @@ export default function DepositPage() {
   useEffect(() => {
     ensureAppKitInitialized();
   }, []);
-  return <DepositPageInner />;
+  return (
+    <SolanaWalletProvider>
+      <DepositPageInner />
+    </SolanaWalletProvider>
+  );
 }
 
 function DepositPageInner() {
@@ -64,15 +71,11 @@ function DepositPageInner() {
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Real bug found 2026-09-14: this page is EVM/viem-only throughout
-  // (AppKit's EVM adapter, viem's Sepolia chain, getAddress() checksum
-  // validation). kase.settlement.chain === "solanatestnet" carries a
-  // base58 Solana pubkey, not a hex EVM address — getAddress() on one
-  // throws synchronously, which without this guard would crash the
-  // whole page (an uncaught error before any of the render-time checks
-  // below even run) instead of showing a controlled message. Solana
-  // doesn't have a wallet-connect deposit UI yet; this page only ever
-  // supported Sepolia.
+  // kase.settlement.chain === "solanatestnet" carries a base58 Solana
+  // pubkey, not a hex EVM address — getAddress() on one throws
+  // synchronously, so every EVM/viem-specific value below (expectedClaimant,
+  // isCorrectWallet, isOnSepolia, handleDeposit) stays gated on isSepolia;
+  // the Solana branch is handled entirely by <SolanaDeposit> instead.
   const isSepolia = kase?.settlement ? kase.settlement.chain === "sepolia" : true;
   const expectedClaimant = kase?.settlement?.claimantAddress && isSepolia ? getAddress(kase.settlement.claimantAddress) : null;
   const connectedAddress = address ? getAddress(address) : null;
@@ -145,29 +148,6 @@ function DepositPageInner() {
       </main>
     );
   }
-  if (!isSepolia) {
-    return (
-      <main className="mx-auto max-w-xl px-8 py-16">
-        <p className="kicker mb-2 text-seal-500 dark:text-seal-400">Deposit</p>
-        <h1 className="font-display text-2xl font-semibold text-ink-950 dark:text-ink">{kase.claim}</h1>
-        <div className="dossier mt-8">
-          <p className="text-sm text-muted dark:text-muted-dark">
-            This wallet-connect deposit page only supports Sepolia — Solana deposits aren&apos;t available through
-            this UI yet. Use the exact values below to deposit manually (e.g. via a Solana CLI script or the
-            organization handling this case).
-          </p>
-          <div className="mt-4 flex flex-col gap-2 font-mono text-xs text-muted dark:text-muted-dark">
-            <p>Escrow program: {kase.settlement.escrowContractAddress}</p>
-            <p>Escrow case ID: {kase.settlement.escrowId}</p>
-            <p>Claimant: {kase.settlement.claimantAddress ?? "not set yet"}</p>
-            <p>
-              Amount: {Number(kase.settlement.expectedAmountAtto) / 1e9} {kase.settlement.assetSymbol}
-            </p>
-          </div>
-        </div>
-      </main>
-    );
-  }
   if (kase.settlement.status !== "PENDING_DEPOSIT") {
     return (
       <main className="mx-auto max-w-xl px-8 py-16">
@@ -179,7 +159,7 @@ function DepositPageInner() {
       </main>
     );
   }
-  if (!expectedClaimant) {
+  if (!kase.settlement.claimantAddress) {
     return (
       <main className="mx-auto max-w-xl px-8 py-16">
         <p className="text-sm text-muted dark:text-muted-dark">Set your payout address on the case page before depositing.</p>
@@ -198,6 +178,22 @@ function DepositPageInner() {
         <p className="text-sm text-muted dark:text-muted-dark">
           Waiting on the respondent to set their payout address before you can deposit — check back once they have.
         </p>
+      </main>
+    );
+  }
+
+  if (!isSepolia) {
+    return (
+      <main className="mx-auto max-w-xl px-8 py-16">
+        <p className="kicker mb-2 text-seal-500 dark:text-seal-400">Deposit</p>
+        <h1 className="font-display text-2xl font-semibold text-ink-950 dark:text-ink">{kase.claim}</h1>
+        <div className="dossier mt-8">
+          <p className="field-label">Amount due</p>
+          <p className="mt-1 font-mono text-2xl tabular-nums text-ink-950 dark:text-ink">
+            {Number(kase.settlement.expectedAmountAtto) / 1e9} {kase.settlement.assetSymbol}
+          </p>
+        </div>
+        <SolanaDeposit settlement={kase.settlement} />
       </main>
     );
   }
