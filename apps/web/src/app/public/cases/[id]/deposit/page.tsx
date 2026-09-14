@@ -153,6 +153,21 @@ function DepositPageInner() {
       </main>
     );
   }
+  // Real bug found 2026-09-14: without this check, a claimant who set
+  // their own address before the respondent set theirs could get all the
+  // way to a MetaMask confirmation prompt, only to have viem's
+  // encodeFunctionData throw `Address "null" is invalid` on submit — the
+  // deposit() call needs both addresses, but nothing stopped the button
+  // from rendering with only one of them known.
+  if (!kase.settlement.respondentAddress) {
+    return (
+      <main className="mx-auto max-w-xl px-8 py-16">
+        <p className="text-sm text-muted dark:text-muted-dark">
+          Waiting on the respondent to set their payout address before you can deposit — check back once they have.
+        </p>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-xl px-8 py-16">
