@@ -782,13 +782,25 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       // appeal() raises a UserError containing this exact substring for
       // that specific condition (see adjudicator.py's own appeal()) —
       // caught here and treated as "already appealed, proceed to
-      // adjudicate()" rather than a real failure. Any other error
-      // (e.g. genuine appeal-limit-reached) still propagates.
+      // adjudicate()" rather than a real failure.
+      //
+      // "Appeal limit reached" (adjudicator.py's OTHER appeal() revert,
+      // `appeal_count >= MAX_APPEALS`) is caught the same way for a
+      // second reason: a retry landing here after appeal() AND
+      // adjudicate() have BOTH already succeeded (only the DB write
+      // after that was lost) sees a contract back in the "DECIDED"
+      // state, so this specific check is what would fire instead of the
+      // "not in a decided state" one above — genuinely already-appealed,
+      // not a real failure either. The getDecision() call just below
+      // recovers that case; a real MAX_APPEALS violation (a party
+      // attempting a second, unrelated appeal) would still show up
+      // there as a non-null decision with nothing new to persist, not a
+      // silent no-op.
       try {
         await genlayer.appealCase(contractAddress);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (!message.includes("is not in a decided state")) {
+        if (!message.includes("is not in a decided state") && !message.includes("Appeal limit reached")) {
           throw err;
         }
       }
