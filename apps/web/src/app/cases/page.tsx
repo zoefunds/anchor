@@ -4,6 +4,20 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { StatusStamp } from "@/components/StatusStamp";
 import { EmailVerificationBanner } from "@/components/EmailVerificationBanner";
+import { ACTIVE_SEPOLIA_TOPOLOGY } from "@/lib/deployment-registry";
+
+// Same preset this project already offers on Settings → Settlement
+// integrations — an org doesn't deploy its own DecisionRelay/escrow
+// program on this testnet, they all settle through these same
+// operator-approved contracts (see lib/hyperlane.ts's
+// isApprovedSettlementContract), so there's exactly one right answer per
+// chain here too. Filing a case previously required knowing/pasting this
+// by hand with no help from the UI, unlike the settlement-integrations
+// form.
+const SETTLEMENT_TARGET_PRESETS: Record<string, string> = {
+  sepolia: ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay,
+  solanatestnet: "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN",
+};
 
 interface CaseSummary {
   id: string;
@@ -306,18 +320,27 @@ export default function CasesPage() {
           </div>
 
           {settlementChain && (
-            <label className="flex flex-col gap-2 sm:col-span-2">
-              <span className="field-label">
-                {settlementChain === "sepolia" ? "DecisionRelay.sol address" : "decision-relay program ID"}
-              </span>
-              <input
-                className="field-input font-mono text-xs"
-                value={settlementContract}
-                onChange={(e) => setSettlementContract(e.target.value)}
-                placeholder={settlementChain === "sepolia" ? "0x…" : "base58 program ID"}
-                required
-              />
-            </label>
+            <div className="flex flex-col gap-2 sm:col-span-2">
+              <button
+                type="button"
+                onClick={() => setSettlementContract(SETTLEMENT_TARGET_PRESETS[settlementChain])}
+                className="self-start rounded-md border border-seal-500/40 px-3 py-1.5 text-xs font-medium text-seal-600 hover:bg-seal-50 dark:border-seal-400/40 dark:text-seal-400 dark:hover:bg-seal-500/10"
+              >
+                Use Anchor&apos;s testnet contract for {settlementChain === "sepolia" ? "Sepolia (EVM)" : "Solana Testnet"}
+              </button>
+              <label className="flex flex-col gap-2">
+                <span className="field-label">
+                  {settlementChain === "sepolia" ? "DecisionRelay.sol address" : "decision-relay program ID"}
+                </span>
+                <input
+                  className="field-input font-mono text-xs"
+                  value={settlementContract}
+                  onChange={(e) => setSettlementContract(e.target.value)}
+                  placeholder={settlementChain === "sepolia" ? "0x…" : "base58 program ID"}
+                  required
+                />
+              </label>
+            </div>
           )}
 
           {settlementChain === "solanatestnet" && (
