@@ -18,6 +18,13 @@ const SETTLEMENT_TARGET_PRESETS: Record<string, string> = {
   sepolia: ACTIVE_SEPOLIA_TOPOLOGY.decisionRelay,
   solanatestnet: "DGWSTw1PLsRbndb8spVkrtu3hfH599tRRBJ1JhVBbpVN",
 };
+// Solana's settlement target needs a SECOND preset address (the escrow
+// program, separate from the decision-relay program above) — Sepolia
+// doesn't have an equivalent second field, since its escrow address is
+// looked up server-side from the bound settlement integration instead.
+const SETTLEMENT_ESCROW_PRESETS: Record<string, string> = {
+  solanatestnet: "825aV7GJ31cjeTDycH1woKiaC95soJUYkKvZNFMugeZn",
+};
 
 interface CaseSummary {
   id: string;
@@ -323,7 +330,10 @@ export default function CasesPage() {
             <div className="flex flex-col gap-2 sm:col-span-2">
               <button
                 type="button"
-                onClick={() => setSettlementContract(SETTLEMENT_TARGET_PRESETS[settlementChain])}
+                onClick={() => {
+                  setSettlementContract(SETTLEMENT_TARGET_PRESETS[settlementChain]);
+                  if (settlementChain === "solanatestnet") setSettlementSolanaEscrowProgram(SETTLEMENT_ESCROW_PRESETS.solanatestnet);
+                }}
                 className="self-start rounded-md border border-seal-500/40 px-3 py-1.5 text-xs font-medium text-seal-600 hover:bg-seal-50 dark:border-seal-400/40 dark:text-seal-400 dark:hover:bg-seal-500/10"
               >
                 Use Anchor&apos;s testnet contract for {settlementChain === "sepolia" ? "Sepolia (EVM)" : "Solana Testnet"}
