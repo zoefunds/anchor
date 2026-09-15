@@ -418,6 +418,29 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
       metadata: { caseId: kase.id, chain: kase.settlementChain, txHash },
     });
   } catch (relayErr) {
+    const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
+    if (kase.settlementChain === "solanatestnet" && relayMessage.includes("already Settled on-chain")) {
+      console.error(`decision ${decision.id} for case ${kase.id} already settled on Solana — reconciled, not re-sent`);
+      await withDbRetry(() =>
+        prisma.$transaction(async (tx) => {
+          await tx.decision.update({
+            where: { id: decision.id },
+            data: { relayTxHash: "reconciled:onchain", relayError: null, relayAttempts: { increment: 1 }, relayClaimedAt: null },
+          });
+          await tx.caseSettlement.updateMany({
+            where: { caseId: kase.id, status: { not: "SETTLED" } },
+            data: { status: "SETTLED", settledTxHash: "reconciled:onchain", settledAt: new Date() },
+          });
+        })
+      );
+      await recordBillableEvent({
+        organizationId: kase.organizationId,
+        eventType: BillableEventType.SETTLEMENT_COMPLETED,
+        subjectId: decision.id,
+        metadata: { caseId: kase.id, chain: kase.settlementChain, txHash: "reconciled:onchain" },
+      });
+      return;
+    }
     if (relayErr instanceof DecisionAlreadySettledError) {
       // Reconciliation caught what a lost local record would otherwise
       // have retried forever: the destination contract already has this
@@ -516,7 +539,6 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
     // relay failure right after finalization doesn't leave a FINALIZED
     // decision permanently unsettled just because this one attempt hit
     // a bad RPC call or a momentary rate limit.
-    const relayMessage = relayErr instanceof Error ? relayErr.message : String(relayErr);
     // eslint-disable-next-line no-console
     console.error(`decision relay dispatch failed for case ${kase.id}:`, relayMessage);
     const updatedDecision = await withDbRetry(() =>
@@ -662,6 +684,8 @@ export interface SyncCaseResult {
   actions: string[];
 }
 
+export type SyncCaseStep = "all" | "adjudication" | "finalization" | "relay";
+
 /**
  * On-demand version of the three periodic sweeps above
  * (confirmPendingDeposits, finalizeExpiredAppealWindows,
@@ -678,7 +702,7 @@ export interface SyncCaseResult {
  * PENDING_DEPOSIT) — calling this on a case with nothing to do is a
  * harmless no-op, safe to invoke repeatedly.
  */
-export async function syncCase(caseId: string): Promise<SyncCaseResult> {
+export async function syncCase(caseId: string, step: SyncCaseStep = "all"): Promise<SyncCaseResult> {
   const actions: string[] = [];
 
   let kase = await prisma.case.findUniqueOrThrow({
@@ -686,7 +710,7 @@ export async function syncCase(caseId: string): Promise<SyncCaseResult> {
     include: { settlement: true, decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
 
-  if (kase.settlement && kase.settlement.status === "PENDING_DEPOSIT" && kase.settlement.claimantAddress && kase.settlement.respondentAddress) {
+  if (step === "all" && kase.settlement && kase.settlement.status === "PENDING_DEPOSIT" && kase.settlement.claimantAddress && kase.settlement.respondentAddress) {
     const { checkAndConfirmDeposit } = await import("@/lib/case-settlement");
     const result = await checkAndConfirmDeposit(kase.settlement.id);
     actions.push(`deposit check: ${result.outcome}`);
@@ -699,7 +723,7 @@ export async function syncCase(caseId: string): Promise<SyncCaseResult> {
 
   const latestDecision = kase.decisions[0];
 
-  if (kase.status === "APPEAL_WINDOW" && latestDecision?.appealWindowClosesAt && latestDecision.appealWindowClosesAt <= new Date()) {
+  if ((step === "all" || step === "finalization") && kase.status === "APPEAL_WINDOW" && latestDecision?.appealWindowClosesAt && latestDecision.appealWindowClosesAt <= new Date()) {
     const claimed = await prisma.case.updateMany({ where: { id: kase.id, status: "APPEAL_WINDOW" }, data: { status: "FINALIZED" } });
     if (claimed.count > 0) {
       actions.push("appeal window closed — finalized");
@@ -712,13 +736,17 @@ export async function syncCase(caseId: string): Promise<SyncCaseResult> {
   }
 
   const decision = kase.decisions[0];
-  if (kase.status === "FINALIZED" && decision && decision.consensus === "ACCEPTED" && !decision.relayTxHash) {
+  if ((step === "all" || step === "relay") && kase.status === "FINALIZED" && decision && decision.consensus === "ACCEPTED" && !decision.relayTxHash) {
     const before = decision.relayError;
     await dispatchSettlementForDecision(kase, decision);
     const after = await prisma.decision.findUniqueOrThrow({ where: { id: decision.id } });
     if (after.relayTxHash) actions.push(`settlement dispatched: ${after.relayTxHash}`);
     else if (after.relayError !== before) actions.push(`settlement not yet dispatched: ${after.relayError}`);
     else actions.push("settlement retry attempted — no change yet");
+  }
+
+  if (step === "adjudication") {
+    actions.push(kase.decisions[0] ? "adjudication already recorded" : `case is ${kase.status} — use submit for adjudication when evidence is complete`);
   }
 
   if (actions.length === 0) actions.push("nothing to do — case is not waiting on any sync-eligible step");

@@ -120,7 +120,7 @@ export default function CaseDetailPage() {
   const [partyTokens, setPartyTokens] = useState<{ claimant?: string; respondent?: string }>({});
   const [partyLinkBusy, setPartyLinkBusy] = useState<{ claimant?: boolean; respondent?: boolean }>({});
 
-  const [syncing, setSyncing] = useState(false);
+  const [syncingStep, setSyncingStep] = useState<"all" | "adjudication" | "finalization" | "relay" | null>(null);
   const [syncResult, setSyncResult] = useState<string[] | null>(null);
 
   // On-demand version of the worker's periodic sweeps, scoped to this
@@ -128,11 +128,15 @@ export default function CaseDetailPage() {
   // staff who don't want to wait out a sweep's interval, never a
   // replacement for those sweeps, which keep running unattended either
   // way.
-  async function syncNow() {
-    setSyncing(true);
+  async function syncNow(step: "all" | "adjudication" | "finalization" | "relay" = "all") {
+    setSyncingStep(step);
     setSyncResult(null);
     try {
-      const res = await fetch(`/api/cases/${id}/sync`, { method: "POST" });
+      const res = await fetch(`/api/cases/${id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step }),
+      });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "sync failed");
       setSyncResult(body.actions ?? []);
@@ -140,7 +144,7 @@ export default function CaseDetailPage() {
     } catch (err) {
       setSyncResult([err instanceof Error ? err.message : String(err)]);
     } finally {
-      setSyncing(false);
+      setSyncingStep(null);
     }
   }
 
@@ -473,15 +477,6 @@ export default function CaseDetailPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="font-mono text-xs text-muted dark:text-muted-dark">{kase.id}</p>
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              className="font-mono text-xs text-seal-500 hover:underline disabled:opacity-50 dark:text-seal-400"
-              onClick={syncNow}
-              disabled={syncing}
-              title="Runs the deposit-check / appeal-finalize / settlement-retry sweeps for this case right now, instead of waiting for their periodic schedule"
-            >
-              {syncing ? "syncing…" : "↻ sync now"}
-            </button>
             <StatusStamp status={kase.status} />
           </div>
         </div>
@@ -620,7 +615,7 @@ export default function CaseDetailPage() {
         </section>
       )}
 
-      {kase.decision && <SettlementPanel kase={kase} />}
+      {kase.decision && <SettlementPanel kase={kase} syncingStep={syncingStep} onSync={syncNow} />}
 
       <ReviewStatusPanel caseId={id} />
 
@@ -1136,7 +1131,17 @@ function ReviewStatusPanel({ caseId }: { caseId: string }) {
   );
 }
 
-function SettlementPanel({ kase }: { kase: CaseDetail }) {
+type SettlementSyncStep = "all" | "adjudication" | "finalization" | "relay";
+
+function SettlementPanel({
+  kase,
+  syncingStep,
+  onSync,
+}: {
+  kase: CaseDetail;
+  syncingStep: SettlementSyncStep | null;
+  onSync: (step: SettlementSyncStep) => void;
+}) {
   if (!kase.settlementChain || !kase.settlementContract) {
     return (
       <section className="mt-10">
@@ -1179,11 +1184,17 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
             done
             label="Adjudicated on GenLayer"
             detail={d?.adjudicateTxHash ? <>tx <ExplorerLink href={genlayerTxUrl(d.adjudicateTxHash)}>{d.adjudicateTxHash}</ExplorerLink></> : undefined}
+            actionLabel={syncingStep === "adjudication" ? "syncing..." : "sync"}
+            onAction={() => onSync("adjudication")}
+            actionDisabled={Boolean(syncingStep)}
           />
           <PipelineStep
             done={kase.status === "FINALIZED"}
             label="Finalized (appeal window closed)"
             detail={kase.status !== "FINALIZED" ? "waiting — settlement only dispatches once finalized" : undefined}
+            actionLabel={syncingStep === "finalization" ? "syncing..." : "sync"}
+            onAction={() => onSync("finalization")}
+            actionDisabled={Boolean(syncingStep)}
           />
           <PipelineStep
             done={dispatched}
@@ -1225,6 +1236,9 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
                 `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
               ) : undefined
             }
+            actionLabel={syncingStep === "relay" ? "syncing..." : "sync"}
+            onAction={() => onSync("relay")}
+            actionDisabled={Boolean(syncingStep)}
           />
         </ol>
 
@@ -1328,12 +1342,18 @@ function PipelineStep({
   failed,
   label,
   detail,
+  actionLabel,
+  onAction,
+  actionDisabled,
 }: {
   done: boolean;
   pending?: boolean;
   failed?: boolean;
   label: string;
   detail?: ReactNode;
+  actionLabel?: string;
+  onAction?: () => void;
+  actionDisabled?: boolean;
 }) {
   const marker = failed ? "✕" : done ? "✓" : pending ? "…" : "○";
   const markerColor = failed
@@ -1345,7 +1365,19 @@ function PipelineStep({
     <li className="flex items-start gap-3">
       <span className={`font-mono text-sm ${markerColor}`}>{marker}</span>
       <div>
-        <p className={`text-sm ${done ? "text-ink-950 dark:text-ink" : "text-muted dark:text-muted-dark"}`}>{label}</p>
+        <div className="flex flex-wrap items-baseline gap-3">
+          <p className={`text-sm ${done ? "text-ink-950 dark:text-ink" : "text-muted dark:text-muted-dark"}`}>{label}</p>
+          {onAction && (
+            <button
+              type="button"
+              className="font-mono text-[11px] text-seal-500 hover:underline disabled:text-muted disabled:no-underline dark:text-seal-400 dark:disabled:text-muted-dark"
+              onClick={onAction}
+              disabled={actionDisabled}
+            >
+              {actionLabel ?? "sync"}
+            </button>
+          )}
+        </div>
         {detail && <p className="mt-0.5 break-all font-mono text-[11px] text-muted dark:text-muted-dark">{detail}</p>}
       </div>
     </li>

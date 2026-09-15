@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { syncCase } from "@/lib/adjudication-service";
+import { syncCase, type SyncCaseStep } from "@/lib/adjudication-service";
 import { resolveOrgFromRequest, authErrorResponse, requireWriteAccess, requireScope } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 
@@ -27,6 +27,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 
-  const result = await syncCase((await params).id);
+  const body = await req.json().catch(() => ({}));
+  const requestedStep = typeof body.step === "string" ? body.step : "all";
+  const step: SyncCaseStep = ["all", "adjudication", "finalization", "relay"].includes(requestedStep) ? (requestedStep as SyncCaseStep) : "all";
+
+  const result = await syncCase((await params).id, step);
   return NextResponse.json(result);
 }
