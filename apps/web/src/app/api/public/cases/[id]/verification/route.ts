@@ -13,16 +13,16 @@ import { secureAppOrigin } from "@/lib/app-env";
 // and via webhook (api/webhooks/didit/route.ts) with the actual
 // result — this route only ever creates the session, it never
 // receives or trusts a decision directly from the client.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token } = await req.json().catch(() => ({}));
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id } });
   if (!kase) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
@@ -71,16 +71,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 // party, for the "Verify your identity" page to poll as a fallback
 // when the webhook hasn't landed yet (or the party never left/returned
 // from the hosted flow in the same browser session).
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const token = req.nextUrl.searchParams.get("token") ?? undefined;
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, token, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, token, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
   const existing = await prisma.partyVerification.findUnique({
-    where: { caseId_role: { caseId: params.id, role: resolved.role } },
+    where: { caseId_role: { caseId: (await params).id, role: resolved.role } },
     select: { status: true, sessionId: true, updatedAt: true },
   });
   return NextResponse.json(existing ?? { status: "NOT_STARTED", sessionId: null });

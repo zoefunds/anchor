@@ -10,13 +10,13 @@ import { logAction } from "@/lib/audit";
 // is exactly the kind of silent-rewire this project's own incident
 // this session was about; retiring one (active: false) and creating a
 // fresh one is the safe path, not editing this one in place.
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const existing = await prisma.settlementIntegration.findUnique({ where: { id: params.id } });
+  const existing = await prisma.settlementIntegration.findUnique({ where: { id: (await params).id } });
   if (!existing || existing.organizationId !== member.organizationId) {
     return NextResponse.json({ error: "settlement integration not found" }, { status: 404 });
   }
@@ -30,14 +30,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   const updated = await prisma.$transaction(async (tx) => {
-    const result = await tx.settlementIntegration.update({ where: { id: params.id }, data });
+    const result = await tx.settlementIntegration.update({ where: { id: (await params).id }, data });
     await logAction(
       {
         organizationId: member.organizationId,
         memberId: member.memberId,
         action: "settlement_integration.updated",
         targetType: "SettlementIntegration",
-        targetId: params.id,
+        targetId: (await params).id,
         metadata: { ...data },
       },
       tx

@@ -9,13 +9,13 @@ import { assertSolanaEscrowBoundToDecisionRelay, toLamports, SolanaEscrowError }
 
 // GET /api/cases/:id/settlement — current binding/deposit/settlement
 // state for this case, if any.
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
   const scopeError = requireScope(auth, "settlements:read");
   if (scopeError) return scopeError;
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: { include: { integration: true } } } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id }, include: { settlement: { include: { integration: true } } } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
@@ -37,13 +37,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 // requires (see settlement-integrations/route.ts). API keys never
 // pass requireOwner at all, matching how webhooks/members/audit-log
 // are already OWNER-only, session-only actions.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireOwner();
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.error === "forbidden" ? 403 : 401 });
   }
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id }, include: { settlement: true } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }

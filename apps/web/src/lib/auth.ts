@@ -92,7 +92,8 @@ export async function createSession(memberId: string): Promise<void> {
     },
   });
 
-  cookies().set(SESSION_COOKIE, signToken(token), {
+  const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE, signToken(token), {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -102,14 +103,15 @@ export async function createSession(memberId: string): Promise<void> {
 }
 
 export async function destroySession(): Promise<void> {
-  const raw = cookies().get(SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(SESSION_COOKIE)?.value;
   if (raw) {
     const token = verifySignedCookie(raw);
     if (token) {
       await prisma.session.deleteMany({ where: { tokenHash: hashToken(token) } });
     }
   }
-  cookies().delete(SESSION_COOKIE);
+  cookieStore.delete(SESSION_COOKIE);
 }
 
 export interface AuthedMember {
@@ -122,7 +124,8 @@ export interface AuthedMember {
 
 /** Resolves the current dashboard session, if any, from the request cookie. */
 export async function getSessionMember(): Promise<AuthedMember | null> {
-  const raw = cookies().get(SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(SESSION_COOKIE)?.value;
   if (!raw) return null;
   const token = verifySignedCookie(raw);
   if (!token) return null;

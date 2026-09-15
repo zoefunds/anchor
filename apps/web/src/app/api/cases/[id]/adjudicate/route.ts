@@ -21,7 +21,7 @@ import { canAccessCase } from "@/lib/case-access";
 // exponential backoff between retries. ensureJobWorker() below starts
 // this server's in-process worker (a no-op once a standalone worker is
 // running — see src/worker.ts); either can pick this job up.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   ensureJobWorker();
 
   const auth = await resolveOrgFromRequest(req);
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { evidence: true },
   });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {

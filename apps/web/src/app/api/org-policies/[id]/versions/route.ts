@@ -10,13 +10,13 @@ import { publishPolicyVersion, PolicyEngineError, DEFAULT_VELOCITY_LIMITS, DEFAU
 // and deactivates the old one for future case binding. Every case
 // already bound to the old version keeps reading it unchanged — see
 // Case.policyVersionRecordId's schema comment.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const policy = await prisma.policy.findUnique({ where: { id: params.id } });
+  const policy = await prisma.policy.findUnique({ where: { id: (await params).id } });
   if (!policy || policy.organizationId !== member.organizationId) {
     return NextResponse.json({ error: "policy not found" }, { status: 404 });
   }

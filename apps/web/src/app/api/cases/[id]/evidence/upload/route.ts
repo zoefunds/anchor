@@ -16,7 +16,7 @@ import { logAction } from "@/lib/audit";
 // itself has no PDF-parsing capability and can only confirm a bare URL
 // is reachable, so extraction has to happen on this side or a PDF's
 // actual content never reaches adjudication at all.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { evidence: true },
   });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {

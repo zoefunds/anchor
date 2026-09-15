@@ -11,7 +11,7 @@ import { logAction } from "@/lib/audit";
 // role held before (its hash no longer matches anything), the same way
 // rotating an API key invalidates the old one — use this if a token was
 // shared with the wrong recipient or is suspected leaked.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const scopeError = requireScope(auth, "cases:write");
   if (scopeError) return scopeError;
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }

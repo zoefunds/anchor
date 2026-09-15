@@ -10,7 +10,7 @@ import { resolveEvidenceUri } from "@/lib/storage";
 // public URLs did. See lib/storage.ts's resolveEvidenceUri.
 const DASHBOARD_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { evidence: true, decisions: { orderBy: { createdAt: "desc" } } },
   });
 

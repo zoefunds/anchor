@@ -1,3 +1,5 @@
+const path = require("path");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // pdf-parse (lib/pdf-extract.ts) fails inside Next's own bundling of
@@ -6,9 +8,8 @@ const nextConfig = {
   // bundler and letting it load via Node's normal require/import at
   // runtime instead fixes it; confirmed by reproducing the failure only
   // inside a route handler, never outside one.
-  experimental: {
-    serverComponentsExternalPackages: ["pdf-parse"],
-  },
+  serverExternalPackages: ["pdf-parse"],
+  outputFileTracingRoot: path.join(__dirname, "../.."),
   // @reown/appkit-utils' ethers BaseProvider (pulled in by
   // @reown/appkit-adapter-ethers for the deposit page's real wallet
   // connection) reaches into @base-org/account -> @coinbase/cdp-sdk's

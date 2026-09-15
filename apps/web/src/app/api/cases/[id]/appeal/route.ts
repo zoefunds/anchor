@@ -12,7 +12,7 @@ import { triggerAppeal } from "@/lib/appeal-service";
 // second one, but the contract is the actual source of truth and will
 // reject it on-chain regardless. See api/public/cases/:id/appeal for the
 // party-token-authenticated equivalent of this route.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {

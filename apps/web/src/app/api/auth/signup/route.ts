@@ -54,24 +54,32 @@ export async function POST(req: NextRequest) {
 
   await createSession(member.id);
 
-  // Fire-and-forget: signup succeeds regardless of email deliverability —
-  // the dashboard shows an unverified banner with a resend option either way.
+  // Signup succeeds regardless of email deliverability — the dashboard
+  // shows an unverified banner with a resend option either way. The send
+  // itself must still be awaited: in serverless runtimes, detached work
+  // scheduled after the response can be terminated before the Brevo request
+  // actually leaves the process.
   const rawToken = randomBytes(32).toString("hex");
-  void prisma.emailVerification
-    .create({
-      data: { memberId: member.id, tokenHash: hashToken(rawToken), expiresAt: new Date(Date.now() + VERIFICATION_TTL_MS) },
-    })
-    .then(() => {
-      const verifyUrl = `${appOrigin}/verify-email/${rawToken}`;
-      return sendVerificationEmail({ to: email, verifyUrl });
-    })
-    .catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error("signup verification email failed:", err instanceof Error ? err.message : err);
-    });
+  await prisma.emailVerification.create({
+    data: { memberId: member.id, tokenHash: hashToken(rawToken), expiresAt: new Date(Date.now() + VERIFICATION_TTL_MS) },
+  });
+
+  const verifyUrl = `${appOrigin}/verify-email/${rawToken}`;
+  let emailError: string | null = null;
+  try {
+    await sendVerificationEmail({ to: email, verifyUrl });
+  } catch (err) {
+    emailError = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error("signup verification email failed:", emailError);
+  }
 
   return NextResponse.json(
-    { organization: { id: organization.id, name: organization.name }, member: { id: member.id, email: member.email } },
+    {
+      organization: { id: organization.id, name: organization.name },
+      member: { id: member.id, email: member.email },
+      ...(emailError ? { verifyUrl, emailError } : {}),
+    },
     { status: 201 }
   );
 }

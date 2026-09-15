@@ -12,7 +12,7 @@ import { recordBillableEventTx, BillableEventType } from "@/lib/billing-events";
 // /api/cases/:id/evidence/upload instead — those go to R2, not this
 // table's storageRef, since the GenLayer contract fetches file evidence
 // itself over the network rather than reading it out of calldata.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (scopeError) return scopeError;
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { evidence: true },
   });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {

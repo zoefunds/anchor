@@ -83,29 +83,55 @@ async function checkSignerQuorum(): Promise<{ state: ComponentState; detail: unk
 }
 
 async function checkCanaryAndRelayer(): Promise<{ canary: ComponentState; relayerWorker: ComponentState; detail: unknown }> {
+  const configured = Boolean(process.env.CANARY_ORGANIZATION_ID);
   const latest = await prisma.canaryRun.findFirst({ orderBy: { createdAt: "desc" } });
-  if (!latest) return { canary: "unknown", relayerWorker: "unknown", detail: { reason: "no canary runs recorded yet" } };
+  if (!latest) {
+    return {
+      canary: "unknown",
+      relayerWorker: "unknown",
+      detail: { configured, reason: configured ? "no canary runs recorded yet" : "canary monitoring is not configured" },
+    };
+  }
   const fresh = Date.now() - latest.createdAt.getTime() < CANARY_STALE_MS;
+  if (!configured) {
+    return {
+      canary: "unknown",
+      relayerWorker: "unknown",
+      detail: {
+        configured,
+        outcome: latest.outcome,
+        createdAt: latest.createdAt.toISOString(),
+        freshWithinStaleWindow: fresh,
+        reason: "canary monitoring is not configured",
+      },
+    };
+  }
   return {
     canary: latest.outcome === "settled" ? "pass" : "fail",
     relayerWorker: fresh ? "pass" : "fail",
-    detail: { outcome: latest.outcome, createdAt: latest.createdAt.toISOString(), freshWithinStaleWindow: fresh },
+    detail: { configured, outcome: latest.outcome, createdAt: latest.createdAt.toISOString(), freshWithinStaleWindow: fresh },
   };
 }
 
 async function checkReconciliation(): Promise<{ state: ComponentState; detail: unknown }> {
   const open = await prisma.reconciliationFinding.findMany({ where: { resolvedAt: null } });
   const now = Date.now();
-  const pastGrace = open.filter((f) => now - f.openedAt.getTime() > RECONCILIATION_GRACE_MS);
-  const unacknowledgedCritical = open.filter((f) => f.alertedAt && !f.acknowledgedAt && now - f.alertedAt.getTime() > UNACKNOWLEDGED_CRITICAL_MS);
-  const fail = pastGrace.length > 0 || unacknowledgedCritical.length > 0;
+  const criticalTypes = new Set(["ZERO_SETTLEMENT_TARGET", "TARGET_INTEGRATION_MISMATCH", "ESCROW_VERSION_MISMATCH", "RELAY_RETRIES_EXHAUSTED", "CANARY_SLA_BREACH", "STALE_PENDING_SIGNATURE", "GOVERNANCE_DRIFT"]);
+  const criticalOpen = open.filter((f) => criticalTypes.has(f.type));
+  const criticalPastGrace = criticalOpen.filter((f) => now - f.openedAt.getTime() > RECONCILIATION_GRACE_MS);
+  const unacknowledgedCritical = criticalOpen.filter((f) => f.alertedAt && !f.acknowledgedAt && now - f.alertedAt.getTime() > UNACKNOWLEDGED_CRITICAL_MS);
+  const warningPastGrace = open.filter((f) => !criticalTypes.has(f.type) && now - f.openedAt.getTime() > RECONCILIATION_GRACE_MS);
+  const fail = criticalPastGrace.length > 0 || unacknowledgedCritical.length > 0;
   return {
     state: fail ? "fail" : "pass",
     detail: {
       openCount: open.length,
-      pastGraceCount: pastGrace.length,
+      criticalOpenCount: criticalOpen.length,
+      criticalPastGraceCount: criticalPastGrace.length,
       unacknowledgedCriticalCount: unacknowledgedCritical.length,
-      pastGraceIds: pastGrace.map((f) => f.id),
+      warningPastGraceCount: warningPastGrace.length,
+      criticalPastGraceIds: criticalPastGrace.map((f) => f.id),
+      warningPastGraceIds: warningPastGrace.map((f) => f.id),
       unacknowledgedCriticalIds: unacknowledgedCritical.map((f) => f.id),
     },
   };

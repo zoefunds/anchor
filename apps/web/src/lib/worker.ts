@@ -304,8 +304,16 @@ async function ensureReliabilityObserverHeartbeatScheduled(): Promise<void> {
  * without it. Same upsert-is-idempotent reasoning as the other sweeps.
  */
 async function ensureCanarySweepScheduled(): Promise<void> {
-  if (!process.env.CANARY_ORGANIZATION_ID) return;
-  await getAdjudicationQueue().upsertJobScheduler(
+  const queue = getAdjudicationQueue();
+  if (!process.env.CANARY_ORGANIZATION_ID) {
+    const removed = await queue.removeJobScheduler("testnet-canary-sweep");
+    if (removed) {
+      // eslint-disable-next-line no-console
+      console.log("worker: removed testnet canary sweep because CANARY_ORGANIZATION_ID is not configured");
+    }
+    return;
+  }
+  await queue.upsertJobScheduler(
     "testnet-canary-sweep",
     { every: CANARY_SWEEP_INTERVAL_MS },
     { name: "run_testnet_canary" }

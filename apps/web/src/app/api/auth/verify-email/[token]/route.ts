@@ -7,8 +7,8 @@ function hashToken(token: string): string {
 }
 
 // POST /api/auth/verify-email/:token — spend a verification token.
-export async function POST(_req: NextRequest, { params }: { params: { token: string } }) {
-  const verification = await prisma.emailVerification.findUnique({ where: { tokenHash: hashToken(params.token) } });
+export async function POST(_req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
+  const verification = await prisma.emailVerification.findUnique({ where: { tokenHash: hashToken((await params).token) } });
   if (!verification || verification.verifiedAt || verification.expiresAt < new Date()) {
     return NextResponse.json({ error: "verification link is invalid or expired" }, { status: 404 });
   }

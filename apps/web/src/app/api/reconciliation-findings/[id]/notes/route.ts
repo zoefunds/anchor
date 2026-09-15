@@ -7,13 +7,13 @@ import { requirePlatformAdmin } from "@/lib/auth";
 // acknowledgement (a finding can accumulate multiple notes over time
 // as an incident is worked, e.g. "paged on-call", "root cause found",
 // "fix deployed, watching for resolution").
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requirePlatformAdmin();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const finding = await prisma.reconciliationFinding.findUnique({ where: { id: params.id } });
+  const finding = await prisma.reconciliationFinding.findUnique({ where: { id: (await params).id } });
   if (!finding) {
     return NextResponse.json({ error: "finding not found" }, { status: 404 });
   }
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const event = await prisma.reconciliationFindingEvent.create({
-    data: { findingId: params.id, type: "NOTE", memberId: member.memberId, note },
+    data: { findingId: (await params).id, type: "NOTE", memberId: member.memberId, note },
   });
 
   return NextResponse.json(event, { status: 201 });

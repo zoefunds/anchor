@@ -12,7 +12,7 @@ import { canAccessCase } from "@/lib/case-access";
 // for settlement retry), not as a replacement for them. See
 // adjudication-service.ts's syncCase for what each step actually does
 // and why it's always safe to call again.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) {
     return authErrorResponse(auth);
@@ -22,11 +22,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const scopeError = requireScope(auth, "cases:write");
   if (scopeError) return scopeError;
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 
-  const result = await syncCase(params.id);
+  const result = await syncCase((await params).id);
   return NextResponse.json(result);
 }

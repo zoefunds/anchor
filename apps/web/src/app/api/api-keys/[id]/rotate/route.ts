@@ -11,13 +11,13 @@ import { logAction } from "@/lib/audit";
 // other API keys). Doing it as one transaction means there's never a
 // moment where both the old and new key are simultaneously live, or
 // where the old is dead and the new doesn't exist yet.
-export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const old = await prisma.apiKey.findUnique({ where: { id: params.id } });
+  const old = await prisma.apiKey.findUnique({ where: { id: (await params).id } });
   if (!old || old.organizationId !== member.organizationId) {
     return NextResponse.json({ error: "key not found" }, { status: 404 });
   }

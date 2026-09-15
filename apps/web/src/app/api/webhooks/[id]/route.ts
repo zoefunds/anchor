@@ -3,13 +3,13 @@ import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth";
 import { logAction } from "@/lib/audit";
 
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const webhook = await prisma.webhook.findUnique({ where: { id: params.id } });
+  const webhook = await prisma.webhook.findUnique({ where: { id: (await params).id } });
   if (!webhook || webhook.organizationId !== member.organizationId) {
     return NextResponse.json({ error: "webhook not found" }, { status: 404 });
   }

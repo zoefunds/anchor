@@ -108,7 +108,8 @@ describe("GET /api/status", () => {
     if (body.canary) {
       expect(body.canary).not.toHaveProperty("detail");
       expect(body.canary).not.toHaveProperty("relayTxHash");
-      expect(Object.keys(body.canary).sort()).toEqual(["lastRunAt", "outcome"]);
+      expect(Object.keys(body.canary).sort()).toEqual(["configured", "lastRunAt", "outcome"]);
+      expect(typeof body.canary.configured).toBe("boolean");
     }
   });
 

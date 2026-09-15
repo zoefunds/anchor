@@ -7,14 +7,14 @@ import { logAction } from "@/lib/audit";
 // members explicitly granted access. OWNER-only, same as managing members
 // themselves — restricting a case is an access-control decision, not
 // something any member should be able to do to hide a case from peers.
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { caseAccess: { include: { member: { select: { id: true, email: true } } } } },
   });
   if (!kase || kase.organizationId !== member.organizationId) {
@@ -30,7 +30,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 // PATCH /api/cases/:id/access — body { restricted: boolean }. Toggling
 // this on doesn't wipe the CaseAccess allow-list off (so re-enabling
 // later restores the same grants), it just starts/stops enforcing it.
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
@@ -41,7 +41,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: "restricted (boolean) is required" }, { status: 400 });
   }
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id } });
   if (!kase || kase.organizationId !== member.organizationId) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }

@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { computeWindowState } from "@/lib/reliability-window";
 import { STALE_HEARTBEAT_MS } from "@/lib/reliability-observer-watchdog";
 
+export const dynamic = "force-dynamic";
+
 // TRACK 1, item 1: PUBLIC, unauthenticated — "an external reviewer can
 // ... evaluate known risks without relying on chat history" requires
 // this to be reachable with no auth, same reasoning as /api/status.

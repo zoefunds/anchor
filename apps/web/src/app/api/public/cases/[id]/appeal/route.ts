@@ -10,17 +10,17 @@ import { triggerAppeal } from "@/lib/appeal-service";
 // filed the case. Body: { token?, reason? }. Shares the exact same
 // atomic-transition and contract-appeal logic as the org-authenticated
 // /api/cases/:id/appeal — see lib/appeal-service.ts.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token, reason } = await req.json().catch(() => ({ token: undefined, reason: undefined }));
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { decisions: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
   if (!kase) {

@@ -23,16 +23,16 @@ import { logAction } from "@/lib/audit";
 // "additive, not a replacement" design), but once a key exists, token
 // possession alone is no longer sufficient for this specific,
 // fund-directing action.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token, address, signature } = await req.json();
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id }, include: { settlement: true } });
   if (!kase) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }

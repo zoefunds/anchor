@@ -7,7 +7,7 @@ import { generateDepositReceiptPdf, generateSettlementReceiptPdf } from "@/lib/p
 // downloadable deposit receipt or release/refund/partial-settlement
 // receipt. format=pdf renders the same underlying data via
 // lib/pdf-documents.ts rather than re-deriving it.
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
   const scopeError = requireScope(auth, "cases:read");
@@ -17,17 +17,17 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const format = req.nextUrl.searchParams.get("format") ?? "json";
   try {
     if (format === "pdf") {
-      const pdfBytes = await (type === "deposit" ? generateDepositReceiptPdf(params.id, auth.organizationId) : generateSettlementReceiptPdf(params.id, auth.organizationId));
+      const pdfBytes = await (type === "deposit" ? generateDepositReceiptPdf((await params).id, auth.organizationId) : generateSettlementReceiptPdf((await params).id, auth.organizationId));
       return new NextResponse(Buffer.from(pdfBytes), {
         headers: {
           "Content-Type": "application/pdf",
-          "Content-Disposition": `attachment; filename="${params.id}-${type}-receipt.pdf"`,
+          "Content-Disposition": `attachment; filename="${(await params).id}-${type}-receipt.pdf"`,
         },
       });
     }
-    const doc = type === "deposit" ? await buildDepositReceipt(params.id, auth.organizationId) : await buildSettlementReceipt(params.id, auth.organizationId);
+    const doc = type === "deposit" ? await buildDepositReceipt((await params).id, auth.organizationId) : await buildSettlementReceipt((await params).id, auth.organizationId);
     return NextResponse.json(doc, {
-      headers: { "Content-Disposition": `attachment; filename="${params.id}-${type}-receipt.json"` },
+      headers: { "Content-Disposition": `attachment; filename="${(await params).id}-${type}-receipt.json"` },
     });
   } catch (err) {
     if (err instanceof ReceiptError) {

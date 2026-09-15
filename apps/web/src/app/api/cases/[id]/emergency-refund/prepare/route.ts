@@ -34,13 +34,13 @@ const ESCROW_TIMEOUT_ABI = [
 // the real signing hash for a real fund-releasing multisig action;
 // this is the same real financial authority level as binding a
 // settlement integration, not routine case management.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireOwner();
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.error === "forbidden" ? 403 : 401 });
   }
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: { include: { integration: true } } } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id }, include: { settlement: { include: { integration: true } } } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }

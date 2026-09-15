@@ -15,14 +15,14 @@ import { logAction } from "@/lib/audit";
 // evidence types (photos, PDFs, contracts), which meant the org that
 // filed the case was effectively the only one who could introduce real
 // documentary evidence.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const form = await req.formData();
   const token = form.get("token");
   const type = form.get("type");
   const file = form.get("file");
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const uploadedFile = file as unknown as { arrayBuffer(): Promise<ArrayBuffer>; name: string; type: string };
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { evidence: true },
   });
   if (!kase) {

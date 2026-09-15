@@ -46,11 +46,12 @@ export async function GET() {
     });
     const CANARY_STALE_MS = 2 * 60 * 60 * 1000;
     const canaryFresh = !!latestCanary && Date.now() - latestCanary.createdAt.getTime() < CANARY_STALE_MS;
+    const canaryConfigured = Boolean(process.env.CANARY_ORGANIZATION_ID);
     const workerRelayerStatus: ComponentStatus = !latestCanary
       ? "degraded"
       : canaryFresh && latestCanary.outcome === "settled"
         ? "up"
-        : canaryFresh
+        : canaryFresh || !canaryConfigured
           ? "degraded"
           : "down";
 
@@ -93,7 +94,7 @@ export async function GET() {
         workerRelayer: workerRelayerStatus,
       },
       canary: latestCanary
-        ? { lastRunAt: latestCanary.createdAt.toISOString(), outcome: latestCanary.outcome }
+        ? { configured: canaryConfigured, lastRunAt: latestCanary.createdAt.toISOString(), outcome: latestCanary.outcome }
         : null,
       incidents,
       reliabilityWindow: {

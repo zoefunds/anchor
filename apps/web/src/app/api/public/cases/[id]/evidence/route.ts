@@ -24,11 +24,11 @@ import { logAction } from "@/lib/audit";
 // can't be used to forge a new signed submission). Its absence doesn't
 // block submission — the bearer token/session remains sufficient on
 // its own, this is purely additive.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token, type, content, signature } = await req.json();
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     // Same response whether the token/session is simply invalid or
     // valid-but-for-a-different-case — don't help a caller distinguish
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { evidence: true },
   });
   if (!kase) {

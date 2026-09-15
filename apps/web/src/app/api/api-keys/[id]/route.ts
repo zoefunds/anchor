@@ -7,13 +7,13 @@ import { logAction } from "@/lib/audit";
 // privileged action too (a non-owner revoking a key isn't the escalation
 // itself, but it's still org-management the VIEWER/MEMBER roles
 // shouldn't have, and consistency here avoids a second inconsistent gate).
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const member = await requireOwner();
   if ("error" in member) {
     return NextResponse.json({ error: member.error }, { status: member.error === "forbidden" ? 403 : 401 });
   }
 
-  const key = await prisma.apiKey.findUnique({ where: { id: params.id } });
+  const key = await prisma.apiKey.findUnique({ where: { id: (await params).id } });
   if (!key || key.organizationId !== member.organizationId) {
     return NextResponse.json({ error: "key not found" }, { status: 404 });
   }

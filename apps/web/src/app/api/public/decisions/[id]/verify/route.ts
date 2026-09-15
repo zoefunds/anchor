@@ -29,9 +29,9 @@ import { computeDecisionHash } from "@/lib/adjudication-service";
 // — only the decision's own metadata, the same fields already implied
 // by the public on-chain settlement event this is meant to be checked
 // against.
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const decision = await prisma.decision.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: { case: { select: { id: true, settlementChain: true, settlementContract: true } } },
   });
   if (!decision) {

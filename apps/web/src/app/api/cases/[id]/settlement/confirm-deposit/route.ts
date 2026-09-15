@@ -10,7 +10,7 @@ import { checkAndConfirmDeposit } from "@/lib/case-settlement";
 // Never trusts anything in the request body — the only input is which
 // case's CaseSettlement to check, everything else is read live from
 // the escrow contract.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await resolveOrgFromRequest(req);
   if ("error" in auth) return authErrorResponse(auth);
   const writeError = requireWriteAccess(auth);
@@ -18,7 +18,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const scopeError = requireScope(auth, "settlements:write");
   if (scopeError) return scopeError;
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id }, include: { settlement: true } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id }, include: { settlement: true } });
   if (!kase || kase.organizationId !== auth.organizationId || !(await canAccessCase(auth, kase))) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }

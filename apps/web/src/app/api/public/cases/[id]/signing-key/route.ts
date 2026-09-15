@@ -25,11 +25,11 @@ import { logAction } from "@/lib/audit";
 // whoever can do this can bind cryptographic identity to a role in this
 // case. Re-registering overwrites the previous key for that role (same
 // trust boundary as reissuing a party token) and is logged.
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token, publicKeyHex } = await req.json().catch(() => ({ token: undefined, publicKeyHex: undefined }));
 
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
   }
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: "publicKeyHex must be a 32-byte hex string (raw Ed25519 public key)" }, { status: 400 });
   }
 
-  const kase = await prisma.case.findUnique({ where: { id: params.id } });
+  const kase = await prisma.case.findUnique({ where: { id: (await params).id } });
   if (!kase) {
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
@@ -59,7 +59,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
   await prisma.$transaction(async (tx) => {
     await tx.case.update({
-      where: { id: params.id },
+      where: { id: (await params).id },
       data: { [field]: publicKeyHex.toLowerCase() },
     });
     await logAction(

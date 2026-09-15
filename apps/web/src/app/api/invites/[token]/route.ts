@@ -11,9 +11,9 @@ function hashToken(token: string): string {
 // GET /api/invites/:token — resolve an invite for the accept page to
 // display (org name, email) without requiring auth, and without leaking
 // anything beyond what's needed to render the form.
-export async function GET(_req: NextRequest, { params }: { params: { token: string } }) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   const invite = await prisma.invite.findUnique({
-    where: { tokenHash: hashToken(params.token) },
+    where: { tokenHash: hashToken((await params).token) },
     include: { organization: true },
   });
 
@@ -30,13 +30,13 @@ export async function GET(_req: NextRequest, { params }: { params: { token: stri
 
 // POST /api/invites/:token — accept an invite by setting a password,
 // creating the Member, and starting a session immediately.
-export async function POST(req: NextRequest, { params }: { params: { token: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   const { password } = await req.json();
   if (!password || typeof password !== "string" || password.length < 8) {
     return NextResponse.json({ error: "password must be at least 8 characters" }, { status: 400 });
   }
 
-  const invite = await prisma.invite.findUnique({ where: { tokenHash: hashToken(params.token) } });
+  const invite = await prisma.invite.findUnique({ where: { tokenHash: hashToken((await params).token) } });
   if (!invite || invite.acceptedAt || invite.expiresAt < new Date()) {
     return NextResponse.json({ error: "invite not found or expired" }, { status: 404 });
   }

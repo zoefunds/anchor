@@ -21,16 +21,16 @@ const PUBLIC_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 // Cloudinary URL resolved just for this response, not a standing
 // public link — see lib/storage.ts's resolveEvidenceUri) but nothing
 // about which org filed it or its API keys/members/billing.
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const token = req.nextUrl.searchParams.get("token") ?? undefined;
   const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
-  const resolved = await resolvePartyAuth(sessionCookie, token, params.id);
+  const resolved = await resolvePartyAuth(sessionCookie, token, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "token query parameter or session is required" }, { status: 401 });
   }
 
   const kase = await prisma.case.findUnique({
-    where: { id: params.id },
+    where: { id: (await params).id },
     include: {
       evidence: { orderBy: { createdAt: "asc" } },
       decisions: { orderBy: { createdAt: "desc" } },
