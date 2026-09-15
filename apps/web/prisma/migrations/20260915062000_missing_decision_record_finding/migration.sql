@@ -1,0 +1,1 @@
+ALTER TYPE "ReconciliationFindingType" ADD VALUE 'MISSING_DECISION_RECORD';

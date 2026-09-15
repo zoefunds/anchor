@@ -54,6 +54,7 @@ export const FINDING_SEVERITY: Record<string, "info" | "warning" | "critical"> =
   CANARY_SLA_BREACH: "critical",
   STALE_PENDING_SIGNATURE: "critical",
   LATE_HYPERLANE_DELIVERY: "warning",
+  MISSING_DECISION_RECORD: "critical",
   GOVERNANCE_DRIFT: "critical",
   OLD_ESCROW_REFUND_ELIGIBLE_SOON: "warning",
 };
@@ -709,6 +710,85 @@ async function checkLateHyperlaneDelivery(organizationIds?: string[]): Promise<v
   }
 }
 
+type MissingDecisionRecord = {
+  decisionId: string;
+  billableEventCount: bigint;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  caseIds: string[];
+  eventTypes: string[];
+};
+
+/**
+ * Catches the production drift found during the 2026-09-15 restore:
+ * BillableEvent proved a decision/settlement happened, but the primary
+ * Decision row was missing, so the public verifier returned "decision
+ * not found." SignerLifecycleEvent also has historical backfilled rows
+ * that intentionally predate Decision retention, and canary runs delete
+ * synthetic Decision rows by design, so this check is scoped to billable
+ * references for non-canary cases: those are the rows public verification
+ * and billing both expect to resolve.
+ */
+async function checkMissingDecisionRecords(organizationIds?: string[]): Promise<void> {
+  const orgFilter = organizationIds?.length ? organizationIds : null;
+  const missing = await prisma.$queryRaw<MissingDecisionRecord[]>`
+    SELECT
+      be."subjectId" AS "decisionId",
+      COUNT(*)::bigint AS "billableEventCount",
+      MIN(be."createdAt") AS "firstSeenAt",
+      MAX(be."createdAt") AS "lastSeenAt",
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT be.metadata->>'caseId'), NULL) AS "caseIds",
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT be."eventType"::text), NULL) AS "eventTypes"
+    FROM "BillableEvent" be
+    LEFT JOIN "Decision" d ON d.id = be."subjectId"
+    JOIN "Case" c ON c.id = be.metadata->>'caseId'
+    WHERE d.id IS NULL
+      AND be."eventType" IN ('ADJUDICATION_RUN', 'SETTLEMENT_COMPLETED')
+      AND be.metadata ? 'caseId'
+      AND c."isCanary" = false
+      AND (
+        ${orgFilter}::text[] IS NULL
+        OR c."organizationId" = ANY(${orgFilter}::text[])
+      )
+    GROUP BY be."subjectId"
+    ORDER BY MAX(be."createdAt") DESC
+    LIMIT 100
+  `;
+
+  const missingIds = new Set(missing.map((row) => row.decisionId));
+  for (const row of missing) {
+    await raiseFinding({
+      type: "MISSING_DECISION_RECORD",
+      targetType: "Decision",
+      targetId: row.decisionId,
+      detail: {
+        decisionId: row.decisionId,
+        billableEventCount: Number(row.billableEventCount),
+        caseIds: row.caseIds,
+        eventTypes: row.eventTypes,
+        firstSeenAt: row.firstSeenAt.toISOString(),
+        lastSeenAt: row.lastSeenAt.toISOString(),
+      },
+      severity: "critical",
+      title: "Decision record missing but billable records still reference it",
+      alertDetail:
+        `Decision ${row.decisionId} is missing from Decision, but billable records still reference it` +
+        `${row.caseIds.length ? ` (case ${row.caseIds.join(", ")})` : ""}. ` +
+        "Public verification will fail until the Decision row is restored from GenLayer/on-chain evidence.",
+    });
+  }
+
+  const openFindings = await prisma.reconciliationFinding.findMany({
+    where: { type: "MISSING_DECISION_RECORD", resolvedAt: null },
+    select: { targetId: true },
+  });
+  for (const finding of openFindings) {
+    if (missingIds.has(finding.targetId)) continue;
+    const restored = await prisma.decision.findUnique({ where: { id: finding.targetId }, select: { id: true } });
+    if (restored) await resolveFinding("MISSING_DECISION_RECORD", finding.targetId, "Decision row exists again");
+  }
+}
+
 /**
  * Governance drift: live DecisionRelay.owner()/attestorThreshold vs.
  * the committed deployment-manifest.json's expected values. Distinct
@@ -932,6 +1012,7 @@ export async function runReconciliationSweep(scope?: { organizationIds?: string[
   await checkAuditAnchorStaleness(orgIds);
   await checkStalePendingSignatures(orgIds);
   await checkLateHyperlaneDelivery(orgIds);
+  await checkMissingDecisionRecords(orgIds);
   await checkGovernanceDrift();
   const escalated = await escalateUnacknowledgedCriticalFindings(scope?.escalationFindingIds);
 

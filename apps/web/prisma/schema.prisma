@@ -1146,6 +1146,11 @@ enum ReconciliationFindingType {
   // the configured SLA — the Hyperlane relayer/validator path appears
   // stuck between dispatch and destination-side processing.
   LATE_HYPERLANE_DELIVERY
+  // Billable adjudication/settlement records reference a Decision id
+  // that no longer exists in the primary Decision table. That means
+  // public verification and case history are incomplete even though the
+  // append-only billing ledger proves the decision happened.
+  MISSING_DECISION_RECORD
   // Live-read DecisionRelay.owner() / attestorThreshold no longer match
   // the committed deployment-manifest.json's expected values — the
   // deployed contract's governance configuration changed since the
