@@ -140,8 +140,17 @@ export function computeDecisionAttestationHash(params: {
   return keccak256(encoded);
 }
 
+// Must match apps/web/src/lib/emergency-refund.ts's caseIdToBytes32
+// exactly: UTF-8 bytes of the case id string, RIGHT-padded to bytes32.
+// This copy used viem's pad() with its default `dir: "left"` — the
+// opposite direction — so a caseId built here encoded to a different
+// bytes32 value than the one Escrow.sol actually stored for the same
+// case (set via the web app's right-padded encoding), and
+// attestedSettle's on-chain caseId comparison reverted with
+// CaseIdMismatch(bytes32 expected, bytes32 supplied) on every real
+// settlement dispatched through this relayer.
 export function caseIdToBytes32(caseId: string): Hex {
-  return pad(`0x${Buffer.from(caseId).toString("hex")}` as Hex, { size: 32 });
+  return pad(`0x${Buffer.from(caseId).toString("hex")}` as Hex, { size: 32, dir: "right" });
 }
 
 /**
