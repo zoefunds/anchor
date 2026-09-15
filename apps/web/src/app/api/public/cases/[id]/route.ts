@@ -58,6 +58,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     // evidence-submission deadline and appeal-window countdown without
     // exposing the rest of the policy (allowedOutcomes, velocity limits,
     // etc are org-internal and stay out of this response).
+    //
+    // Two independent sources of "policy" exist for a case: the
+    // org-configurable PolicyVersion engine (kase.policyVersionRecord,
+    // Phase 4) and the older static registry keyed by kase.policyId
+    // (lib/policies.ts) — a case can be bound to either, and most cases
+    // created outside the versioned-policy flow have no
+    // policyVersionRecord at all. Gating this whole field on
+    // policyVersionRecord alone meant those cases got `policy: null`,
+    // which made requiredEvidence silently empty — the party page then
+    // read "nothing left to file" instead of the real required exhibit,
+    // showing "you've already submitted" on a case with zero evidence.
+    // requiredEvidence must come from whichever source actually has it,
+    // not only the versioned one.
     policy: kase.policyVersionRecord
       ? {
           evidenceDeadlineHours: kase.policyVersionRecord.evidenceDeadlineHours,
@@ -68,7 +81,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           // rejects with an opaque 400 (see checkEvidenceSubmittable).
           requiredEvidence: getPolicy(kase.policyId)?.requiredEvidence ?? [],
         }
-      : null,
+      : getPolicy(kase.policyId)
+        ? {
+            // No versioned deadline/window exists for a static-registry
+            // case — real enforcement (checkEvidenceSubmittable, the
+            // appeal-window check) is entirely status/timestamp-driven,
+            // never this display-only figure, so omitting it just skips
+            // the optional countdown rather than blocking anything.
+            evidenceDeadlineHours: null,
+            appealWindowHours: null,
+            requiredEvidence: getPolicy(kase.policyId)!.requiredEvidence,
+          }
+        : null,
     // The resolving party's own role — lets the page render "set YOUR
     // payout address" without a second round trip, and without ever
     // exposing which role a caller resolved to anyone who didn't

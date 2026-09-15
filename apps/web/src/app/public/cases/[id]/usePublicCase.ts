@@ -44,8 +44,12 @@ export interface PublicSettlement {
 }
 
 export interface PublicPolicy {
-  evidenceDeadlineHours: number;
-  appealWindowHours: number;
+  // Null for a case bound to the static policy registry rather than a
+  // versioned Policy — see the route's own comment. requiredEvidence is
+  // always populated when policy itself is non-null; only the display
+  // countdown figures are conditionally absent.
+  evidenceDeadlineHours: number | null;
+  appealWindowHours: number | null;
   requiredEvidence: { type: string; label: string; restrictedTo?: "claimant" | "respondent" }[];
 }
 

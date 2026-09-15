@@ -55,7 +55,7 @@ export function CasePanel({
   const now = new Date();
 
   const evidenceDeadline =
-    kase.policy && kase.decisions.length === 0
+    kase.policy?.evidenceDeadlineHours != null && kase.decisions.length === 0
       ? new Date(new Date(kase.createdAt).getTime() + kase.policy.evidenceDeadlineHours * 60 * 60 * 1000)
       : null;
   const evidenceWindowOpen = !evidenceDeadline || evidenceDeadline.getTime() > now.getTime();
