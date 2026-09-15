@@ -187,6 +187,18 @@ export async function submitFileEvidence(id: string, token: string | null, type:
   }
 }
 
+/** The party-facing equivalent of the org dashboard's "Sync" button — see /api/public/cases/:id/sync's own doc comment. */
+export async function triggerSync(id: string, token: string | null): Promise<string[]> {
+  const res = await fetch(`/api/public/cases/${id}/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? "sync failed");
+  return body.actions ?? [];
+}
+
 export async function fileAppeal(id: string, token: string | null, reason: string): Promise<string> {
   const res = await fetch(`/api/public/cases/${id}/appeal`, {
     method: "POST",
