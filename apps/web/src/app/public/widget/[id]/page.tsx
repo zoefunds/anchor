@@ -29,7 +29,7 @@ export default function PublicCaseWidget() {
   const searchParams = useSearchParams();
   const id = params.id as string;
   const token = searchParams.get("token");
-  const { kase, error, refresh } = usePublicCase(id, token);
+  const { kase, error, refresh, token: activeToken } = usePublicCase(id, token);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -51,7 +51,7 @@ export default function PublicCaseWidget() {
     <div ref={containerRef} className="px-4 py-6">
       {error && <p className="text-sm text-status-undetermined">{error}</p>}
       {!error && !kase && <p className="font-mono text-sm text-muted dark:text-muted-dark">Loading…</p>}
-      {kase && <CasePanel id={id} kase={kase} onRefresh={refresh} embed />}
+      {kase && <CasePanel id={id} kase={kase} token={activeToken} onRefresh={refresh} embed />}
     </div>
   );
 }

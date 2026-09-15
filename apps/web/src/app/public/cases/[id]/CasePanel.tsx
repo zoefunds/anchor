@@ -23,11 +23,14 @@ import {
 export function CasePanel({
   id,
   kase,
+  token,
   onRefresh,
   embed = false,
 }: {
   id: string;
   kase: PublicCase;
+  /** This tab's own party token (see usePublicCase) — sent explicitly on every action below instead of relying on a cookie. */
+  token: string | null;
   onRefresh: () => void | Promise<void>;
   embed?: boolean;
 }) {
@@ -83,7 +86,7 @@ export function CasePanel({
     setSettingAddress(true);
     setAddressError(null);
     try {
-      const body = await setPayoutAddress(id, payoutAddress);
+      const body = await setPayoutAddress(id, token, payoutAddress);
       setAddressSetNote(`Payout address set to ${body.address}.`);
       await onRefresh();
     } catch (err) {
@@ -99,10 +102,10 @@ export function CasePanel({
     setEvidenceError(null);
     try {
       if (evidenceFile) {
-        await submitFileEvidence(id, evidenceType, evidenceFile);
+        await submitFileEvidence(id, token, evidenceType, evidenceFile);
       } else {
         if (!evidenceText.trim()) throw new Error("enter text or choose a file");
-        await submitTextEvidence(id, evidenceType, evidenceText);
+        await submitTextEvidence(id, token, evidenceType, evidenceText);
       }
       setEvidenceText("");
       setEvidenceFile(null);
@@ -120,7 +123,7 @@ export function CasePanel({
     setFilingAppeal(true);
     setAppealError(null);
     try {
-      const note = await fileAppeal(id, appealReason);
+      const note = await fileAppeal(id, token, appealReason);
       setAppealNote(note);
       setAppealReason("");
       await onRefresh();

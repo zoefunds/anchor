@@ -9,7 +9,7 @@ export default function PublicCasePage() {
   const searchParams = useSearchParams();
   const id = params.id as string;
   const token = searchParams.get("token");
-  const { kase, error, refresh } = usePublicCase(id, token);
+  const { kase, error, refresh, token: activeToken } = usePublicCase(id, token);
 
   if (error) {
     return (
@@ -29,7 +29,7 @@ export default function PublicCasePage() {
 
   return (
     <main className="mx-auto max-w-3xl px-8 py-16">
-      <CasePanel id={id} kase={kase} onRefresh={refresh} />
+      <CasePanel id={id} kase={kase} token={activeToken} onRefresh={refresh} />
     </main>
   );
 }
