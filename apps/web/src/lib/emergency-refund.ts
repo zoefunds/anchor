@@ -1,4 +1,4 @@
-import { type Address, type Hex, encodeAbiParameters, keccak256, pad } from "viem";
+import { type Address, type Hex, encodeAbiParameters, keccak256 } from "viem";
 
 // Priority 5, item 19 — the real, shared encoding for
 // DecisionRelay.emergencyRefund()'s signed attestation content. Kept
@@ -37,7 +37,7 @@ export function emergencyRefundAttestationHash(params: {
   );
 }
 
-/** Same encoding lib/hyperlane.ts's caseIdToBytes32 uses (left-padded UTF-8 bytes of the caseId string) — duplicated here rather than imported from @anchor/hyperlane-relay to avoid this lib depending on that package for one function. */
+/** EVM escrow case id encoding: UTF-8 bytes of the case id string, right-padded to bytes32. */
 export function caseIdToBytes32(caseId: string): Hex {
-  return pad(`0x${Buffer.from(caseId).toString("hex")}` as Hex, { size: 32 });
+  return `0x${Buffer.from(caseId).toString("hex").padEnd(64, "0")}` as Hex;
 }

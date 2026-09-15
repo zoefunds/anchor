@@ -35,10 +35,10 @@ const ESCROW_DEPOSIT_ABI = [
   },
 ] as const;
 
-/** Matches caseIdToBytes32 in packages/hyperlane-relay/index.ts exactly — a plain UTF-8-to-hex left-padded bytes32, not a hash. Duplicated here (rather than imported) since this is a browser bundle and that package pulls in server-only dependencies. */
+/** Matches the escrow authorization's caseId encoding: plain UTF-8 bytes right-padded to bytes32, not a hash. */
 function caseIdToBytes32(caseId: string): `0x${string}` {
-  const hex = Buffer.from(caseId, "utf-8").toString("hex");
-  return `0x${hex.padStart(64, "0")}` as `0x${string}`;
+  const hex = Array.from(new TextEncoder().encode(caseId), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `0x${hex.padEnd(64, "0")}` as `0x${string}`;
 }
 
 const RPC_URL = "https://ethereum-sepolia.publicnode.com";
