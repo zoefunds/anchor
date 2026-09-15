@@ -8,6 +8,16 @@ import { sepoliaTxUrl, genlayerTxUrl, genlayerAddressUrl, settlementTxUrl, settl
 
 const EXHIBIT_LETTERS = "ABCDEFGH";
 
+function formatDeadline(target: Date, now: Date): string {
+  const ms = target.getTime() - now.getTime();
+  if (ms <= 0) return `closed (${target.toLocaleString()})`;
+  const hours = Math.floor(ms / (60 * 60 * 1000));
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  const rel = days > 0 ? `${days}d ${remHours}h remaining` : `${remHours}h remaining`;
+  return `${rel} — closes ${target.toLocaleString()}`;
+}
+
 interface Evidence {
   id: string;
   type: string;
@@ -92,6 +102,7 @@ export default function CaseDetailPage() {
   const [policy, setPolicy] = useState<PolicyDefinition | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [now, setNow] = useState(() => new Date());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [evidenceType, setEvidenceType] = useState<string>("");
@@ -122,6 +133,12 @@ export default function CaseDetailPage() {
 
   const [syncingStep, setSyncingStep] = useState<"all" | "adjudication" | "finalization" | "relay" | null>(null);
   const [syncResult, setSyncResult] = useState<string[] | null>(null);
+  const appealWindowClosesAt = kase?.decision?.appealWindowClosesAt ? new Date(kase.decision.appealWindowClosesAt) : null;
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // On-demand version of the worker's periodic sweeps, scoped to this
   // case (see api/cases/:id/sync's own doc comment) — a convenience for
@@ -639,16 +656,18 @@ export default function CaseDetailPage() {
         </div>
       </section>
 
-      {kase.canAppeal && (
+      {appealWindowClosesAt && (
         <section className="mt-10">
-          <p className="kicker mb-4 text-status-adjudicating">Appeal window open</p>
+          <p className="kicker mb-4 text-status-adjudicating">{kase.canAppeal ? "Appeal window open" : "Appeal window"}</p>
           <div className="dossier">
             <p className="text-sm text-muted dark:text-muted-dark">
-              Closes {kase.decision?.appealWindowClosesAt ? new Date(kase.decision.appealWindowClosesAt).toLocaleString() : ""}.
-              One appeal is allowed per case — it triggers a fresh, independent consensus round, not a review of the prior one.
+              {formatDeadline(appealWindowClosesAt, now)}.
+              {kase.canAppeal
+                ? " One appeal is allowed per case — it triggers a fresh, independent consensus round, not a review of the prior one."
+                : " Use the Finalized sync button when you are ready to move the case forward."}
             </p>
 
-            {requiredTypes.length > 0 && (
+            {kase.canAppeal && requiredTypes.length > 0 && (
               <form onSubmit={submitCorrection} className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
                 <p className="field-label">Correct an exhibit before appealing (optional)</p>
                 <div className="flex gap-3">
@@ -672,19 +691,21 @@ export default function CaseDetailPage() {
               </form>
             )}
 
-            <div className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
-              <label className="flex flex-col gap-2">
-                <span className="field-label">Reason for appeal (optional)</span>
-                <textarea
-                  className="field-input min-h-[80px] resize-y"
-                  value={appealReason}
-                  onChange={(e) => setAppealReason(e.target.value)}
-                />
-              </label>
-              <button className="btn-primary self-start" onClick={triggerAppeal} disabled={appealing}>
-                {appealing ? "Appealing…" : "Appeal this decision"}
-              </button>
-            </div>
+            {kase.canAppeal && (
+              <div className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
+                <label className="flex flex-col gap-2">
+                  <span className="field-label">Reason for appeal (optional)</span>
+                  <textarea
+                    className="field-input min-h-[80px] resize-y"
+                    value={appealReason}
+                    onChange={(e) => setAppealReason(e.target.value)}
+                  />
+                </label>
+                <button className="btn-primary self-start" onClick={triggerAppeal} disabled={appealing}>
+                  {appealing ? "Appealing…" : "Appeal this decision"}
+                </button>
+              </div>
+            )}
           </div>
         </section>
       )}
