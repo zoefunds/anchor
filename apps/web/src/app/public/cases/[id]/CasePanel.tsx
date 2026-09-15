@@ -8,7 +8,6 @@ import {
   submitTextEvidence,
   submitFileEvidence,
   fileAppeal,
-  triggerSync,
   formatDeadline,
 } from "./usePublicCase";
 
@@ -51,10 +50,6 @@ export function CasePanel({
   const [filingAppeal, setFilingAppeal] = useState(false);
   const [appealError, setAppealError] = useState<string | null>(null);
   const [appealNote, setAppealNote] = useState<string | null>(null);
-
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncResult, setSyncResult] = useState<string[] | null>(null);
 
   const latestDecision = kase.decisions[0];
   const now = new Date();
@@ -128,20 +123,6 @@ export function CasePanel({
       setEvidenceError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmittingEvidence(false);
-    }
-  }
-
-  async function handleSync() {
-    setSyncing(true);
-    setSyncError(null);
-    try {
-      const actions = await triggerSync(id, token);
-      setSyncResult(actions.length > 0 ? actions : ["Nothing to do right now — already up to date."]);
-      await onRefresh();
-    } catch (err) {
-      setSyncError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSyncing(false);
     }
   }
 
@@ -234,26 +215,6 @@ export function CasePanel({
             )}
             {addressError && <p className="mt-2 text-sm text-status-undetermined">{addressError}</p>}
             {addressSetNote && <p className="mt-2 text-sm text-muted dark:text-muted-dark">{addressSetNote}</p>}
-
-            {kase.settlement.status !== "SETTLED" && kase.settlement.status !== "MISMATCH_BLOCKED" && (
-              <div className="mt-6 border-t border-line pt-4 dark:border-line-dark">
-                <button className="btn-secondary" type="button" onClick={handleSync} disabled={syncing}>
-                  {syncing ? "Checking…" : "Sync"}
-                </button>
-                <p className="mt-2 text-xs text-muted dark:text-muted-dark">
-                  Checks this case right now instead of waiting on the automatic background check (runs every few
-                  minutes on its own either way).
-                </p>
-                {syncResult && (
-                  <ul className="mt-2 list-inside list-disc text-xs text-muted dark:text-muted-dark">
-                    {syncResult.map((a, i) => (
-                      <li key={i}>{a}</li>
-                    ))}
-                  </ul>
-                )}
-                {syncError && <p className="mt-2 text-sm text-status-undetermined">{syncError}</p>}
-              </div>
-            )}
           </div>
         </section>
       )}
