@@ -79,7 +79,33 @@ export async function resolvePartyToken(rawToken: string): Promise<{ caseId: str
   return { caseId: kase.id, role: isClaimant ? "claimant" : "respondent" };
 }
 
-export const PARTY_SESSION_COOKIE = "anchor_party_session";
+// Cookie name is scoped to both the case AND the resolved role — not a
+// single fixed name. A single shared name meant that opening the
+// respondent's link in the same browser that already held a claimant
+// session for the same case would silently overwrite it: the browser can
+// only hold one value per cookie name, so whichever party link was
+// opened (or refreshed) most recently won, and the other tab would then
+// misattribute all of its actions to the wrong role — exactly the
+// "claims I already submitted evidence" confusion this fixes. Scoping by
+// case+role lets both roles hold independent sessions in the same
+// browser (useful for an org testing both party links itself, not just
+// the two-different-people case).
+const PARTY_SESSION_COOKIE_PREFIX = "anchor_party_session";
+
+export function partySessionCookieName(caseId: string, role: PartyRole): string {
+  return `${PARTY_SESSION_COOKIE_PREFIX}_${caseId}_${role}`;
+}
+
+/** Reads whichever role's session cookie is present for this case (a request only ever carries the one relevant to whichever party link it was opened from). */
+export function readPartySessionCookie(
+  cookies: { get(name: string): { value: string } | undefined },
+  caseId: string
+): string | undefined {
+  return (
+    cookies.get(partySessionCookieName(caseId, "claimant"))?.value ??
+    cookies.get(partySessionCookieName(caseId, "respondent"))?.value
+  );
+}
 
 /**
  * Exchanges a raw (still-valid) party token for a short-lived session —
@@ -123,28 +149,29 @@ export async function resolvePartySession(cookieValue: string | undefined): Prom
 }
 
 /**
- * The auth check every /api/public/cases/:id/* route should use: prefer
- * the short-lived session cookie (the path a browser hitting the public
- * case page ends up on after exchanging its token — see the session
- * route), fall back to a raw token if the caller supplied one directly
- * (programmatic callers that never visit the page have no reason to
- * exchange first, and requiring it would just be friction with no
- * security benefit for a caller that already isn't a browser leaking
- * URLs into history). Either way the result is scoped to the specific
- * caseId in the URL, same as before.
+ * The auth check every /api/public/cases/:id/* route should use: an
+ * explicit raw token wins whenever the caller supplies one — that's the
+ * caller directly asserting "I am whoever this specific link belongs
+ * to," which must never be overridden by a stale cookie from a
+ * different party link opened earlier in the same browser (see
+ * readPartySessionCookie's comment). Only when no token is supplied does
+ * this fall back to the session cookie — the path a browser lands on
+ * after its one-time exchange, for every request after the token has
+ * already been stripped from the URL. Either way the result is scoped to
+ * the specific caseId in the URL.
  */
 export async function resolvePartyAuth(
   sessionCookieValue: string | undefined,
   rawToken: string | undefined,
   caseId: string
 ): Promise<{ role: PartyRole } | null> {
-  const session = await resolvePartySession(sessionCookieValue);
-  if (session && session.caseId === caseId) return { role: session.role };
-
   if (rawToken) {
     const resolved = await resolvePartyToken(rawToken);
     if (resolved && resolved.caseId === caseId) return { role: resolved.role };
   }
+
+  const session = await resolvePartySession(sessionCookieValue);
+  if (session && session.caseId === caseId) return { role: session.role };
 
   return null;
 }

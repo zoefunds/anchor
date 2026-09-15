@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
+import { resolvePartyAuth, readPartySessionCookie } from "@/lib/party-auth";
 import { createDiditSession } from "@/lib/didit";
 import { secureAppOrigin } from "@/lib/app-env";
 
@@ -16,7 +16,7 @@ import { secureAppOrigin } from "@/lib/app-env";
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token } = await req.json().catch(() => ({}));
 
-  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const sessionCookie = readPartySessionCookie(req.cookies, (await params).id);
   const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 // from the hosted flow in the same browser session).
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const token = req.nextUrl.searchParams.get("token") ?? undefined;
-  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const sessionCookie = readPartySessionCookie(req.cookies, (await params).id);
   const resolved = await resolvePartyAuth(sessionCookie, token, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });

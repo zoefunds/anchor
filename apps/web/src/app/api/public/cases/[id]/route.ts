@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
+import { resolvePartyAuth, readPartySessionCookie } from "@/lib/party-auth";
 import { resolveEvidenceUri } from "@/lib/storage";
 import { toPartyVisibleReviewStatus } from "@/lib/escalation";
 import { getPolicy } from "@/lib/policies";
@@ -24,7 +24,7 @@ const PUBLIC_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 // about which org filed it or its API keys/members/billing.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const token = req.nextUrl.searchParams.get("token") ?? undefined;
-  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const sessionCookie = readPartySessionCookie(req.cookies, (await params).id);
   const resolved = await resolvePartyAuth(sessionCookie, token, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "token query parameter or session is required" }, { status: 401 });

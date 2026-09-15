@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkEvidenceSubmittable } from "@/lib/evidence-validation";
-import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
+import { resolvePartyAuth, readPartySessionCookie } from "@/lib/party-auth";
 import { verifyPartySignature, evidenceSigningMessage } from "@/lib/party-signing";
 import { logAction } from "@/lib/audit";
 
@@ -27,7 +27,7 @@ import { logAction } from "@/lib/audit";
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token, type, content, signature } = await req.json();
 
-  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const sessionCookie = readPartySessionCookie(req.cookies, (await params).id);
   const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     // Same response whether the token/session is simply invalid or

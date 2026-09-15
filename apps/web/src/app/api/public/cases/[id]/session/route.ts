@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exchangePartyTokenForSession, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
+import { exchangePartyTokenForSession, partySessionCookieName } from "@/lib/party-auth";
 
 // POST /api/public/cases/:id/session — exchanges a raw, still-valid party
 // token for a short-lived HttpOnly session cookie (see
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const res = NextResponse.json({ role: exchanged.role, expiresAt: exchanged.expiresAt });
-  res.cookies.set(PARTY_SESSION_COOKIE, exchanged.cookieValue, {
+  res.cookies.set(partySessionCookieName(exchanged.caseId, exchanged.role), exchanged.cookieValue, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",

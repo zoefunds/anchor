@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
+import { resolvePartyAuth, readPartySessionCookie } from "@/lib/party-auth";
 import { normalizeSettlementAddress, authorizeDepositOnChain } from "@/lib/case-settlement";
 import { verifyPartySignature, settlementAddressSigningMessage } from "@/lib/party-signing";
 import { logAction } from "@/lib/audit";
@@ -26,7 +26,7 @@ import { logAction } from "@/lib/audit";
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { token, address, signature } = await req.json();
 
-  const sessionCookie = req.cookies.get(PARTY_SESSION_COOKIE)?.value;
+  const sessionCookie = readPartySessionCookie(req.cookies, (await params).id);
   const resolved = await resolvePartyAuth(sessionCookie, typeof token === "string" ? token : undefined, (await params).id);
   if (!resolved) {
     return NextResponse.json({ error: "invalid token or session" }, { status: 401 });

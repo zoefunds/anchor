@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { generatePartyToken } from "@/lib/party-auth";
+import { generatePartyToken, partySessionCookieName } from "@/lib/party-auth";
 import { GET as getPublicCase } from "@/app/api/public/cases/[id]/route";
 import { POST as postEvidence } from "@/app/api/public/cases/[id]/evidence/route";
 import { POST as postSession } from "@/app/api/public/cases/[id]/session/route";
@@ -129,12 +129,13 @@ describe("session exchange — short-lived cookie replaces the long-lived token"
     });
     const exchangeRes = await postSession(exchangeReq, { params: { id: kase.id } });
     expect(exchangeRes.status).toBe(200);
-    const setCookie = exchangeRes.cookies.get("anchor_party_session");
+    const cookieName = partySessionCookieName(kase.id, "claimant");
+    const setCookie = exchangeRes.cookies.get(cookieName);
     expect(setCookie?.value).toBeTruthy();
 
     // No token in this request at all — only the exchanged cookie.
     const readReq = new NextRequest(`http://test/api/public/cases/${kase.id}`, {
-      headers: { cookie: `anchor_party_session=${setCookie!.value}` },
+      headers: { cookie: `${cookieName}=${setCookie!.value}` },
     });
     const readRes = await getPublicCase(readReq, { params: { id: kase.id } });
     expect(readRes.status).toBe(200);
@@ -149,10 +150,14 @@ describe("session exchange — short-lived cookie replaces the long-lived token"
       body: JSON.stringify({ token: tokenA }),
     });
     const exchangeRes = await postSession(exchangeReq, { params: { id: caseA.id } });
-    const setCookie = exchangeRes.cookies.get("anchor_party_session");
+    const cookieName = partySessionCookieName(caseA.id, "claimant");
+    const setCookie = exchangeRes.cookies.get(cookieName);
 
+    // Deliberately sent under caseB's own cookie name for this test's
+    // purposes — resolvePartySession still checks the session record's
+    // stored caseId, not just which cookie name it arrived under.
     const readReq = new NextRequest(`http://test/api/public/cases/${caseB.id}`, {
-      headers: { cookie: `anchor_party_session=${setCookie!.value}` },
+      headers: { cookie: `${partySessionCookieName(caseB.id, "claimant")}=${setCookie!.value}` },
     });
     const readRes = await getPublicCase(readReq, { params: { id: caseB.id } });
     expect(readRes.status).toBe(401);
