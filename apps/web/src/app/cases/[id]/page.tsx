@@ -365,6 +365,19 @@ export default function CaseDetailPage() {
     (policy?.requiredEvidence ?? []).filter((e) => !e.restrictedTo).map((e) => e.type)
   );
   const orgMissingTypes = missingTypes.filter((t) => orgFilableTypes.has(t));
+  // Appeal-time correction targets: org-fillable types that haven't
+  // already used their one appeal-window correction (server caps at 2
+  // total rows per type once APPEAL_WINDOW — see
+  // checkEvidenceSubmittable — since a case only ever gets one appeal
+  // window, this is "one original submission, one correction," not
+  // unlimited resubmission).
+  const submittedCounts = new Map<string, number>();
+  for (const e of kase?.evidence ?? []) {
+    submittedCounts.set(e.type, (submittedCounts.get(e.type) ?? 0) + 1);
+  }
+  const correctableTypes = requiredTypes.filter(
+    (t) => orgFilableTypes.has(t) && (submittedCounts.get(t) ?? 0) < 2
+  );
 
   // The select's bound value can go stale after a submission removes it
   // from the options list — a plain useState default doesn't auto-correct,
@@ -689,12 +702,16 @@ export default function CaseDetailPage() {
                 : " Use the Finalized sync button when you are ready to move the case forward."}
             </p>
 
-            {kase.canAppeal && requiredTypes.length > 0 && (
+            {kase.canAppeal && correctableTypes.length > 0 && (
               <form onSubmit={submitCorrection} className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
                 <p className="field-label">Correct an exhibit before appealing (optional)</p>
+                <p className="text-xs text-muted dark:text-muted-dark">
+                  One correction per exhibit for this appeal. Claimant/respondent statements can only be corrected by
+                  that party via their own party link.
+                </p>
                 <div className="flex gap-3">
-                  <select className="field-input" value={correctType || requiredTypes[0]} onChange={(e) => setCorrectType(e.target.value)}>
-                    {requiredTypes.map((t) => (
+                  <select className="field-input" value={correctType || correctableTypes[0]} onChange={(e) => setCorrectType(e.target.value)}>
+                    {correctableTypes.map((t) => (
                       <option key={t} value={t}>
                         {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
                       </option>

@@ -55,13 +55,26 @@ export function checkEvidenceSubmittable(
   }
 
   // Outside an appeal window, a required type already on file can't be
-  // silently overwritten (audit integrity). During an appeal window, a
-  // resubmission is exactly the point — a party correcting or updating
-  // evidence before the re-adjudication runs — so it's allowed; the
-  // adjudication job picks the most recent row per type (see
-  // adjudication-service.ts).
-  if (!isAppealWindow && kase.evidence.some((e) => e.type === type)) {
-    return NextResponse.json({ error: `evidence of type ${type} already submitted for this case` }, { status: 409 });
+  // silently overwritten (audit integrity) — at most one submission.
+  // During the appeal window, a correction is exactly the point — a
+  // party updating their evidence before the re-adjudication runs — but
+  // it's still exactly one extra shot, not unlimited resubmission: a
+  // case has at most one appeal window ever (adjudication-service.ts's
+  // isAppeal path always lands on FINALIZED, never a second
+  // APPEAL_WINDOW), so capping at 2 total rows per type here is
+  // equivalent to "one original submission, one appeal correction," not
+  // an arbitrary number picked out of the air. The adjudication job
+  // picks the most recent row per type either way.
+  const maxSubmissions = isAppealWindow ? 2 : 1;
+  if (kase.evidence.filter((e) => e.type === type).length >= maxSubmissions) {
+    return NextResponse.json(
+      {
+        error: isAppealWindow
+          ? `evidence of type ${type} already has an appeal correction on file for this case`
+          : `evidence of type ${type} already submitted for this case`,
+      },
+      { status: 409 }
+    );
   }
 
   return null;

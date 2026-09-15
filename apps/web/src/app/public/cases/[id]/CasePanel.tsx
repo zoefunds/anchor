@@ -69,9 +69,17 @@ export function CasePanel({
   // server enforces the same restriction (see checkEvidenceSubmittable)
   // and used to surface as a confusing rejection when this was a
   // free-text field parties could mistype or misuse.
-  const presentTypes = new Set(kase.evidence.map((e) => e.type));
+  // At most one submission normally, or one plus one appeal correction —
+  // matches the server's own cap (see checkEvidenceSubmittable): a case
+  // has at most one appeal window ever, so this is never unlimited
+  // resubmission, just one extra shot during that single window.
+  const submittedCounts = new Map<string, number>();
+  for (const e of kase.evidence) {
+    submittedCounts.set(e.type, (submittedCounts.get(e.type) ?? 0) + 1);
+  }
+  const maxSubmissionsPerType = appealWindowOpen ? 2 : 1;
   const requiredEvidenceTypes = (kase.policy?.requiredEvidence ?? []).filter(
-    (t) => t.restrictedTo === kase.role && (appealWindowOpen || !presentTypes.has(t.type))
+    (t) => t.restrictedTo === kase.role && (submittedCounts.get(t.type) ?? 0) < maxSubmissionsPerType
   );
 
   useEffect(() => {
