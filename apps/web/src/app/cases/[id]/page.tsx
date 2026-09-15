@@ -32,6 +32,8 @@ interface Decision {
   relayNotificationTxHash: string | null;
   relayError: string | null;
   relayAttempts: number;
+  relayClaimedAt?: string | null;
+  pendingSolanaAttestations?: unknown[];
 }
 
 interface CaseDetail {
@@ -1152,7 +1154,10 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
   const d = kase.decision;
   const dispatched = Boolean(d?.relayTxHash);
   const reconciled = d?.relayTxHash === "reconciled:onchain";
-  const failed = Boolean(d?.relayError) && !dispatched;
+  const solanaAttestationCount = kase.settlementChain === "solanatestnet" ? d?.pendingSolanaAttestations?.length ?? 0 : null;
+  const solanaQuorumCollected = solanaAttestationCount !== null && solanaAttestationCount >= 2;
+  const failed = Boolean(d?.relayError) && !dispatched && !solanaQuorumCollected;
+  const relayInFlight = Boolean(d?.relayClaimedAt) && !dispatched;
 
   return (
     <section className="mt-10">
@@ -1214,6 +1219,8 @@ function SettlementPanel({ kase }: { kase: CaseDetail }) {
                   )}
                   {d.relayMessageId && <> · hyperlane message {d.relayMessageId}</>}
                 </>
+              ) : solanaQuorumCollected ? (
+                `Solana attestor signatures collected: ${solanaAttestationCount}/2${relayInFlight ? " — settlement relay in flight" : " — ready for manual sync"}`
               ) : d?.relayError ? (
                 `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
               ) : undefined
