@@ -42,6 +42,7 @@ function caseIdToBytes32(caseId: string): `0x${string}` {
 }
 
 const RPC_URL = "https://ethereum-sepolia.publicnode.com";
+const MAX_BROWSER_DEPOSIT_GAS = 1_000_000n;
 
 export default function DepositPage() {
   useEffect(() => {
@@ -98,12 +99,20 @@ function DepositPageInner() {
         functionName: "deposit",
         args: [caseIdToBytes32(kase.id), kase.settlement.escrowId as `0x${string}`, expectedClaimant, respondentAddress],
       });
+      const estimatedGas = await publicClient.estimateGas({
+        account: expectedClaimant,
+        to: escrowAddress,
+        data,
+        value: BigInt(kase.settlement.expectedAmountAtto),
+      });
+      const gas = (estimatedGas * 12n) / 10n;
       const hash = await walletClient.sendTransaction({
         account: expectedClaimant,
         to: escrowAddress,
         data,
         value: BigInt(kase.settlement.expectedAmountAtto),
         chain: sepolia,
+        gas: gas > MAX_BROWSER_DEPOSIT_GAS ? MAX_BROWSER_DEPOSIT_GAS : gas,
       });
       setTxHash(hash);
       setIsSigning(false);
