@@ -1,5 +1,16 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
+import { loadEnvConfig } from "@next/env";
+
+// Vitest, unlike `next dev`/`next build`, never loads .env on its own —
+// DATABASE_URL and everything else in apps/web/.env would otherwise only
+// exist for the app itself, not for `npx vitest run`, and every
+// integration test would fail with "Environment variable not found:
+// DATABASE_URL" even though the exact same file already configures the
+// app correctly. @next/env is the same loader Next.js's own CLI uses
+// (.env.local, .env.<APP_ENV>, .env, in that precedence), so this
+// matches `npm run dev`'s env exactly rather than reimplementing it.
+loadEnvConfig(path.resolve(__dirname), true);
 
 // Integration tests hit a real local Postgres (same DATABASE_URL as
 // `npm run dev`, see .env) through the actual route handlers and

@@ -1,5 +1,10 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
+import { loadEnvConfig } from "@next/env";
+
+// See vitest.config.ts's identical line for why this is needed at all —
+// Vitest never loads apps/web/.env on its own.
+loadEnvConfig(path.resolve(__dirname), true);
 
 // Priority 1 of the settlement-readiness gaps: a real Anvil-based EVM
 // integration suite, kept as its own vitest project/config (not lumped

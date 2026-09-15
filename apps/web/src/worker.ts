@@ -23,10 +23,34 @@
 // at production Redis with a different database underneath it; this
 // exits immediately instead of silently consuming the wrong queue.
 
-import { startAdjudicationWorker } from "@/lib/worker";
+// `tsx src/worker.ts` doesn't load .env the way `next dev`/`next build`
+// does — without this, DATABASE_URL/REDIS_URL/etc only exist if the
+// shell that launched this process happened to export them itself, and
+// this fails at Prisma's/queue.ts's very first read of process.env with
+// an opaque "Environment variable not found: DATABASE_URL" (or
+// APP_ENV's own equivalent check) instead of anything that points at the
+// real cause. Written as plain `require()`s, not `import`, and kept
+// above every other statement: ES module imports are hoisted and
+// evaluated before any interleaved top-level code regardless of source
+// order, so an `import "@/lib/worker"` below this would still run before
+// loadEnvConfig() if written as an import — require() is the only way to
+// guarantee this actually executes first.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { loadEnvConfig } = require("@next/env");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const path = require("path");
+loadEnvConfig(path.resolve(__dirname, "../"), true);
+
+// Type-only — erased entirely at compile time, so unlike a value import
+// it never participates in module evaluation order.
+import type { startAdjudicationWorker as StartAdjudicationWorker } from "@/lib/worker";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { startAdjudicationWorker } = require("@/lib/worker") as {
+  startAdjudicationWorker: typeof StartAdjudicationWorker;
+};
 
 startAdjudicationWorker()
-  .then((worker) => {
+  .then((worker: Awaited<ReturnType<typeof StartAdjudicationWorker>>) => {
     // eslint-disable-next-line no-console
     console.log("worker: started, connected to Redis, waiting for jobs");
 
@@ -39,7 +63,7 @@ startAdjudicationWorker()
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
   })
-  .catch((err) => {
+  .catch((err: unknown) => {
     // eslint-disable-next-line no-console
     console.error("worker: failed to start:", err instanceof Error ? err.message : err);
     process.exit(1);

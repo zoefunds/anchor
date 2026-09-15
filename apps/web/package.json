@@ -40,6 +40,7 @@
     "viem": "^2.56.5"
   },
   "devDependencies": {
+    "@next/env": "^15.5.24",
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.0",
     "autoprefixer": "^10.5.4",
