@@ -115,6 +115,7 @@ export function CasePanel({
 
   const myAddress = kase.role === "claimant" ? kase.settlement?.claimantAddress : kase.role === "respondent" ? kase.settlement?.respondentAddress : undefined;
   const needsMyAddress = kase.settlement && kase.settlement.status === "PENDING_DEPOSIT" && kase.role && !myAddress;
+  const payoutAddressPlaceholder = kase.settlement?.chain === "solanatestnet" ? "Base58 Solana address" : "0x...";
 
   return (
     <div>
@@ -166,7 +167,7 @@ export function CasePanel({
                   <span className="field-label">Your payout address</span>
                   <input
                     className="field-input font-mono"
-                    placeholder="0x…"
+                    placeholder={payoutAddressPlaceholder}
                     value={payoutAddress}
                     onChange={(e) => setPayoutAddressInput(e.target.value)}
                     required
