@@ -48,7 +48,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "case not found" }, { status: 404 });
   }
 
-  const submitError = checkEvidenceSubmittable(kase, type);
+  const submitError = checkEvidenceSubmittable(kase, type, resolved.role);
   if (submitError) return submitError;
 
   let signatureVerified = false;

@@ -46,6 +46,7 @@ export interface PublicSettlement {
 export interface PublicPolicy {
   evidenceDeadlineHours: number;
   appealWindowHours: number;
+  requiredEvidence: { type: string; label: string; restrictedTo?: "claimant" | "respondent" }[];
 }
 
 export interface PublicCase {

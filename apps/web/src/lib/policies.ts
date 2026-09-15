@@ -5,12 +5,25 @@
 // enough to validate requests and drive the UI before a case ever reaches
 // GenLayer.
 
+export interface RequiredEvidence {
+  type: string;
+  label: string;
+  /**
+   * Who is allowed to file this exhibit. Undefined means the filing
+   * organization only (the case documentation it already holds — task
+   * specs, delivery payloads, invoice terms, etc). "claimant"/"respondent"
+   * restrict it to that party's own authenticated submission (their side
+   * of the story) — neither the org nor the other party can file it.
+   */
+  restrictedTo?: "claimant" | "respondent";
+}
+
 export interface PolicyDefinition {
   id: string;
   version: string;
   label: string;
   description: string;
-  requiredEvidence: { type: string; label: string }[];
+  requiredEvidence: RequiredEvidence[];
 }
 
 export const POLICIES: Record<string, PolicyDefinition> = {
@@ -22,8 +35,8 @@ export const POLICIES: Record<string, PolicyDefinition> = {
     requiredEvidence: [
       { type: "task_spec", label: "Task spec" },
       { type: "delivery_payload", label: "Delivery payload" },
-      { type: "claimant_statement", label: "Claimant statement" },
-      { type: "respondent_statement", label: "Respondent statement" },
+      { type: "claimant_statement", label: "Claimant statement", restrictedTo: "claimant" },
+      { type: "respondent_statement", label: "Respondent statement", restrictedTo: "respondent" },
     ],
   },
   escrow_release_v1: {
@@ -34,8 +47,8 @@ export const POLICIES: Record<string, PolicyDefinition> = {
     requiredEvidence: [
       { type: "milestone_spec", label: "Milestone spec" },
       { type: "deliverable", label: "Deliverable" },
-      { type: "claimant_statement", label: "Claimant statement" },
-      { type: "respondent_statement", label: "Respondent statement" },
+      { type: "claimant_statement", label: "Claimant statement", restrictedTo: "claimant" },
+      { type: "respondent_statement", label: "Respondent statement", restrictedTo: "respondent" },
     ],
   },
   invoice_dispute_v1: {
@@ -46,8 +59,8 @@ export const POLICIES: Record<string, PolicyDefinition> = {
     requiredEvidence: [
       { type: "invoice_terms", label: "Invoice terms" },
       { type: "delivery_record", label: "Delivery record" },
-      { type: "claimant_statement", label: "Claimant statement" },
-      { type: "respondent_statement", label: "Respondent statement" },
+      { type: "claimant_statement", label: "Claimant statement", restrictedTo: "claimant" },
+      { type: "respondent_statement", label: "Respondent statement", restrictedTo: "respondent" },
     ],
   },
 };

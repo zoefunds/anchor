@@ -25,6 +25,16 @@ interface Evidence {
   storageRef: string;
   mimeType: string | null;
   createdAt: string;
+  submittedBy: "claimant" | "respondent" | null;
+  attributionSource: string;
+}
+
+function evidenceSourceLabel(e: Evidence): string {
+  if (e.attributionSource === "claimant_authenticated") return "Claimant";
+  if (e.attributionSource === "respondent_authenticated") return "Respondent";
+  if (e.submittedBy === "claimant") return "Claimant (via org)";
+  if (e.submittedBy === "respondent") return "Respondent (via org)";
+  return "Your organization";
 }
 
 interface Decision {
@@ -66,7 +76,7 @@ interface CaseDetail {
 interface PolicyDefinition {
   id: string;
   label: string;
-  requiredEvidence: { type: string; label: string }[];
+  requiredEvidence: { type: string; label: string; restrictedTo?: "claimant" | "respondent" }[];
 }
 
 interface OrgMember {
@@ -328,7 +338,12 @@ export default function CaseDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    if (kase?.status === "ADJUDICATING" || kase?.status === "RE_ADJUDICATING") {
+    if (
+      kase?.status === "ADJUDICATING" ||
+      kase?.status === "RE_ADJUDICATING" ||
+      kase?.status === "EVIDENCE_COLLECTION" ||
+      kase?.status === "APPEAL_WINDOW"
+    ) {
       pollRef.current = setInterval(load, 5000);
       return () => {
         if (pollRef.current) clearInterval(pollRef.current);
@@ -343,6 +358,13 @@ export default function CaseDetailPage() {
 
   const presentTypes = new Set(kase?.evidence.map((e) => e.type) ?? []);
   const missingTypes = requiredTypes.filter((t) => !presentTypes.has(t));
+  // Exhibits the org itself may file here — party statements are
+  // restricted to the claimant/respondent's own authenticated submission
+  // via their party link, never the org on their behalf.
+  const orgFilableTypes = new Set(
+    (policy?.requiredEvidence ?? []).filter((e) => !e.restrictedTo).map((e) => e.type)
+  );
+  const orgMissingTypes = missingTypes.filter((t) => orgFilableTypes.has(t));
 
   // The select's bound value can go stale after a submission removes it
   // from the options list — a plain useState default doesn't auto-correct,
@@ -725,7 +747,10 @@ export default function CaseDetailPage() {
                 {exhibitLetters[e.type] ?? "—"}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="field-label">{evidenceLabels[e.type] ?? e.type}</p>
+                <p className="field-label">
+                  {evidenceLabels[e.type] ?? e.type}{" "}
+                  <span className="text-muted dark:text-muted-dark">— filed by {evidenceSourceLabel(e)}</span>
+                </p>
                 {e.mimeType?.startsWith("image/") ? (
                   <a href={e.storageRef} target="_blank" rel="noreferrer" className="mt-1.5 block">
                     <img
@@ -753,8 +778,12 @@ export default function CaseDetailPage() {
           ))}
         </div>
 
-        {kase.status === "EVIDENCE_COLLECTION" && missingTypes.length > 0 && (
+        {kase.status === "EVIDENCE_COLLECTION" && orgMissingTypes.length > 0 && (
           <div className="mt-8">
+            <p className="mb-4 text-sm text-muted dark:text-muted-dark">
+              Filing here submits on behalf of your organization directly. Claimant/respondent statements can only be
+              filed by that party via their own party link above — not here.
+            </p>
             <div className="mb-4 flex gap-1 font-mono text-xs">
               <button
                 type="button"
@@ -781,7 +810,7 @@ export default function CaseDetailPage() {
                     value={evidenceType}
                     onChange={(e) => setEvidenceType(e.target.value)}
                   >
-                    {missingTypes.map((t) => (
+                    {orgMissingTypes.map((t) => (
                       <option key={t} value={t}>
                         {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
                       </option>
@@ -809,7 +838,7 @@ export default function CaseDetailPage() {
                     value={evidenceType}
                     onChange={(e) => setEvidenceType(e.target.value)}
                   >
-                    {missingTypes.map((t) => (
+                    {orgMissingTypes.map((t) => (
                       <option key={t} value={t}>
                         {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
                       </option>

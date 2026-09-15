@@ -54,7 +54,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   const uploadedFile = file as unknown as { arrayBuffer(): Promise<ArrayBuffer>; name: string; type: string };
 
-  const submitError = checkEvidenceSubmittable(kase, type);
+  const submitError = checkEvidenceSubmittable(kase, type, "organization");
   if (submitError) return submitError;
 
   const bytes = Buffer.from(await uploadedFile.arrayBuffer());

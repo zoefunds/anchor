@@ -40,7 +40,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // the file-upload route already had.
   const validatedSubmittedBy = submittedBy === "claimant" || submittedBy === "respondent" ? submittedBy : null;
 
-  const submitError = checkEvidenceSubmittable(kase, type);
+  const submitError = checkEvidenceSubmittable(kase, type, "organization");
   if (submitError) return submitError;
 
   const contentHash = createHash("sha256").update(content).digest("hex");

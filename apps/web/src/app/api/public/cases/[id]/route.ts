@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { resolvePartyAuth, PARTY_SESSION_COOKIE } from "@/lib/party-auth";
 import { resolveEvidenceUri } from "@/lib/storage";
 import { toPartyVisibleReviewStatus } from "@/lib/escalation";
+import { getPolicy } from "@/lib/policies";
 
 const PUBLIC_EVIDENCE_URL_TTL_SECONDS = 10 * 60;
 
@@ -61,6 +62,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       ? {
           evidenceDeadlineHours: kase.policyVersionRecord.evidenceDeadlineHours,
           appealWindowHours: kase.policyVersionRecord.appealWindowHours,
+          // Type/label only (no allowedOutcomes/velocity limits) — lets the
+          // page offer a dropdown of accepted evidence types instead of a
+          // free-text field parties can typo, which the server otherwise
+          // rejects with an opaque 400 (see checkEvidenceSubmittable).
+          requiredEvidence: getPolicy(kase.policyId)?.requiredEvidence ?? [],
         }
       : null,
     // The resolving party's own role — lets the page render "set YOUR

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { StatusStamp } from "@/components/StatusStamp";
 import {
   PublicCase,
@@ -36,7 +36,7 @@ export function CasePanel({
   const [addressError, setAddressError] = useState<string | null>(null);
   const [addressSetNote, setAddressSetNote] = useState<string | null>(null);
 
-  const [evidenceType, setEvidenceType] = useState("statement");
+  const [evidenceType, setEvidenceType] = useState("");
   const [evidenceText, setEvidenceText] = useState("");
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [submittingEvidence, setSubmittingEvidence] = useState(false);
@@ -59,6 +59,24 @@ export function CasePanel({
 
   const appealWindowClosesAt = latestDecision?.appealWindowClosesAt ? new Date(latestDecision.appealWindowClosesAt) : null;
   const appealWindowOpen = !!appealWindowClosesAt && appealWindowClosesAt.getTime() > now.getTime();
+
+  // Only types this party may actually file: policy-defined types
+  // restricted to the *other* role, or org-only types (documentation the
+  // filing org holds, e.g. task spec/invoice terms), are excluded — the
+  // server enforces the same restriction (see checkEvidenceSubmittable)
+  // and used to surface as a confusing rejection when this was a
+  // free-text field parties could mistype or misuse.
+  const presentTypes = new Set(kase.evidence.map((e) => e.type));
+  const requiredEvidenceTypes = (kase.policy?.requiredEvidence ?? []).filter(
+    (t) => t.restrictedTo === kase.role && (appealWindowOpen || !presentTypes.has(t.type))
+  );
+
+  useEffect(() => {
+    if (requiredEvidenceTypes.length > 0 && !requiredEvidenceTypes.some((t) => t.type === evidenceType)) {
+      setEvidenceType(requiredEvidenceTypes[0].type);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requiredEvidenceTypes.map((t) => t.type).join(",")]);
 
   async function handleSetAddress(e: React.FormEvent) {
     e.preventDefault();
@@ -254,16 +272,25 @@ export function CasePanel({
               Evidence deadline: {formatDeadline(evidenceDeadline, now)}
             </p>
           )}
-          {evidenceWindowOpen ? (
+          {requiredEvidenceTypes.length === 0 ? (
+            <p className="dossier text-sm text-muted dark:text-muted-dark">
+              You've already submitted your statement for this case.
+            </p>
+          ) : evidenceWindowOpen ? (
             <form onSubmit={handleSubmitEvidence} className="dossier flex flex-col gap-3">
               <label className="flex flex-col gap-2">
                 <span className="field-label">Type</span>
-                <input
+                <select
                   className="field-input"
                   value={evidenceType}
                   onChange={(e) => setEvidenceType(e.target.value)}
-                  placeholder="statement, receipt, screenshot…"
-                />
+                >
+                  {requiredEvidenceTypes.map((t) => (
+                    <option key={t.type} value={t.type}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="flex flex-col gap-2">
                 <span className="field-label">Statement (or attach a file below)</span>
