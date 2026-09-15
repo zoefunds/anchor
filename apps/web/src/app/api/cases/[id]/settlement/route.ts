@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { resolveOrgFromRequest, authErrorResponse, requireOwner, requireScope } from "@/lib/auth";
 import { canAccessCase } from "@/lib/case-access";
 import { logAction } from "@/lib/audit";
 import { toAtomicAmount } from "@/lib/money";
-import { deriveEscrowIdForCase, assertEscrowBoundToDecisionRelay, SettlementIntegrationError } from "@/lib/case-settlement";
+import { assertEscrowBoundToDecisionRelay, SettlementIntegrationError } from "@/lib/case-settlement";
 import { assertSolanaEscrowBoundToDecisionRelay, toLamports, SolanaEscrowError } from "@/lib/solana-escrow";
 
 // GET /api/cases/:id/settlement — current binding/deposit/settlement
@@ -103,7 +104,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     integration.chain === "solanatestnet"
       ? toLamports(kase.amount.toString()).toString()
       : toAtomicAmount(kase.amount.toString(), integration.assetDecimals).toString();
-  const escrowId = deriveEscrowIdForCase(kase);
+  // EVM Escrow.authorizeDeposit() is one-shot per escrowId forever. A
+  // deterministic id derived only from caseId can collide with a prior
+  // abandoned/rebound authorization for the same case, leaving a new
+  // binding impossible to deposit into. Generate a fresh server-side
+  // id for each EVM binding; Solana keeps its explicit case id string
+  // because the escrow PDA is seeded from it.
+  const escrowId = integration.chain === "solanatestnet" ? kase.settlementSolanaCaseId! : (`0x${randomBytes(32).toString("hex")}` as const);
 
   const settlement = await prisma.$transaction(async (tx) => {
     const created = await tx.caseSettlement.create({

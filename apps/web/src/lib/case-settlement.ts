@@ -158,7 +158,7 @@ export async function authorizeDepositOnChain(caseSettlementId: string): Promise
   const account = privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as Hex);
   const walletClient = createWalletClient({ account, chain: sepolia, transport: http(process.env.HYPERLANE_RELAY_RPC_URL) });
 
-  const escrowIdBytes32 = deriveEscrowId(cs.caseId);
+  const escrowIdBytes32 = cs.escrowId as Hex;
   const caseIdBytes32 = caseIdToBytes32(cs.caseId);
 
   const txHash = await walletClient.writeContract({
@@ -307,7 +307,7 @@ export async function checkAndConfirmDeposit(caseSettlementId: string): Promise<
   });
 
   const client = getPublicClient(cs.integration.chain);
-  const escrowIdBytes32 = deriveEscrowId(cs.caseId);
+  const escrowIdBytes32 = cs.escrowId as Hex;
   const [status, claimant, respondent, amount] = (await client.readContract({
     address: cs.integration.escrowContractAddress as Address,
     abi: depositsAbiForVersion(cs.integration.escrowVersion),
