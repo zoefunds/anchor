@@ -190,7 +190,7 @@ export async function countValidDistinctSigners(
   relayAddress: Address,
   hash: Hex,
   signatures: Hex[]
-): Promise<{ validCount: number; distinctSigners: Address[] }> {
+): Promise<{ validCount: number; distinctSigners: Address[]; validSignatures: Hex[] }> {
   const recovered = await Promise.all(
     signatures.map(async (signature) => {
       try {
@@ -205,7 +205,25 @@ export async function countValidDistinctSigners(
   const membership = await Promise.all(uniqueCandidates.map((addr) => isRegisteredAttestor(relayAddress, addr as Address)));
 
   const distinctSigners = uniqueCandidates.filter((_, i) => membership[i]) as Address[];
-  return { validCount: distinctSigners.length, distinctSigners };
+  // One signature per distinct valid signer (the first that recovered to
+  // it) — the on-chain contract requires attestationSignatures.length <=
+  // attestorCount and reverts outright ("too many signatures supplied")
+  // otherwise. Raw `signatures` can exceed that: duplicate/stale entries
+  // accumulate in Decision.pendingAttestationSignatures across retries
+  // (a real incident — an array that only ever grows, never dedupes),
+  // plus the backend's own freshly-signed copy every call. Distinct
+  // valid signers can never exceed attestorCount by construction (each
+  // is independently confirmed via isRegisteredAttestor above), so
+  // submitting exactly this deduped list is always within the cap.
+  const seen = new Set<string>();
+  const validSignatures: Hex[] = [];
+  for (let i = 0; i < signatures.length; i++) {
+    const addr = recovered[i]?.toLowerCase();
+    if (!addr || seen.has(addr) || !distinctSigners.includes(addr as Address)) continue;
+    seen.add(addr);
+    validSignatures.push(signatures[i]);
+  }
+  return { validCount: distinctSigners.length, distinctSigners, validSignatures };
 }
 
 // GenLayer isn't a Hyperlane domain (checked - not supported by Hyperlane
@@ -571,7 +589,11 @@ export async function dispatchDecisionForCase(
     // the two ways length alone lies: duplicate/re-encoded signatures
     // from one signer, and stale signatures from an attestor governance
     // has since removed).
-    const { validCount } = await countValidDistinctSigners(params.settlementContract as Address, attestationHash, attestationSignatures);
+    const { validCount, validSignatures } = await countValidDistinctSigners(
+      params.settlementContract as Address,
+      attestationHash,
+      attestationSignatures
+    );
     if (validCount < threshold) {
       throw new InsufficientAttestorSignaturesError(attestationHash, validCount, threshold);
     }
@@ -585,7 +607,11 @@ export async function dispatchDecisionForCase(
       proofHash: decisionHashBytes32,
       settlementTargetAddr,
       deadline,
-      attestationSignatures,
+      // Deduped to one signature per distinct valid signer, never the
+      // raw concatenation — see countValidDistinctSigners's own comment
+      // for why the raw array can exceed the contract's attestorCount
+      // cap and revert with "too many signatures supplied".
+      attestationSignatures: validSignatures,
     });
 
     // Best-effort, non-blocking Hyperlane notification — same pattern as
