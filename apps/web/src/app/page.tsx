@@ -35,7 +35,7 @@ export default function Home() {
           </span>
         </div>
 
-        <dl className="mt-20 grid grid-cols-3 gap-8 border-t border-line pt-8 dark:border-line-dark">
+        <dl className="mt-20 grid grid-cols-1 gap-8 border-t border-line pt-8 dark:border-line-dark sm:grid-cols-3">
           <div>
             <dt className="kicker mb-1">Evidence</dt>
             <dd className="text-sm text-muted dark:text-muted-dark">

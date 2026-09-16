@@ -108,7 +108,7 @@ export default function ReliabilityPage() {
       {observations && (
         <section className="mt-10">
           <div className="dossier">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div>
                 <p className="field-label">Observations</p>
                 <p className="mt-1 font-mono text-2xl text-ink-950 dark:text-ink">{observations.length}</p>
