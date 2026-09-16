@@ -39,7 +39,7 @@ export async function GET() {
     });
   } catch {
     return NextResponse.json(
-      { environment: "TESTNET — no real value", generatedAt: new Date().toISOString(), error: "reliability window temporarily unavailable" },
+      { environment: "TESTNET, no real value", generatedAt: new Date().toISOString(), error: "reliability window temporarily unavailable" },
       { status: 503 }
     );
   }

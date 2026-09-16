@@ -61,7 +61,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   const settlement = kase.settlement;
   if (!settlement) {
-    return NextResponse.json({ error: "this case has no settlement binding yet — nothing to set an address on" }, { status: 409 });
+    return NextResponse.json({ error: "this case has no settlement binding yet, nothing to set an address on" }, { status: 409 });
   }
   // Once a deposit is confirmed on-chain, the addresses that deposit is
   // locked to are exactly what Escrow.sol will ever pay out to — a
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // further address change past that point would silently desync the
   // app's record from what the chain will actually ever pay out to.
   if (settlement.claimantAddress && settlement.respondentAddress) {
-    return NextResponse.json({ error: "both settlement addresses are already set and locked in — this can no longer be changed" }, { status: 409 });
+    return NextResponse.json({ error: "both settlement addresses are already set and locked in, this can no longer be changed" }, { status: 409 });
   }
 
   const field = resolved.role === "claimant" ? "claimantAddress" : "respondentAddress";

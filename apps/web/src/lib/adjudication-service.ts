@@ -750,7 +750,7 @@ export async function syncCase(caseId: string, step: SyncCaseStep = "all"): Prom
   if ((step === "all" || step === "finalization") && kase.status === "APPEAL_WINDOW" && latestDecision?.appealWindowClosesAt && latestDecision.appealWindowClosesAt <= new Date()) {
     const claimed = await prisma.case.updateMany({ where: { id: kase.id, status: "APPEAL_WINDOW" }, data: { status: "FINALIZED" } });
     if (claimed.count > 0) {
-      actions.push("appeal window closed — finalized");
+      actions.push("appeal window closed, finalized");
       dispatchWebhookEvent({ organizationId: kase.organizationId, event: "case.status_changed", data: { caseId: kase.id, status: "FINALIZED" } });
       kase = await prisma.case.findUniqueOrThrow({
         where: { id: caseId },
@@ -766,14 +766,14 @@ export async function syncCase(caseId: string, step: SyncCaseStep = "all"): Prom
     const after = await prisma.decision.findUniqueOrThrow({ where: { id: decision.id } });
     if (after.relayTxHash) actions.push(`settlement dispatched: ${after.relayTxHash}`);
     else if (after.relayError !== before) actions.push(`settlement not yet dispatched: ${after.relayError}`);
-    else actions.push("settlement retry attempted — no change yet");
+    else actions.push("settlement retry attempted, no change yet");
   }
 
   if (step === "adjudication") {
-    actions.push(kase.decisions[0] ? "adjudication already recorded" : `case is ${kase.status} — use submit for adjudication when evidence is complete`);
+    actions.push(kase.decisions[0] ? "adjudication already recorded" : `case is ${kase.status}, use submit for adjudication when evidence is complete`);
   }
 
-  if (actions.length === 0) actions.push("nothing to do — case is not waiting on any sync-eligible step");
+  if (actions.length === 0) actions.push("nothing to do, case is not waiting on any sync-eligible step");
   return { actions };
 }
 

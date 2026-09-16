@@ -28,7 +28,7 @@ function pct(n: number) {
 }
 
 function hours(n: number | null) {
-  return n === null ? "—" : `${n.toFixed(1)}h`;
+  return n === null ? "-" : `${n.toFixed(1)}h`;
 }
 
 export default function AnalyticsPage() {

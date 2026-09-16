@@ -128,7 +128,7 @@ export default function ReviewsQueuePage() {
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
           Cases a policy's human-review triggers (high value, fraud risk) or a manual escalation have
           pulled out of automatic settlement. A review needs 2 independent approvals when
-          dual-approval is required, or 1 otherwise — any single reject stops it immediately.
+          dual-approval is required, or 1 otherwise; any single reject stops it immediately.
         </p>
         <div className="mt-4 flex gap-4 font-mono text-xs">
           {(["PENDING", "APPROVED", "REJECTED", "all"] as const).map((s) => (
@@ -192,7 +192,7 @@ export default function ReviewsQueuePage() {
                     {r.approvals.map((a) => (
                       <li key={a.id}>
                         {a.decision} · {a.memberId}
-                        {a.reason ? ` — ${a.reason}` : ""}
+                        {a.reason ? ` (${a.reason})` : ""}
                       </li>
                     ))}
                   </ul>

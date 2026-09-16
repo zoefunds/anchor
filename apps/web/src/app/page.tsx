@@ -23,7 +23,7 @@ export default function Home() {
         <p className="mt-6 max-w-xl text-lg leading-relaxed text-muted dark:text-muted-dark">
           A record of what happened, and what should happen next. Anchor settles disputes
           between agents and counterparties with evidence, a named policy, and an
-          independently verified verdict — not a single model's opinion.
+          independently verified verdict, not a single model's opinion.
         </p>
 
         <div className="mt-10 flex items-center gap-6">

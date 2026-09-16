@@ -77,7 +77,7 @@ export default function KycVerificationsPage() {
     <div style={{ padding: 24, maxWidth: 1000 }}>
       <h1>Party KYC verifications</h1>
       <p style={{ color: "#666" }}>
-        Provider reference and status only — raw identity documents and PII are never stored here; they stay hosted by the
+        Provider reference and status only. Raw identity documents and PII are never stored here; they stay hosted by the
         verification provider&apos;s own flow.
       </p>
 
@@ -116,7 +116,7 @@ export default function KycVerificationsPage() {
               <td>{v.provider}</td>
               <td>{v.providerReference ?? v.sessionId}</td>
               <td>{v.status}</td>
-              <td>{v.expiresAt ? new Date(v.expiresAt).toLocaleDateString() : "—"}</td>
+              <td>{v.expiresAt ? new Date(v.expiresAt).toLocaleDateString() : "-"}</td>
               <td>
                 <select
                   value={reasonDrafts[v.id] ?? ""}

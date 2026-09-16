@@ -68,9 +68,9 @@ export default function EmergencyRefundPage() {
         <p className="kicker text-status-undetermined">Emergency refund</p>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-ink-950 dark:text-ink">Request an emergency refund</h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
-          For a deposit that is genuinely stuck — no decision ever reached, or one was reached but
+          For a deposit that is genuinely stuck: no decision ever reached, or one was reached but
           delivery never completed. Only usable after a real on-chain timeout has elapsed since the
-          deposit, and only with real threshold attestor signatures — this page cannot bypass either.
+          deposit, and only with real threshold attestor signatures. This page cannot bypass either.
           See Escrow.sol's emergencyRefund() and docs/v1-v2-escrow-cutover.md.
         </p>
       </header>
@@ -99,7 +99,7 @@ export default function EmergencyRefundPage() {
               <code className="block break-all font-mono text-xs">{prepared.hashToSign}</code>
               <p className="mt-2 font-mono text-[11px] text-muted dark:text-muted-dark">
                 Requires {prepared.attestorThreshold} of {prepared.attestorCount} registered attestor signatures. Each
-                attestor signs this exact hash themselves — no private key is ever entered here:
+                attestor signs this exact hash themselves. No private key is ever entered here:
               </p>
               <code className="mt-1 block break-all rounded bg-black/5 p-2 font-mono text-[11px] dark:bg-white/5">
                 cast wallet sign --no-hash {prepared.hashToSign} --private-key $ATTESTOR_PRIVATE_KEY
@@ -119,7 +119,7 @@ export default function EmergencyRefundPage() {
 
             {castCommand && (
               <div className="mt-6 border-t border-line pt-4 dark:border-line-dark">
-                <p className="field-label mb-1">Ready to broadcast — run this yourself</p>
+                <p className="field-label mb-1">Ready to broadcast, run this yourself</p>
                 <p className="mb-2 text-xs text-muted dark:text-muted-dark">
                   This page never sees or handles a private key. Verify each signature first:{" "}
                   <code className="font-mono">cast wallet verify --address &lt;attestor&gt; --no-hash {prepared.hashToSign} &lt;signature&gt;</code>

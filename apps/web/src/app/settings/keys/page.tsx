@@ -126,7 +126,7 @@ export default function ApiKeysPage() {
           API keys
         </h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
-          Every key acts on behalf of your organization — the same cases you see here are
+          Every key acts on behalf of your organization. The same cases you see here are
           reachable by any agent or service holding one of these keys, via{" "}
           <code className="font-mono">Authorization: Bearer &lt;key&gt;</code>.
         </p>
@@ -134,7 +134,7 @@ export default function ApiKeysPage() {
 
       {freshKey && (
         <div className="mt-8 border-l-2 border-seal-500 bg-seal-50/50 py-4 pl-4 dark:bg-seal-500/5">
-          <p className="field-label mb-2">New key — shown once, copy it now</p>
+          <p className="field-label mb-2">New key, shown once, copy it now</p>
           <p className="break-all font-mono text-sm text-ink-950 dark:text-ink">{freshKey}</p>
         </div>
       )}

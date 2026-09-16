@@ -63,7 +63,7 @@ export default function ReliabilityPage() {
     return (
       <main className="mx-auto max-w-3xl px-8 py-16">
         <p className="text-sm text-status-undetermined">
-          This is a platform-wide operator page, not an organization setting — your account isn't on the
+          This is a platform-wide operator page, not an organization setting. Your account isn't on the
           platform-admin allowlist.
         </p>
         <Link href="/cases" className="mt-4 inline-block text-sm text-seal-500 hover:underline dark:text-seal-400">
@@ -96,8 +96,8 @@ export default function ReliabilityPage() {
         <p className="kicker text-seal-500 dark:text-seal-400">Re-audit Phase 1 · Sepolia testnet</p>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-ink-950 dark:text-ink">Reliability observations</h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
-          A durable, queryable record — checkpoint currency, DecisionRelay/ISM wiring, validator
-          independence — captured every 15 minutes. This is the evidence a real 30-day reliability window
+          A durable, queryable record (checkpoint currency, DecisionRelay/ISM wiring, validator
+          independence) captured every 15 minutes. This is the evidence a real 30-day reliability window
           needs; it does not by itself satisfy that window, and does not authorize lifting{" "}
           <code className="font-mono">SETTLEMENT_PAUSED</code>.
         </p>
@@ -126,7 +126,7 @@ export default function ReliabilityPage() {
             </div>
             {observations.length === 0 && (
               <p className="mt-6 text-sm text-muted dark:text-muted-dark">
-                No observations recorded yet — the sweep runs every 15 minutes once the worker is deployed
+                No observations recorded yet. The sweep runs every 15 minutes once the worker is deployed
                 with this change.
               </p>
             )}

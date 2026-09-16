@@ -41,12 +41,12 @@ export default function VerifyRequiredPage() {
         Verify your email
       </h1>
       <p className="mt-4 text-sm text-muted dark:text-muted-dark">
-        We sent a verification link when you signed up. Click it to unlock the dashboard —
-        you can't file or review cases until your email is confirmed.
+        We sent a verification link when you signed up. Click it to unlock the dashboard.
+        You can't file or review cases until your email is confirmed.
       </p>
 
       {error && <p className="mt-4 text-sm text-status-undetermined">{error}</p>}
-      {sent && <p className="mt-4 text-sm text-status-active">Verification email sent — check your inbox.</p>}
+      {sent && <p className="mt-4 text-sm text-status-active">Verification email sent. Check your inbox.</p>}
 
       <div className="mt-8 flex gap-4">
         <button className="btn-primary" onClick={resend} disabled={sending}>

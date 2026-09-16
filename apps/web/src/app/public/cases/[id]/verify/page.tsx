@@ -13,7 +13,7 @@ const STATUS_COPY: Record<VerificationStatus["status"], { label: string; detail:
   IN_PROGRESS: { label: "In progress", detail: "Your verification is underway. This page updates automatically." },
   APPROVED: { label: "Approved", detail: "Your identity has been verified." },
   DECLINED: { label: "Declined", detail: "Verification was declined. Contact the organization running this case if you believe this is an error." },
-  IN_REVIEW: { label: "In review", detail: "Your verification needs manual review — this can take a little longer." },
+  IN_REVIEW: { label: "In review", detail: "Your verification needs manual review. This can take a little longer." },
   ABANDONED: { label: "Abandoned", detail: "The verification session was not completed. You can start a new one below." },
   EXPIRED: { label: "Expired", detail: "The verification session expired. You can start a new one below." },
 };

@@ -138,7 +138,7 @@ export default function WebhooksPage() {
         </h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
           Get notified the moment a case's status changes instead of polling{" "}
-          <code className="font-mono">GET /api/cases/:id</code>. Every delivery is signed —
+          <code className="font-mono">GET /api/cases/:id</code>. Every delivery is signed;
           verify <code className="font-mono">X-Anchor-Signature</code> as HMAC-SHA256 of the raw
           body using the webhook's secret.
         </p>
@@ -209,7 +209,7 @@ export default function WebhooksPage() {
               {revealedSecret?.webhookId === w.id ? (
                 <div className="mt-2 rounded border border-seal-500/40 bg-seal-500/5 p-3 dark:border-seal-400/40">
                   <p className="text-xs font-medium text-seal-500 dark:text-seal-400">
-                    Copy this secret now — it will not be shown again.
+                    Copy this secret now. It will not be shown again.
                   </p>
                   <p className="mt-1 break-all font-mono text-xs">{revealedSecret.secret}</p>
                 </div>

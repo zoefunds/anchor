@@ -27,7 +27,7 @@ export function EmailVerificationBanner() {
 
   return (
     <div className="mb-8 flex items-center justify-between border-l-2 border-status-pending bg-status-pending/5 py-2 pl-4 pr-4 text-sm text-status-pending">
-      <span>{sent ? "Verification email sent — check your inbox." : "Your email address isn't verified yet."}</span>
+      <span>{sent ? "Verification email sent. Check your inbox." : "Your email address isn't verified yet."}</span>
       {!sent && (
         <button onClick={resend} disabled={sending} className="font-mono text-xs underline hover:no-underline">
           {sending ? "Sending…" : "Resend link"}

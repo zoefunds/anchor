@@ -121,7 +121,7 @@ export async function GET() {
     // statuses in the success path; this branch only guards against
     // something unexpected blowing up before that payload is built.
     return NextResponse.json(
-      { environment: "TESTNET — no real value", generatedAt: new Date().toISOString(), error: "status temporarily unavailable" },
+      { environment: "TESTNET, no real value", generatedAt: new Date().toISOString(), error: "status temporarily unavailable" },
       { status: 503 }
     );
   }

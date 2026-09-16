@@ -56,7 +56,7 @@ export default function CutoverReadinessPage() {
     return (
       <main className="mx-auto max-w-3xl px-8 py-16">
         <p className="text-sm text-status-undetermined">
-          This is a platform-wide operator page, not an organization setting — your account isn't on the
+          This is a platform-wide operator page, not an organization setting. Your account isn't on the
           platform-admin allowlist.
         </p>
         <Link href="/cases" className="mt-4 inline-block text-sm text-seal-500 hover:underline dark:text-seal-400">
@@ -86,7 +86,7 @@ export default function CutoverReadinessPage() {
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
           Read-only. Scans every real on-chain deposit ever made against each registered escrow, and
           re-reads the live settlementTarget and Safe threshold. This does not authorize a cutover by
-          itself — see <code className="font-mono">docs/v1-v2-escrow-cutover.md</code> for the full
+          itself. See <code className="font-mono">docs/v1-v2-escrow-cutover.md</code> for the full
           checklist.
         </p>
       </header>

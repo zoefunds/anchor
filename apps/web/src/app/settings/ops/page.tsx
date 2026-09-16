@@ -88,7 +88,7 @@ export default function OpsConsolePage() {
     <div className="p-6 space-y-8 max-w-6xl">
       <div>
         <h1 className="text-xl font-semibold">Operations Console</h1>
-        <p className="text-sm text-muted dark:text-muted-dark">Generated {new Date(data.generatedAt).toLocaleString()} — auto-refreshes every 30s.</p>
+        <p className="text-sm text-muted dark:text-muted-dark">Generated {new Date(data.generatedAt).toLocaleString()}, auto-refreshes every 30s.</p>
       </div>
 
       <section>
@@ -225,7 +225,7 @@ export default function OpsConsolePage() {
       </section>
 
       <section>
-        <h2 className="font-medium mb-2">Open findings ({data.findings.length}) — <Link href="/settings/reconciliation-findings" className="underline">full list</Link></h2>
+        <h2 className="font-medium mb-2">Open findings ({data.findings.length}): <Link href="/settings/reconciliation-findings" className="underline">full list</Link></h2>
         <table className="w-full text-sm border-collapse">
           <thead><tr className="text-left border-b"><th>Type</th><th>Severity</th><th>Target</th><th>Opened</th><th>Runbook</th></tr></thead>
           <tbody>

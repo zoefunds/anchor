@@ -95,7 +95,7 @@ export default function UsagePage() {
 
       {usage && (
         <section className="mt-10">
-          <p className="kicker mb-4">Usage — {usage.period}</p>
+          <p className="kicker mb-4">Usage · {usage.period}</p>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat label="Cases" value={usage.cases} />
             <Stat label="Evidence submissions" value={usage.evidenceSubmissions} />
@@ -108,7 +108,7 @@ export default function UsagePage() {
       {invoice && (
         <section className="mt-12">
           <div className="mb-4 flex items-center justify-between">
-            <p className="kicker">Invoice preview — {invoice.period}</p>
+            <p className="kicker">Invoice preview · {invoice.period}</p>
             <span className="font-mono text-[11px] uppercase tracking-wide text-status-adjudicating">{invoice.status}</span>
           </div>
           <div className="border-l-2 border-status-adjudicating bg-status-adjudicating/5 py-3 pl-4">

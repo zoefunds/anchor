@@ -102,7 +102,7 @@ export default function ReconciliationFindingsPage() {
     return (
       <main className="mx-auto max-w-3xl px-8 py-16">
         <p className="text-sm text-status-undetermined">
-          This is a platform-wide operator page, not an organization setting — your account isn't on the
+          This is a platform-wide operator page, not an organization setting. Your account isn't on the
           platform-admin allowlist.
         </p>
         <Link href="/cases" className="mt-4 inline-block text-sm text-seal-500 hover:underline dark:text-seal-400">
@@ -132,7 +132,7 @@ export default function ReconciliationFindingsPage() {
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
           Real drift between on-chain state and this database, found by the periodic reconciliation
           sweep (see lib/reconciliation.ts). Acknowledging a finding records that a real person has
-          taken ownership — only the sweep itself can resolve one, by re-checking the actual condition.
+          taken ownership. Only the sweep itself can resolve one, by re-checking the actual condition.
         </p>
         <div className="mt-4 flex gap-4 font-mono text-xs">
           {(["open", "resolved", "all"] as const).map((s) => (

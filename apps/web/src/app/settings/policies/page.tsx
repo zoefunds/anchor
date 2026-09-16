@@ -199,11 +199,11 @@ export default function PoliciesPage() {
         <p className="kicker text-seal-500 dark:text-seal-400">Governance</p>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-ink-950 dark:text-ink">Policies</h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
-          Your organization's own dispute-governance config — evidence deadlines, appeal windows,
+          Your organization's own dispute-governance config: evidence deadlines, appeal windows,
           allowed outcomes/assets/chains, KYC requirement, and auto-settlement cap. Publishing never
           edits a version in place; it inserts a new one and every case already bound to an older
           version keeps reading it unchanged. A policy takes effect automatically on every new case
-          filed under the adjudication template it's keyed to — there's nothing to pick when filing a
+          filed under the adjudication template it's keyed to, so there's nothing to pick when filing a
           case.
         </p>
       </header>
@@ -275,7 +275,7 @@ export default function PoliciesPage() {
                   <dt className="text-muted dark:text-muted-dark">Appeal window</dt>
                   <dd>{activeVersion.appealWindowHours}h</dd>
                   <dt className="text-muted dark:text-muted-dark">Allowed outcomes</dt>
-                  <dd>{activeVersion.allowedOutcomes.join(", ") || "—"}</dd>
+                  <dd>{activeVersion.allowedOutcomes.join(", ") || "-"}</dd>
                   <dt className="text-muted dark:text-muted-dark">Auto-settlement cap</dt>
                   <dd>{activeVersion.autoSettlementCapNative ? `${activeVersion.autoSettlementCapNative} (in the case's settlement currency)` : "none (global default)"}</dd>
                   <dt className="text-muted dark:text-muted-dark">Allowed assets</dt>
@@ -302,7 +302,7 @@ export default function PoliciesPage() {
                       <ul className="flex flex-col gap-1 font-mono text-xs text-muted dark:text-muted-dark">
                         {policy.versions.map((v) => (
                           <li key={v.id}>
-                            v{v.version} — published {new Date(v.publishedAt).toLocaleString()}
+                            v{v.version}, published {new Date(v.publishedAt).toLocaleString()}
                             {v.active ? " (active)" : ""}
                           </li>
                         ))}
@@ -353,7 +353,7 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
             required
           />
           <span className="text-xs text-muted dark:text-muted-dark">
-            Display only right now — the real appeal window is a fixed 48h for every case regardless of this
+            Display only right now. The real appeal window is a fixed 48h for every case regardless of this
             value.
           </span>
         </label>
@@ -367,12 +367,12 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
           required
         />
         <span className="text-xs text-muted dark:text-muted-dark">
-          Only sanity-checked at case creation — not yet enforced against the adjudicator's actual decision.
+          Only sanity-checked at case creation, not yet enforced against the adjudicator's actual decision.
         </span>
       </label>
       <div className="flex gap-4">
         <label className="flex flex-1 flex-col gap-2">
-          <span className="field-label">Auto-settlement cap (in the case's settlement currency — ETH or SOL, optional)</span>
+          <span className="field-label">Auto-settlement cap (in the case's settlement currency, ETH or SOL, optional)</span>
           <input
             className="field-input"
             type="number"

@@ -206,5 +206,5 @@ export function formatDeadline(target: Date, now: Date): string {
   const days = Math.floor(hours / 24);
   const remHours = hours % 24;
   const rel = days > 0 ? `${days}d ${remHours}h remaining` : `${remHours}h remaining`;
-  return `${rel} — closes ${target.toLocaleString()}`;
+  return `${rel}, closes ${target.toLocaleString()}`;
 }

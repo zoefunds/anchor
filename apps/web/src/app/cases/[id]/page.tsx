@@ -15,7 +15,7 @@ function formatDeadline(target: Date, now: Date): string {
   const days = Math.floor(hours / 24);
   const remHours = hours % 24;
   const rel = days > 0 ? `${days}d ${remHours}h remaining` : `${remHours}h remaining`;
-  return `${rel} — closes ${target.toLocaleString()}`;
+  return `${rel}, closes ${target.toLocaleString()}`;
 }
 
 interface Evidence {
@@ -554,7 +554,7 @@ export default function CaseDetailPage() {
         </p>
         {(kase.status === "ADJUDICATING" || kase.status === "RE_ADJUDICATING") && (
           <p className="mt-4 font-mono text-xs text-status-adjudicating">
-            {kase.status === "RE_ADJUDICATING" ? "Re-adjudicating (appeal)" : "Adjudicating"} — polling every 5s.
+            {kase.status === "RE_ADJUDICATING" ? "Re-adjudicating (appeal)" : "Adjudicating"}, polling every 5s.
             Real consensus takes ~1–2 minutes.
           </p>
         )}
@@ -698,7 +698,7 @@ export default function CaseDetailPage() {
             <p className="text-sm text-muted dark:text-muted-dark">
               {formatDeadline(appealWindowClosesAt, now)}.
               {kase.canAppeal
-                ? " One appeal is allowed per case — it triggers a fresh, independent consensus round, not a review of the prior one."
+                ? " One appeal is allowed per case. It triggers a fresh, independent consensus round, not a review of the prior one."
                 : " Use the Finalized sync button when you are ready to move the case forward."}
             </p>
 
@@ -713,7 +713,7 @@ export default function CaseDetailPage() {
                   <select className="field-input" value={correctType || correctableTypes[0]} onChange={(e) => setCorrectType(e.target.value)}>
                     {correctableTypes.map((t) => (
                       <option key={t} value={t}>
-                        {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
+                        {exhibitLetters[t]}: {evidenceLabels[t] ?? t}
                       </option>
                     ))}
                   </select>
@@ -761,12 +761,12 @@ export default function CaseDetailPage() {
           {kase.evidence.map((e) => (
             <div key={e.id} className="flex gap-5 border-b border-line py-5 dark:border-line-dark">
               <span className="font-display text-lg font-semibold text-seal-500 dark:text-seal-400">
-                {exhibitLetters[e.type] ?? "—"}
+                {exhibitLetters[e.type] ?? "-"}
               </span>
               <div className="min-w-0 flex-1">
                 <p className="field-label">
                   {evidenceLabels[e.type] ?? e.type}{" "}
-                  <span className="text-muted dark:text-muted-dark">— filed by {evidenceSourceLabel(e)}</span>
+                  <span className="text-muted dark:text-muted-dark">(filed by {evidenceSourceLabel(e)})</span>
                 </p>
                 {e.mimeType?.startsWith("image/") ? (
                   <a href={e.storageRef} target="_blank" rel="noreferrer" className="mt-1.5 block">
@@ -783,7 +783,7 @@ export default function CaseDetailPage() {
                     rel="noreferrer"
                     className="mt-1.5 inline-block text-sm text-seal-500 underline hover:text-seal-600 dark:text-seal-400"
                   >
-                    {e.mimeType} file — open
+                    {e.mimeType} file, open
                   </a>
                 ) : (
                   <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">
@@ -799,7 +799,7 @@ export default function CaseDetailPage() {
           <div className="mt-8">
             <p className="mb-4 text-sm text-muted dark:text-muted-dark">
               Filing here submits on behalf of your organization directly. Claimant/respondent statements can only be
-              filed by that party via their own party link above — not here.
+              filed by that party via their own party link above, not here.
             </p>
             <div className="mb-4 flex gap-1 font-mono text-xs">
               <button
@@ -829,7 +829,7 @@ export default function CaseDetailPage() {
                   >
                     {orgMissingTypes.map((t) => (
                       <option key={t} value={t}>
-                        {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
+                        {exhibitLetters[t]}: {evidenceLabels[t] ?? t}
                       </option>
                     ))}
                   </select>
@@ -857,7 +857,7 @@ export default function CaseDetailPage() {
                   >
                     {orgMissingTypes.map((t) => (
                       <option key={t} value={t}>
-                        {exhibitLetters[t]} — {evidenceLabels[t] ?? t}
+                        {exhibitLetters[t]}: {evidenceLabels[t] ?? t}
                       </option>
                     ))}
                   </select>
@@ -872,9 +872,9 @@ export default function CaseDetailPage() {
                   />
                 </label>
                 <p className="text-xs text-muted dark:text-muted-dark">
-                  Images are seen and interpreted directly by the GenLayer contract — no text
+                  Images are seen and interpreted directly by the GenLayer contract, no text
                   extraction. PDF text is extracted at upload time and sent as real evidence content
-                  (best-effort — an encrypted PDF or a scan with no text layer falls back to reachability only).
+                  (best-effort; an encrypted PDF or a scan with no text layer falls back to reachability only).
                 </p>
                 <button className="btn-primary self-start" type="submit" disabled={submitting || !file}>
                   {submitting ? "Uploading…" : "File exhibit"}
@@ -906,10 +906,10 @@ function BackLink() {
 }
 
 const SETTLEMENT_CHAIN_LABELS: Record<string, string> = {
-  sepolia: "Sepolia (EVM) — DecisionRelay.sol",
+  sepolia: "Sepolia (EVM), DecisionRelay.sol",
   // Label only — the "solanatestnet" value itself stays as the DB/schema
   // identifier; SOLANA_RPC_URL actually points at Devnet as of 2026-09-14.
-  solanatestnet: "Solana Devnet — decision-relay program",
+  solanatestnet: "Solana Devnet, decision-relay program",
 };
 
 // Settlement always moves the chain's own native asset — real ETH via
@@ -935,9 +935,9 @@ function displayCurrency(c: { currency: string; settlementChain: string | null }
 // noise to cases that were never meant to settle cross-chain.
 const CASE_SETTLEMENT_STATUS_LABELS: Record<string, string> = {
   PENDING_DEPOSIT: "Awaiting deposit",
-  DEPOSITED: "Deposited — awaiting settlement",
+  DEPOSITED: "Deposited, awaiting settlement",
   SETTLED: "Settled",
-  MISMATCH_BLOCKED: "Blocked — on-chain state doesn't match what was expected",
+  MISMATCH_BLOCKED: "Blocked, on-chain state doesn't match what was expected",
 };
 
 // Item C's dashboard surface: binding a case to a registered escrow
@@ -985,7 +985,7 @@ function EscrowPanel({
         {!caseSettlement && isOwner && (
           <>
             <p className="text-sm text-muted dark:text-muted-dark">
-              No escrow bound yet. Binding does not set either party's payout address — each party
+              No escrow bound yet. Binding does not set either party's payout address. Each party
               sets their own via their public case link once bound.
             </p>
             {usable.length === 0 ? (
@@ -1052,7 +1052,7 @@ function EscrowPanel({
                     )
                   ) : (
                     <>
-                      waiting — the claimant sets this from their own case link{" "}
+                      waiting, the claimant sets this from their own case link{" "}
                       {isOwner && (
                         <PartyLinkControl role="claimant" caseId={kase.id} token={partyTokens.claimant} busy={Boolean(partyLinkBusy.claimant)} onFetch={onGetPartyLink} inline />
                       )}
@@ -1074,7 +1074,7 @@ function EscrowPanel({
                     )
                   ) : (
                     <>
-                      waiting — the respondent sets this from their own case link{" "}
+                      waiting, the respondent sets this from their own case link{" "}
                       {isOwner && (
                         <PartyLinkControl role="respondent" caseId={kase.id} token={partyTokens.respondent} busy={Boolean(partyLinkBusy.respondent)} onFetch={onGetPartyLink} inline />
                       )}
@@ -1187,7 +1187,7 @@ function ReviewStatusPanel({ caseId }: { caseId: string }) {
         {review.status === "PENDING" && (
           <p className="mt-2 font-mono text-xs text-muted dark:text-muted-dark">
             Approvals {approveCount}/{required}
-            {review.requiresDualApproval ? " (dual approval required)" : ""} —{" "}
+            {review.requiresDualApproval ? " (dual approval required)" : ""}:{" "}
             <Link href="/settings/reviews" className="text-seal-500 hover:underline dark:text-seal-400">
               act on it in the review queue
             </Link>
@@ -1215,7 +1215,7 @@ function SettlementPanel({
         <p className="kicker mb-4">Settlement</p>
         <div className="dossier">
           <p className="text-sm text-muted dark:text-muted-dark">
-            No settlement target configured for this case — the decision above is recorded on
+            No settlement target configured for this case. The decision above is recorded on
             GenLayer and in Anchor, but nothing was dispatched cross-chain to move funds.
           </p>
         </div>
@@ -1258,7 +1258,7 @@ function SettlementPanel({
           <PipelineStep
             done={kase.status === "FINALIZED"}
             label="Finalized (appeal window closed)"
-            detail={kase.status !== "FINALIZED" ? "waiting — settlement only dispatches once finalized" : undefined}
+            detail={kase.status !== "FINALIZED" ? "waiting, settlement only dispatches once finalized" : undefined}
             actionLabel={syncingStep === "finalization" ? "syncing..." : "sync"}
             onAction={() => onSync("finalization")}
             actionDisabled={Boolean(syncingStep)}
@@ -1269,7 +1269,7 @@ function SettlementPanel({
             failed={failed}
             label={
               reconciled
-                ? "Relayed via Hyperlane (reconciled — no local tx, already settled on-chain)"
+                ? "Relayed via Hyperlane (reconciled, no local tx, already settled on-chain)"
                 : "Relayed via Hyperlane to destination contract"
             }
             detail={
@@ -1298,9 +1298,9 @@ function SettlementPanel({
                   {d.relayMessageId && <> · hyperlane message {d.relayMessageId}</>}
                 </>
               ) : solanaQuorumCollected ? (
-                `Solana attestor signatures collected: ${solanaAttestationCount}/2${relayInFlight ? " — settlement relay in flight" : " — ready for manual sync"}`
+                `Solana attestor signatures collected: ${solanaAttestationCount}/2${relayInFlight ? ", settlement relay in flight" : ", ready for manual sync"}`
               ) : d?.relayError ? (
-                `${d.relayError} (attempt ${d.relayAttempts}) — retried automatically`
+                `${d.relayError} (attempt ${d.relayAttempts}), retried automatically`
               ) : undefined
             }
             actionLabel={syncingStep === "relay" ? "syncing..." : "sync"}
@@ -1311,7 +1311,7 @@ function SettlementPanel({
 
         {d?.decisionHash && (
           <p className="mt-6 border-t border-line pt-4 font-mono text-[11px] text-muted dark:border-line-dark dark:text-muted-dark">
-            decisionHash {d.decisionHash} — this is what the destination contract's own
+            decisionHash {d.decisionHash}, this is what the destination contract's own
             processedDecisions guard checks to reject a duplicate settlement.
           </p>
         )}

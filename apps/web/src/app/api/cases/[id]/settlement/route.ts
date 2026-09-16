@@ -53,7 +53,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!kase.settlementChain || !kase.settlementContract) {
     return NextResponse.json(
-      { error: "case has no settlementChain/settlementContract configured — set those before binding a settlement integration" },
+      { error: "case has no settlementChain/settlementContract configured, set those before binding a settlement integration" },
       { status: 400 }
     );
   }

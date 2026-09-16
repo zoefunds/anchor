@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
   }
   if (settlementChain && !SUPPORTED_SETTLEMENT_CHAINS.includes(settlementChain)) {
     return NextResponse.json(
-      { error: `unsupported settlementChain "${settlementChain}" — supported: ${SUPPORTED_SETTLEMENT_CHAINS.join(", ")}` },
+      { error: `unsupported settlementChain "${settlementChain}", supported: ${SUPPORTED_SETTLEMENT_CHAINS.join(", ")}` },
       { status: 400 }
     );
   }

@@ -181,9 +181,9 @@ export function CasePanel({
           <div className="dossier">
             <p className="text-sm text-muted dark:text-muted-dark">
               {kase.settlement.status === "PENDING_DEPOSIT" && "Awaiting deposit."}
-              {kase.settlement.status === "DEPOSITED" && "Deposit confirmed — awaiting settlement."}
+              {kase.settlement.status === "DEPOSITED" && "Deposit confirmed, awaiting settlement."}
               {kase.settlement.status === "SETTLED" && "Settled."}
-              {kase.settlement.status === "MISMATCH_BLOCKED" && "Blocked — on-chain state didn't match what was expected. Contact the organization handling this case."}
+              {kase.settlement.status === "MISMATCH_BLOCKED" && "Blocked, on-chain state didn't match what was expected. Contact the organization handling this case."}
               {" "}
               <span className="font-mono text-xs">
                 {kase.settlement.chain} · {kase.settlement.assetSymbol}
@@ -351,7 +351,7 @@ export function CasePanel({
                 </a>
               ) : e.mimeType ? (
                 <a href={e.storageRef} target="_blank" rel="noreferrer" className="text-sm text-seal-500 underline dark:text-seal-400">
-                  {e.mimeType} file — open
+                  {e.mimeType} file, open
                 </a>
               ) : (
                 <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{e.storageRef.slice(0, 400)}</p>

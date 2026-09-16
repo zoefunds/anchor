@@ -112,7 +112,7 @@ export function SolanaDeposit({ settlement }: { settlement: PublicSettlement }) 
           </div>
         ) : isConfirmed ? (
           <p className="text-sm text-muted dark:text-muted-dark">
-            Deposit confirmed on-chain. This page will update once the app records it — you can also refresh the case page.
+            Deposit confirmed on-chain. This page will update once the app records it. You can also refresh the case page.
           </p>
         ) : (
           <button className="btn-primary" onClick={handleDeposit} disabled={isSubmitting || isConfirming}>

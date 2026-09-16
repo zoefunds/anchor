@@ -163,7 +163,7 @@ function DepositPageInner() {
         <p className="text-sm text-muted dark:text-muted-dark">
           {kase.settlement.status === "DEPOSITED" && "A deposit has already been confirmed for this case."}
           {kase.settlement.status === "SETTLED" && "This case has already settled."}
-          {kase.settlement.status === "MISMATCH_BLOCKED" && "This case's deposit is blocked — contact the organization handling it."}
+          {kase.settlement.status === "MISMATCH_BLOCKED" && "This case's deposit is blocked. Contact the organization handling it."}
         </p>
       </main>
     );
@@ -185,7 +185,7 @@ function DepositPageInner() {
     return (
       <main className="mx-auto max-w-xl px-8 py-16">
         <p className="text-sm text-muted dark:text-muted-dark">
-          Waiting on the respondent to set their payout address before you can deposit — check back once they have.
+          Waiting on the respondent to set their payout address before you can deposit. Check back once they have.
         </p>
       </main>
     );
@@ -239,7 +239,7 @@ function DepositPageInner() {
           </button>
         ) : isConfirmed ? (
           <p className="text-sm text-muted dark:text-muted-dark">
-            Deposit confirmed on-chain. This page will update once the app records it — you can also refresh the case page.
+            Deposit confirmed on-chain. This page will update once the app records it. You can also refresh the case page.
           </p>
         ) : (
           <button className="btn-primary" onClick={handleDeposit} disabled={isSigning || isConfirming}>

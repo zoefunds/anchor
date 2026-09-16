@@ -42,7 +42,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ dec
     return NextResponse.json({ error: "decision not found" }, { status: 404 });
   }
   if (decision.relayTxHash) {
-    return NextResponse.json({ error: "decision is already settled — no signature needed" }, { status: 409 });
+    return NextResponse.json({ error: "decision is already settled, no signature needed" }, { status: 409 });
   }
   if (!decision.pendingSolanaAttestationMessage) {
     return NextResponse.json({ error: "decision has no pending Solana attestation awaiting a signature" }, { status: 409 });

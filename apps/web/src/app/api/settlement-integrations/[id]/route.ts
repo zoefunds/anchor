@@ -26,7 +26,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (typeof body.active === "boolean") data.active = body.active;
   if (typeof body.requireKycApproval === "boolean") data.requireKycApproval = body.requireKycApproval;
   if (Object.keys(data).length === 0) {
-    return NextResponse.json({ error: "nothing to update — provide active and/or requireKycApproval" }, { status: 400 });
+    return NextResponse.json({ error: "nothing to update, provide active and/or requireKycApproval" }, { status: 400 });
   }
 
   const updated = await prisma.$transaction(async (tx) => {

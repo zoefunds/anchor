@@ -85,7 +85,7 @@ export default function StatusPage() {
     <main className="mx-auto max-w-2xl px-4 py-10">
       <h1 className="text-xl font-semibold">Anchor status</h1>
       <p className="mt-1 text-sm text-muted dark:text-muted-dark">
-        {data?.environment ?? "TESTNET — no real value"}
+        {data?.environment ?? "TESTNET, no real value"}
       </p>
 
       {error && <p className="mt-6 text-sm text-status-undetermined">{error}</p>}
@@ -108,7 +108,7 @@ export default function StatusPage() {
             <h2 className="text-sm font-medium uppercase text-muted dark:text-muted-dark">Latest canary</h2>
             {data.canary ? (
               <p className="mt-2 text-sm">
-                {data.canary.outcome} — {new Date(data.canary.lastRunAt).toLocaleString()}
+                {data.canary.outcome}, {new Date(data.canary.lastRunAt).toLocaleString()}
               </p>
             ) : (
               <p className="mt-2 text-sm text-muted dark:text-muted-dark">No canary runs recorded yet.</p>
@@ -119,19 +119,19 @@ export default function StatusPage() {
             <h2 className="text-sm font-medium uppercase text-muted dark:text-muted-dark">30-day reliability observation window</h2>
             <p className="mt-2 text-sm">
               {data.reliabilityWindow.status === "NOT_STARTED"
-                ? "Not yet started — no observation ticks recorded."
-                : `Day ${data.reliabilityWindow.dayOfWindow} of ${data.reliabilityWindow.targetDays} — ${data.reliabilityWindow.status}`}
+                ? "Not yet started, no observation ticks recorded."
+                : `Day ${data.reliabilityWindow.dayOfWindow} of ${data.reliabilityWindow.targetDays}, ${data.reliabilityWindow.status}`}
             </p>
             <p className="mt-1 text-xs text-muted dark:text-muted-dark">
               {data.reliabilityWindow.totalObservations} observation(s) recorded
               {data.reliabilityWindow.lastObservationAt ? `, last at ${new Date(data.reliabilityWindow.lastObservationAt).toLocaleString()}` : ""}.
-              {data.reliabilityWindow.failTickCount > 0 ? ` ${data.reliabilityWindow.failTickCount} fail tick(s) recorded — none excluded or rewritten.` : ""}
+              {data.reliabilityWindow.failTickCount > 0 ? ` ${data.reliabilityWindow.failTickCount} fail tick(s) recorded, none excluded or rewritten.` : ""}
             </p>
             <p className="mt-2 text-xs">
               <a href={data.auditPackageUrl} className="underline">
                 External audit package
               </a>{" "}
-              — deployment identity, topology, threat model, and test evidence for independent review.
+              (deployment identity, topology, threat model, and test evidence for independent review).
             </p>
           </section>
 
@@ -159,7 +159,7 @@ export default function StatusPage() {
                     <p className="mt-1 text-muted dark:text-muted-dark">{inc.description}</p>
                     <p className="mt-1 text-xs text-muted dark:text-muted-dark">
                       Started {new Date(inc.startedAt).toLocaleString()}
-                      {inc.resolvedAt ? ` — resolved ${new Date(inc.resolvedAt).toLocaleString()}` : ""}
+                      {inc.resolvedAt ? `, resolved ${new Date(inc.resolvedAt).toLocaleString()}` : ""}
                     </p>
                   </li>
                 ))}

@@ -158,7 +158,7 @@ export default function SettlementIntegrationsPage() {
         <h1 className="font-display text-3xl font-semibold tracking-tight text-ink-950 dark:text-ink">Settlement integrations</h1>
         <p className="mt-2 max-w-lg text-sm text-muted dark:text-muted-dark">
           Register an escrow contract cases can settle through. Each one is checked on-chain against
-          its DecisionRelay before it's usable — an address that isn't actually wired to the relay
+          its DecisionRelay before it's usable. An address that isn't actually wired to the relay
           you name is rejected at registration, not discovered later at settlement time.
         </p>
       </header>
