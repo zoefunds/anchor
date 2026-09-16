@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { StatusStamp } from "@/components/StatusStamp";
 import { EmailVerificationBanner } from "@/components/EmailVerificationBanner";
+import { Walkthrough } from "@/components/Walkthrough";
 import { ACTIVE_SEPOLIA_TOPOLOGY } from "@/lib/deployment-registry";
 
 // Same preset this project already offers on Settings → Settlement
@@ -201,21 +202,24 @@ export default function CasesPage() {
               Cases
             </h1>
           </div>
-          <Link
-            href="/settings/settlement-integrations"
-            className="mt-2 inline-flex items-center gap-1 font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
-          >
-            Settings →
-          </Link>
+          <div className="flex items-center gap-4">
+            <Walkthrough />
+            <Link
+              href="/settings/settlement-integrations"
+              className="font-mono text-xs text-muted hover:text-seal-500 dark:text-muted-dark dark:hover:text-seal-400"
+            >
+              Settings →
+            </Link>
+          </div>
         </div>
       </header>
 
       {newPartyTokens && (
         <section className="dossier mb-10 border-2 border-seal-500 dark:border-seal-400">
-          <p className="kicker mb-4 text-seal-500 dark:text-seal-400">Party links — shown once</p>
+          <p className="kicker mb-4 text-seal-500 dark:text-seal-400">Party links, shown once</p>
           <p className="mb-4 text-sm text-muted dark:text-muted-dark">
             Hand each token to the actual claimant/respondent so they can submit evidence or appeal
-            independently, without an Anchor account. These are shown exactly once — if lost, reissue via{" "}
+            independently, without an Anchor account. These are shown exactly once. If lost, reissue via{" "}
             <code className="font-mono text-xs">POST /api/cases/{newPartyTokens.caseId}/party-tokens</code>.
           </p>
           <div className="flex flex-col gap-3">
@@ -234,7 +238,7 @@ export default function CasesPage() {
           </div>
 
           <p className="mt-6 mb-2 text-sm text-muted dark:text-muted-dark">
-            Optional — for stronger, cryptographic attribution (a link alone can be forwarded; a
+            Optional, for stronger, cryptographic attribution (a link alone can be forwarded; a
             signature can&apos;t be used to forge a submission after the fact). A party who wants this
             generates their own Ed25519 keypair themselves (Anchor never sees the private key) and
             registers the public half via <code className="font-mono text-xs">POST /api/public/cases/{newPartyTokens.caseId}/signing-key</code>{" "}
@@ -283,7 +287,7 @@ export default function CasesPage() {
             />
             {!settlementChain && (
               <span className="text-xs text-muted dark:text-muted-dark">
-                Choose a settlement target below to enter this in ETH or SOL — settlement always moves the
+                Choose a settlement target below to enter this in ETH or SOL. Settlement always moves the
                 chain&apos;s native asset, never a stablecoin.
               </span>
             )}
@@ -313,14 +317,14 @@ export default function CasesPage() {
                 value={settlementChain}
                 onChange={(e) => setSettlementChain(e.target.value as typeof settlementChain)}
               >
-                <option value="">None — record the decision only, don&apos;t settle cross-chain</option>
-                <option value="sepolia">Sepolia (EVM) — DecisionRelay.sol</option>
-                <option value="solanatestnet">Solana Devnet — decision-relay program</option>
+                <option value="">None, record the decision only, don&apos;t settle cross-chain</option>
+                <option value="sepolia">Sepolia (EVM), DecisionRelay.sol</option>
+                <option value="solanatestnet">Solana Devnet, decision-relay program</option>
               </select>
               <span className="mt-1 text-xs text-muted dark:text-muted-dark">
                 When set, a finalized decision on GenLayer gets relayed via Hyperlane to this
                 chain/contract, which then calls settle() to move funds. Anchor&apos;s own backend
-                wallet dispatches this — GenLayer itself isn&apos;t a Hyperlane chain, so it can&apos;t
+                wallet dispatches this. GenLayer itself isn&apos;t a Hyperlane chain, so it can&apos;t
                 send the message directly.
               </span>
             </label>
