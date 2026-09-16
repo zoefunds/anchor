@@ -307,7 +307,31 @@ export async function dispatchSettlementForDecision(kase: Case, decision: Decisi
         relayTxHash: null,
         OR: [{ relayClaimedAt: null }, { relayClaimedAt: { lt: claimCutoff } }],
       },
-      data: { relayClaimedAt: new Date(), ...(needsFreshDeadline ? { directSettleDeadline: directSettleDeadline!.toString() } : {}) },
+      data: {
+        relayClaimedAt: new Date(),
+        // A fresh deadline changes the signed digest (deadline is part
+        // of computeDirectSettleAttestationHash's preimage) — every
+        // signature collected against the OLD hash is now permanently
+        // worthless (it will never again recover to a hash this
+        // decision uses), but nothing was clearing them: they just sat
+        // in pendingAttestationSignatures forever, indistinguishable
+        // from real signatures, only ever silently dropped at
+        // validation time by countValidDistinctSigners (recovered
+        // address no longer matches the new hash). Harmless in a
+        // 2-of-2/2-of-3 setup, since dedup-by-signer already prevents
+        // this from ever exceeding the contract's attestorCount cap —
+        // but it needlessly hides how many REAL signatures exist for
+        // the current hash (confirmed live: one decision's array held
+        // 4 entries after a single deadline reset — 2 stale, signed
+        // against the dead hash, sitting alongside the 2 that actually
+        // mattered). Clearing it here,
+        // in the same write that picks the new deadline, means the
+        // pending-attestations endpoint's external-signature count
+        // always reflects reality for whichever hash is actually live.
+        ...(needsFreshDeadline
+          ? { directSettleDeadline: directSettleDeadline!.toString(), pendingAttestationSignatures: [] }
+          : {}),
+      },
     })
   );
   if (claimed.count === 0) {
