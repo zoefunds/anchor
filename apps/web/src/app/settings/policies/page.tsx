@@ -40,8 +40,24 @@ interface FormState {
   kycRequired: boolean;
 }
 
+// A published Policy only ever takes effect if its `key` exactly
+// matches one of these — see api/cases/route.ts's resolveActivePolicyVersion
+// call, which looks up a policy by the SAME string as the case's chosen
+// adjudication policyId (lib/policies.ts's POLICIES, the fixed set
+// GenLayer's contract actually knows how to adjudicate), falling back to
+// "default" only if no key-specific match exists. A free-text key here
+// used to let an org publish a policy that could never bind to any case
+// — created successfully, silently inert forever. Kept in sync manually
+// with lib/policies.ts's POLICIES registry (small, fixed set).
+const POLICY_KEY_OPTIONS: { value: string; label: string }[] = [
+  { value: "default", label: "Default (applies to any adjudication template without its own key-specific policy)" },
+  { value: "agent_data_task_v1", label: "Agent data/API task delivery" },
+  { value: "escrow_release_v1", label: "Escrow / milestone release" },
+  { value: "invoice_dispute_v1", label: "B2B invoice dispute" },
+];
+
 const EMPTY_FORM: FormState = {
-  key: "",
+  key: POLICY_KEY_OPTIONS[0].value,
   name: "",
   evidenceDeadlineHours: "72",
   appealWindowHours: "48",
@@ -186,7 +202,9 @@ export default function PoliciesPage() {
           Your organization's own dispute-governance config — evidence deadlines, appeal windows,
           allowed outcomes/assets/chains, KYC requirement, and auto-settlement cap. Publishing never
           edits a version in place; it inserts a new one and every case already bound to an older
-          version keeps reading it unchanged.
+          version keeps reading it unchanged. A policy takes effect automatically on every new case
+          filed under the adjudication template it's keyed to — there's nothing to pick when filing a
+          case.
         </p>
       </header>
 
@@ -197,14 +215,19 @@ export default function PoliciesPage() {
         <form onSubmit={createPolicy} className="dossier flex flex-col gap-4">
           <div className="flex gap-4">
             <label className="flex flex-1 flex-col gap-2">
-              <span className="field-label">Key</span>
-              <input
+              <span className="field-label">Adjudication template this governs</span>
+              <select
                 className="field-input"
-                placeholder="e.g. us-consumer"
                 value={newForm.key}
                 onChange={(e) => setNewForm((f) => ({ ...f, key: e.target.value }))}
                 required
-              />
+              >
+                {POLICY_KEY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="flex flex-1 flex-col gap-2">
               <span className="field-label">Name</span>
@@ -314,6 +337,10 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
             onChange={(e) => onChange({ ...form, evidenceDeadlineHours: e.target.value })}
             required
           />
+          <span className="text-xs text-muted dark:text-muted-dark">
+            Shown to parties as a countdown; the real submission cutoff is still each case's status, not this
+            number.
+          </span>
         </label>
         <label className="flex flex-1 flex-col gap-2">
           <span className="field-label">Appeal window (hours)</span>
@@ -325,6 +352,10 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
             onChange={(e) => onChange({ ...form, appealWindowHours: e.target.value })}
             required
           />
+          <span className="text-xs text-muted dark:text-muted-dark">
+            Display only right now — the real appeal window is a fixed 48h for every case regardless of this
+            value.
+          </span>
         </label>
       </div>
       <label className="flex flex-col gap-2">
@@ -335,6 +366,9 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
           onChange={(e) => onChange({ ...form, allowedOutcomes: e.target.value })}
           required
         />
+        <span className="text-xs text-muted dark:text-muted-dark">
+          Only sanity-checked at case creation — not yet enforced against the adjudicator's actual decision.
+        </span>
       </label>
       <div className="flex gap-4">
         <label className="flex flex-1 flex-col gap-2">
@@ -361,6 +395,7 @@ function PolicyFieldset({ form, onChange }: { form: FormState; onChange: (f: For
         <label className="flex flex-1 flex-col gap-2">
           <span className="field-label">Allowed assets (comma-separated, blank = any)</span>
           <input className="field-input" value={form.allowedAssets} onChange={(e) => onChange({ ...form, allowedAssets: e.target.value })} />
+          <span className="text-xs text-muted dark:text-muted-dark">Stored, not yet enforced anywhere.</span>
         </label>
         <label className="flex flex-1 flex-col gap-2">
           <span className="field-label">Allowed chains (comma-separated, blank = any)</span>
