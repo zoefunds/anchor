@@ -135,6 +135,16 @@ packages/genlayer-sdk/         Thin wrapper around GenLayer's JS SDK
 packages/mcp-server/           MCP server exposing Anchor's API as tools for any MCP agent
 packages/hyperlane-relay/      Shared EVM DecisionRelay dispatch/encoding logic
                                 (used by apps/web/src/lib/hyperlane.ts)
+packages/anchor-sdk/           Typed TypeScript client for Anchor's REST API
+packages/anchor-sdk-python/    Typed Python client for the same API, real
+                                requests calls, not stubs — case creation/
+                                listing/reads, evidence, adjudication requests,
+                                policy reads, analytics, receipts, webhook
+                                verification. See its own README for exactly
+                                what's covered vs. not yet ported from the TS SDK.
+packages/solana-escrow-client/ Thin TS wrapper around the Solana escrow
+                                program's Anchor IDL client (used by
+                                apps/web/src/lib/solana-settle.ts)
 
 chains/evm/                    DecisionRelay.sol, TrustedRelayerIsm.sol,
                                 AuditAnchor.sol, SolanaCaseReceiver.sol —
@@ -146,9 +156,13 @@ chains/solana/                 escrow + decision-relay native Solana programs
 chains/hyperlane-relayer/       Self-hosted Hyperlane relayer (Fly app
                                 anc-hor-relayer) — delivers messages the
                                 public relayer network won't touch
-chains/hyperlane-validator/     Self-hosted Hyperlane validators (Fly apps
-                                anc-hor-validator1/2) — sign checkpoints,
-                                back the real multisig ISM
+chains/hyperlane-validator/     Self-hosted Hyperlane validators — sign
+                                checkpoints, back the real multisig ISM.
+                                validator1 runs on Fly (anc-hor-validator1);
+                                validator2/3 run on separate AWS EC2
+                                accounts, not Fly (the anc-hor-validator2
+                                Fly app is an inactive leftover — see
+                                "Live deployment" below)
 
 docs/                          Policy specs, decision schema, architecture
                                 notes, and the two deep-dive security docs:
@@ -403,18 +417,32 @@ that retired design). The backend structurally cannot forge a
 settlement alone — reaching threshold always needs at least one of the
 other two signers.
 
-### 2. Governance separation (EVM only, so far)
+### 2. Governance separation (EVM only, so far — designed, not yet live on the current deployment)
 
-`DecisionRelay.sol`'s `owner` — who can add/remove attestors or lower
-the threshold — is a real 2-of-2 Gnosis Safe (canonical v1.4.1,
-deployed via the real `SafeProxyFactory` on Sepolia), not a wallet.
-Every governance change requires two independently collected
-signatures and is logged via a dedicated event
+The design intent is real: `DecisionRelay.sol`'s `owner` — who can
+add/remove attestors or lower the threshold — should be a 2-of-2
+Gnosis Safe (canonical v1.4.1, deployed via the real `SafeProxyFactory`
+on Sepolia), not a wallet, with every governance change requiring two
+independently collected signatures and logged via a dedicated event
 (`AttestorAdded`/`AttestorRemoved`/`AttestorThresholdChanged`/
-`TrustedSenderChanged`/`SettlementTargetChanged`). This closes a real
-gap a security re-audit found: an owner that's the same key as an
-attestor (or the backend) could rewrite the very policy the attestors
-are supposed to enforce, without ever forging a signature.
+`TrustedSenderChanged`/`SettlementTargetChanged`). The Safe itself is
+deployed and real (`0xc200534F7Debf2816C085c5a156AbD686FA19f4C`).
+
+**But the currently-live `DecisionRelay`
+(`0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834`) is not owned by that
+Safe.** `owner()` returns the backend's own EOA
+(`0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb`) — confirmed directly
+against `apps/web/deployment-manifest.json`'s own recorded
+`knownLimitations`, not assumed. This is **permanent for this specific
+deployment**: the contract exposes no ownership-transfer function, so
+there is no path to hand `owner` to the Safe after the fact short of
+deploying (and migrating every case to) yet another `DecisionRelay`.
+The exact gap the Safe was meant to close — an owner that's the same
+key as an attestor/the backend rewriting the policy attestors enforce,
+without ever forging a signature — is therefore still open on the live
+contract today. See
+`docs/incidents/2026-09-12-sepolia-delivery-incident.md` and "Known
+gaps" #7.
 
 ### 3. Cross-instruction redirection defense (Solana)
 
@@ -487,6 +515,9 @@ flowchart TB
         WorkerApp["anc-hor-worker<br/>BullMQ worker + sweeps"]
         RelayerApp["anc-hor-relayer<br/>self-hosted Hyperlane relayer"]
         Val1App["anc-hor-validator1<br/>Hyperlane validator"]
+        Attestor2App["anc-hor-attestor2<br/>automated EVM+Solana co-signer"]
+        Attestor3App["anc-hor-attestor3<br/>automated EVM+Solana co-signer"]
+        ReliabilityApp["anc-hor-reliability-observer<br/>30-day observation loop"]
     end
 
     subgraph AWS1["AWS account 069066994101<br/>(gideon820001, independent operator)"]
@@ -517,6 +548,10 @@ flowchart TB
     Val1App --> PublicRPC
     Val2EC2 --> PublicRPC
     Val3EC2 --> PublicRPC
+    Attestor2App -->|"POST pending-attestations/sign"| WebApp
+    Attestor3App -->|"POST pending-attestations/sign"| WebApp
+    ReliabilityApp --> Postgres
+    ReliabilityApp --> PublicRPC
 
     Val1App -->|"checkpoints"| Val1S3[("S3: validator1<br/>(shared bucket, own prefix)")]
     Val2EC2 --> Val2S3
@@ -531,10 +566,15 @@ flowchart TB
 | App | Purpose |
 |---|---|
 | `anc-hor-worker` | Long-lived BullMQ Worker — adjudication jobs, settlement dispatch, audit-anchor sweep |
-| `anc-hor-relayer` | Self-hosted Hyperlane relayer (Sepolia <-> Solana Testnet message delivery) |
+| `anc-hor-relayer` | Self-hosted Hyperlane relayer (Sepolia <-> Solana Devnet message delivery) |
 | `anc-hor-validator1` | Hyperlane validator #1 — signs Sepolia checkpoints |
-| `anc-hor-validator2` | Hyperlane validator #2 — signs Sepolia checkpoints |
+| `anc-hor-validator2` | **Inactive leftover, not the real validator2.** The operational validator2 runs on AWS EC2 (see `ACTIVE_VALIDATORS` in `apps/web/src/lib/deployment-registry.ts`) — this Fly app predates that AWS move and was never decommissioned. Do not treat it as signing anything live. |
+| `anc-hor-attestor2` | Automated EVM + Solana attestor signer (`scripts/auto-attestor-sign.ts` + `scripts/auto-attestor-sign-solana.ts`), gated by a per-currency dollar cap — see "Co-signing" below |
+| `anc-hor-attestor3` | Same as `anc-hor-attestor2`, the third signer in each chain's 2-of-3 set |
+| `anc-hor-reliability-observer` | Runs `scripts/reliability-observation-loop.ts` — writes one `ReliabilityWindowObservation` row every 15 minutes for the 30-day reliability window (`/settings/reliability`, `docs/reliability-observation-window.md`) |
 | `anc-hor-db` | Unmanaged Fly Postgres (public IP + TCP passthrough — see `DEPLOYMENT.md`) |
+
+None of these Fly apps auto-deploy from `main` — see "Known gaps" #10.
 
 ### Vercel
 
@@ -544,20 +584,31 @@ flowchart TB
 
 | Contract | Address | Purpose |
 |---|---|---|
-| `DecisionRelay` (current) | `0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2` | Receives decisions, gates settlement on M-of-N attestation + multisig ISM |
+| `DecisionRelay` (current) | `0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834` | Receives decisions, gates settlement on M-of-N attestation + multisig ISM |
 | Multisig ISM (`StaticMerkleRootMultisigIsm`) | `0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0` | Real 2-of-3 validator-checkpoint verification |
-| Escrow (V2) | `0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7` | Holds/releases case funds per adjudicated shares |
+| Escrow (current) | `0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD` | The canonical Sepolia escrow new dispatches settle through. Org-configurable settlement integrations now let any org register its own escrow contract via Settings → Settlement integrations, so this is the one `ACTIVE_SEPOLIA_TOPOLOGY` (below) resolves to, not the only one that exists in the database. |
 | `AuditAnchor` | `0x642C8f4De6302D06fC0620efE571dFd69DF94CEA` | External audit-chain checkpointing (not independently re-verified live this pass — see `AUDIT_ANCHOR_CONTRACT_ADDRESS` in `apps/web/.env.example`) |
-| Governance Safe | `0xc200534F7Debf2816C085c5a156AbD686FA19f4C` | 2-of-2 owner of `DecisionRelay` |
+| Governance Safe | `0xc200534F7Debf2816C085c5a156AbD686FA19f4C` | Deployed 2-of-2 Safe — **not currently `DecisionRelay`'s owner**, see "Known gaps" #7 |
 | Hyperlane Mailbox | `0x345E7246631ceb0300427caB75eacA10c326BB09` | Anchor's own (migrated off the canonical shared Sepolia Mailbox on 2026-09-07 after finding its hooks disconnected — see `docs/mainnet-readiness-runbook.md`) |
 | Hyperlane MerkleTreeHook | `0xA32341dc796DB6C51c0D1695751aC9AA2Dd77aBB` | Anchor's own |
 | Hyperlane ValidatorAnnounce | `0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5` | Anchor's own |
 
-See `apps/web/deployment-manifest.json` (regenerated live by
-`scripts/generate-deployment-manifest.ts`) and
-`docs/mainnet-readiness-runbook.md`'s "Exact current addresses" table
-for the live-verified source of truth — this table is a snapshot and
-can drift.
+The actual, continuously-updated source of truth for this table is
+[`apps/web/src/lib/deployment-registry.ts`](apps/web/src/lib/deployment-registry.ts)'s
+`ACTIVE_SEPOLIA_TOPOLOGY` — every other consumer in the codebase
+(reliability monitor, canary scripts, deploy/verification scripts, the
+dispatch package) imports from there rather than hardcoding its own
+copy, specifically so a contract migration can't leave one consumer
+silently pointed at a retired deployment. `RETIRED_SEPOLIA_ADDRESSES` in
+the same file lists every superseded DecisionRelay/Escrow pair,
+including the two this README's table pointed at before this pass
+(`0x1fc130416Dc09dff60e0Ea3C8dE8474e8428b3E2`/`0x4C7765A6823dc27Eca1DE174FceeAE5048d403e7`)
+— retired 2026-09-13, and still holding a real, unrecoverable-until-timeout
+stuck deposit; see `docs/incidents/2026-09-12-sepolia-delivery-incident.md`.
+`apps/web/deployment-manifest.json` is a point-in-time snapshot
+(last regenerated 2026-09-13) confirming the current `DecisionRelay`
+address and its owner/attestor state — verified directly against it and
+against live case data for this pass, not assumed.
 
 **Attestor addresses (EVM, 2-of-3, fully automated as of 2026-09-07)**:
 `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70` (backend-held,
@@ -743,7 +794,7 @@ Stated plainly, not swept under anything:
    deployment of `hyperlane-sealevel-multisig-ism-message-id` with the
    same 2-of-3 validator set as EVM (the old always-accepting
    `TRUSTED_ISM` is kept only for rollback). This closes the "permissive
-   ISM" gap, but it has not yet had `ISM_MIGRATION.md`'s 8-point testnet
+   ISM" gap, but it has not yet had `chains/solana/ISM_MIGRATION.md`'s 8-point testnet
    proof run against it — do not call it "secure" or "independent" until
    that's done. Regardless, this is a transport-layer gap only: real
    fund movement is independently gated by Solana-side M-of-N
@@ -771,22 +822,48 @@ Stated plainly, not swept under anything:
 6. **Evidence provenance, KYC/consent workflows, chargeback-network
    compatibility** are explicitly out of scope — real regulatory/business
    work, not something to fake or half-build.
-7. **Governance Safe (2-of-2) and attestor-signer operator independence
-   are both explicitly tracked as unverified**, not assumed — see
-   `docs/mainnet-readiness-runbook.md`'s trust-layer independence
-   diagram, which is the authoritative, continuously-updated version of
-   this list's custody-related items.
-8. **No PDF/downloadable receipt rendering** and **no Python SDK** — the
-   receipts/analytics work in this repo covers structured JSON receipts
-   and the TypeScript SDK (`packages/anchor-sdk`) only.
+7. **The live `DecisionRelay`'s `owner` is a plain backend EOA, not the
+   deployed 2-of-2 governance Safe.** Not "unverified", confirmed: the
+   Safe (`0xc200534F7Debf2816C085c5a156AbD686FA19f4C`) is real and
+   deployed, but the currently-live `DecisionRelay`
+   (`0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834`) reports `owner() ==
+   0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb`, the backend's own key —
+   see `apps/web/deployment-manifest.json`'s `knownLimitations` and
+   "Security model" #2 above. Permanent for this deployment: the
+   contract has no ownership-transfer function, so reaching Safe
+   ownership needs a fresh `DecisionRelay` (and case migration), not a
+   governance call on this one. Attestor-signer operator independence is
+   separately tracked as unverified (not the same claim as this one) —
+   see `docs/mainnet-readiness-runbook.md`'s trust-layer independence
+   diagram, the authoritative, continuously-updated version of this
+   list's custody-related items.
+8. **No PDF/downloadable receipt rendering** — the receipts/analytics
+   work in this repo covers structured JSON receipts only. (A Python
+   SDK does exist — `packages/anchor-sdk-python` — real HTTP calls
+   mirroring `packages/anchor-sdk`'s TypeScript client field for field;
+   it covers less of the API surface than the TS SDK does, see its own
+   README for the exact gap.)
 9. **No true low-confidence-triggered human escalation.** GenLayer's
    Optimistic Democracy consensus doesn't expose a confidence score —
    escalation to a human reviewer is triggered by policy rules (amount
    thresholds, disagreement among validators, appeal filed), not by the
    adjudicator itself reporting low confidence.
-10. **No CI/CD — Vercel and the Fly worker are two independently
-    deployed targets that must be kept in sync by hand**, and real
-    drift between them has bitten this app more than once. On
+10. **CI exists, CD does not.** `.github/workflows/` runs real
+    integration/unit tests (`web-integration-tests.yml`,
+    `web-evm-integration-tests.yml`), Solana localnet tests, and IDL
+    consistency checks on every push to `main` and every PR, against a
+    fresh, ephemeral Postgres/Redis — never a shared or production-like
+    database. None of that pipeline deploys anything: Vercel and every
+    Fly app (`anc-hor-worker`, the two auto-attestors, the relayer, the
+    validators, the reliability observer) are deployed by hand
+    (`vercel --prod`, `fly deploy --config <name>.toml`), independently
+    of each other and of CI passing. **Vercel and the Fly worker being
+    two independently deployed targets that must be kept in sync by
+    hand** is therefore still a real, live risk, confirmed again during
+    this pass: a set of settlement-dispatch fixes landed on Vercel via
+    one deploy, then needed four separate, manual `fly deploy` runs
+    (worker, both auto-attestors, the reliability observer) before the
+    same fixes actually reached the processes that call them. On
     2026-09-14, Vercel's `SOLANA_DECISION_RELAY_LOOKUP_TABLE` and
     `SOLANA_RPC_URL` env vars were both found empty in production
     (correctly set on the Fly worker) — meaning any Solana settlement
