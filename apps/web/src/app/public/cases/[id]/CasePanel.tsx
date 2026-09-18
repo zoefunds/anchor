@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { StatusStamp } from "@/components/StatusStamp";
+import { SAMPLE_EVIDENCE_CONTENT } from "@/lib/policies";
 import {
   PublicCase,
   setPayoutAddress,
@@ -305,7 +306,18 @@ export function CasePanel({
                 </select>
               </label>
               <label className="flex flex-col gap-2">
-                <span className="field-label">Statement (or attach a file below)</span>
+                <div className="flex items-center justify-between">
+                  <span className="field-label">Statement (or attach a file below)</span>
+                  {SAMPLE_EVIDENCE_CONTENT[evidenceType] && (
+                    <button
+                      type="button"
+                      onClick={() => setEvidenceText(SAMPLE_EVIDENCE_CONTENT[evidenceType])}
+                      className="font-mono text-[11px] text-seal-600 hover:underline dark:text-seal-400"
+                    >
+                      Fill sample content
+                    </button>
+                  )}
+                </div>
                 <textarea
                   className="field-input"
                   rows={4}

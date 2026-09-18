@@ -65,6 +65,57 @@ export const POLICIES: Record<string, PolicyDefinition> = {
   },
 };
 
+// Realistic sample content per evidence type, for the "Fill sample"
+// action on both the org-side exhibit form (case detail page) and the
+// public party evidence form (CasePanel.tsx) — real, concrete dispute
+// content a first-time user can submit as-is to see a genuine GenLayer
+// verdict, not a "Lorem ipsum" placeholder that would just produce an
+// UNDETERMINED/INSUFFICIENT_EVIDENCE result. Keyed by evidence type, not
+// by policy, since claimant_statement/respondent_statement are shared
+// across all three policies above. Each policy's pair (spec + delivery)
+// is written to plausibly resolve as a clean, fully-met delivery — the
+// point of a sample is a fast, legible first adjudication, not a demo of
+// ambiguous edge cases.
+export const SAMPLE_EVIDENCE_CONTENT: Record<string, string> = {
+  task_spec:
+    "Scrape the top 10 posts from Hacker News' front page (https://news.ycombinator.com) and " +
+    "return a JSON array of exactly 10 objects, each with: title (non-empty string), url " +
+    "(non-empty string), points (non-negative integer). Output must be valid JSON with no " +
+    "extra commentary.",
+  delivery_payload: JSON.stringify(
+    Array.from({ length: 10 }, (_, i) => ({
+      title: `Show HN: sample delivery item #${i + 1}`,
+      url: `https://example.com/item/${i + 1}`,
+      points: 300 - i * 12,
+    }))
+  ),
+  milestone_spec:
+    "Milestone 2 of 3 (\"Payment integration\"): implement Stripe Checkout for the subscription " +
+    "flow, covering monthly and annual plans, a working webhook handler that marks orders paid, " +
+    "and a passing test suite for the checkout API routes. Due within 10 business days of " +
+    "milestone start.",
+  deliverable:
+    "PR #142 merged to main: Stripe Checkout session creation for both monthly/annual plans, " +
+    "webhook handler at /api/webhooks/stripe verifying signatures and marking Order.status=PAID, " +
+    "and 14 passing tests in tests/checkout.test.ts (CI run: green, 14/14). Delivered on day 8 of " +
+    "the 10-day window.",
+  invoice_terms:
+    "PO #4471: Vendor to deliver 200 units of SKU AX-100 at $42.50/unit, net-30 payment terms, " +
+    "delivery to the buyer's Chicago warehouse by the 15th of the month. Invoice is due in full " +
+    "only upon confirmed delivery of the full 200-unit quantity.",
+  delivery_record:
+    "Warehouse receiving log #R-8823, dated the 12th: 200 units of SKU AX-100 received and " +
+    "counted against PO #4471, no shortages or damage noted, signed off by receiving staff. " +
+    "Delivery occurred 3 days ahead of the invoice terms' deadline.",
+  claimant_statement:
+    "The file arrived on time and looks complete, but I haven't independently verified the " +
+    "contents myself — flagging for adjudication out of caution before releasing payment, not " +
+    "because I've found a specific defect.",
+  respondent_statement:
+    "Delivery matches the agreed spec exactly — every requirement listed was met on time. " +
+    "Requesting release of payment.",
+};
+
 export function getPolicy(policyId: string): PolicyDefinition | undefined {
   return POLICIES[policyId];
 }

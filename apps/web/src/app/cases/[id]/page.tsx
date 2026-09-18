@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { StatusStamp } from "@/components/StatusStamp";
 import { sepoliaTxUrl, genlayerTxUrl, genlayerAddressUrl, settlementTxUrl, settlementAddressUrl } from "@/lib/explorer-links";
+import { SAMPLE_EVIDENCE_CONTENT } from "@/lib/policies";
 
 const EXHIBIT_LETTERS = "ABCDEFGH";
 
@@ -903,7 +904,18 @@ export default function CaseDetailPage() {
                   </select>
                 </label>
                 <label className="flex flex-col gap-2">
-                  <span className="field-label">Content</span>
+                  <div className="flex items-center justify-between">
+                    <span className="field-label">Content</span>
+                    {SAMPLE_EVIDENCE_CONTENT[evidenceType] && (
+                      <button
+                        type="button"
+                        onClick={() => setContent(SAMPLE_EVIDENCE_CONTENT[evidenceType])}
+                        className="font-mono text-[11px] text-seal-600 hover:underline dark:text-seal-400"
+                      >
+                        Fill sample content
+                      </button>
+                    )}
+                  </div>
                   <textarea
                     className="field-input min-h-[100px] resize-y"
                     value={content}
