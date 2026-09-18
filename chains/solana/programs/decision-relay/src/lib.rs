@@ -62,6 +62,12 @@ use solana_instructions_sysvar::get_instruction_relative;
 solana_program::entrypoint!(process_instruction);
 
 const SETTLE_DISCRIMINATOR: [u8; 8] = [175, 42, 185, 87, 144, 131, 102, 212];
+// sha256("global:emergency_refund")[..8] — Anchor's own discriminator
+// scheme, computed the same way SETTLE_DISCRIMINATOR above was (read
+// from target/idl/escrow.json after building the escrow program with
+// its own emergency_refund instruction added).
+const EMERGENCY_REFUND_DISCRIMINATOR: [u8; 8] = [188, 73, 52, 195, 137, 70, 180, 147];
+const CONFIG_SEED: &[u8] = b"config";
 
 /// A deployed hyperlane-sealevel-composite-ism instance, initialized with
 /// root node `IsmNode::TrustedRelayer { relayer: <our relayer's Solana
@@ -341,6 +347,23 @@ pub struct DecisionRelayBody {
     pub decision_hash: [u8; 32],
 }
 
+/// Body for the emergency-refund attestation — deliberately a separate,
+/// smaller struct from DecisionRelayBody (no shares, no decision_hash):
+/// an emergency refund is "nobody could decide, give the deposit back
+/// to the claimant," never a real adjudicated split, so there is
+/// nothing to attest to beyond identifying the case and the claimant to
+/// pay. Kept structurally distinct (not just a variant of
+/// DecisionRelayBody with zeroed fields) specifically so a real
+/// settlement attestation can never be replayed as an emergency-refund
+/// one or vice versa — `emergency_refund_attestation_message`'s own
+/// domain tag is the primary defense, this is the secondary one.
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub struct EmergencyRefundBody {
+    pub case_id: String,
+    pub claimant: Pubkey,
+    pub escrow_program: Pubkey,
+}
+
 /// The CASE_ORIGINATE message body this program dispatches outbound.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct CaseOriginateBody {
@@ -364,6 +387,11 @@ pub enum DecisionRelayInstruction {
     /// `ReplayGuard`'s own doc comment for why this is a fixed
     /// allocate-once account rather than a per-message one.
     InitReplayGuard,
+    /// Same M-of-N-attested, directly-submitted pattern as
+    /// AttestedSettle — see `emergency_refund`'s own doc comment for why
+    /// this exists as a genuinely separate instruction/message/CPI
+    /// target rather than reusing AttestedSettle with a 100/0 split.
+    EmergencyRefund(EmergencyRefundBody),
 }
 
 pub fn process_instruction(
@@ -413,6 +441,7 @@ pub fn process_instruction(
         }
         DecisionRelayInstruction::AttestedSettle(body) => attested_settle(program_id, accounts, body),
         DecisionRelayInstruction::InitReplayGuard => init_replay_guard(program_id, accounts),
+        DecisionRelayInstruction::EmergencyRefund(body) => emergency_refund(program_id, accounts, body),
     }
 }
 
@@ -758,6 +787,129 @@ fn attested_settle(program_id: &Pubkey, accounts: &[AccountInfo], body: Decision
     Ok(())
 }
 
+/// The Solana counterpart of `escrow::emergency_refund`'s CPI target —
+/// mirrors `attested_settle` above exactly: same M-of-N Ed25519
+/// attestation requirement (over a distinctly-tagged message, see
+/// `emergency_refund_attestation_message`), same "backend submits this
+/// directly, never via Hyperlane" trust model, same escrow_authority
+/// PDA signing the CPI. The one real difference is the target
+/// instruction itself: escrow's `emergency_refund`, not `settle` — that
+/// instruction independently re-checks the on-chain timeout against
+/// `Case.deposited_at`, which this program does not (and must not)
+/// duplicate; the attestor signature only proves "M-of-N attestors
+/// agree this case is stuck," never "the timeout has elapsed," which is
+/// exactly the property escrow's own check, not an off-chain one, has
+/// to enforce.
+///
+/// Accounts:
+/// 0. `[]` Instructions sysvar (`Sysvar1nstructions1111111111111111111111111`).
+/// 1. `[]` Storage PDA account.
+/// 2. `[executable]` Escrow program.
+/// 3. `[writeable]` Case PDA (escrow's `["case", case_id]`).
+/// 4. `[]` Escrow Config PDA (escrow's `["config"]`).
+/// 5. `[writeable]` Claimant account (from the message body).
+/// 6. `[]` This program's escrow-authority PDA.
+fn emergency_refund(program_id: &Pubkey, accounts: &[AccountInfo], body: EmergencyRefundBody) -> ProgramResult {
+    let accounts_iter = &mut accounts.iter();
+
+    let instructions_sysvar_info = next_account_info(accounts_iter)?;
+    let storage_info = next_account_info(accounts_iter)?;
+    let storage = DecisionRelayStorageAccount::fetch(&mut &storage_info.data.borrow()[..])?.into_inner();
+
+    let escrow_program_info = next_account_info(accounts_iter)?;
+    if escrow_program_info.key != &storage.escrow_program {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if body.escrow_program != storage.escrow_program {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let case_info = next_account_info(accounts_iter)?;
+    let config_info = next_account_info(accounts_iter)?;
+    let claimant_info = next_account_info(accounts_iter)?;
+    let escrow_authority_info = next_account_info(accounts_iter)?;
+
+    if claimant_info.key != &body.claimant {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    let (expected_case_key, _case_bump) =
+        Pubkey::find_program_address(&[b"case", body.case_id.as_bytes()], escrow_program_info.key);
+    if case_info.key != &expected_case_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let (expected_config_key, _config_bump) =
+        Pubkey::find_program_address(&[CONFIG_SEED], escrow_program_info.key);
+    if config_info.key != &expected_config_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+    let (expected_escrow_authority_key, escrow_authority_bump) =
+        Pubkey::find_program_address(decision_relay_escrow_authority_pda_seeds!(), program_id);
+    if escrow_authority_info.key != &expected_escrow_authority_key {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    verify_emergency_refund_attestations(program_id, instructions_sysvar_info, &body)?;
+
+    let emergency_refund_data = EMERGENCY_REFUND_DISCRIMINATOR.to_vec();
+
+    let emergency_refund_ix = Instruction {
+        program_id: *escrow_program_info.key,
+        data: emergency_refund_data,
+        accounts: vec![
+            AccountMeta::new_readonly(*escrow_authority_info.key, true),
+            AccountMeta::new(*case_info.key, false),
+            AccountMeta::new_readonly(*config_info.key, false),
+            AccountMeta::new(*claimant_info.key, false),
+        ],
+    };
+
+    invoke_signed(
+        &emergency_refund_ix,
+        &[
+            escrow_authority_info.clone(),
+            case_info.clone(),
+            config_info.clone(),
+            claimant_info.clone(),
+        ],
+        &[decision_relay_escrow_authority_pda_seeds!(escrow_authority_bump)],
+    )?;
+
+    msg!("decision-relay: emergency-refunded case {}", body.case_id);
+    Ok(())
+}
+
+/// Same reasoning as `verify_decision_attestations` above, over
+/// `emergency_refund_attestation_message`'s own distinctly-tagged
+/// message instead.
+fn verify_emergency_refund_attestations(
+    program_id: &Pubkey,
+    instructions_sysvar_info: &AccountInfo,
+    expected_body: &EmergencyRefundBody,
+) -> ProgramResult {
+    let expected_message = emergency_refund_attestation_message(program_id, expected_body);
+    verify_attestation_threshold(instructions_sysvar_info, &expected_message)
+}
+
+/// Mirrors `decision_attestation_message` below exactly, except for the
+/// domain tag (`ANCHOR_SOLANA_EMERGENCY_REFUND_V1`, never
+/// `..._DECISION_ATTESTATION_V2`) and the fields committed to — no
+/// shares, no decision_hash, since an emergency refund never represents
+/// a real adjudicated outcome. The distinct tag is what makes a real
+/// settlement attestation and an emergency-refund attestation
+/// non-interchangeable even if every other field happened to coincide.
+fn emergency_refund_attestation_message(program_id: &Pubkey, body: &EmergencyRefundBody) -> Vec<u8> {
+    let mut message = b"ANCHOR_SOLANA_EMERGENCY_REFUND_V1".to_vec();
+    const TESTNET_GENESIS_HASH: Pubkey = solana_program::pubkey!("4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY");
+    message.extend_from_slice(TESTNET_GENESIS_HASH.as_ref());
+    message.extend_from_slice(program_id.as_ref());
+    let case_id_bytes = body.case_id.as_bytes();
+    message.extend_from_slice(&(case_id_bytes.len() as u32).to_le_bytes());
+    message.extend_from_slice(case_id_bytes);
+    message.extend_from_slice(body.claimant.as_ref());
+    message.extend_from_slice(body.escrow_program.as_ref());
+    message
+}
+
 /// The exact bytes Anchor's backend signs with ATTESTOR_PUBKEY's private
 /// key (see apps/web/src/lib/solana-attestation.ts) — a domain tag (so a
 /// signature can't be replayed as if it meant something else entirely),
@@ -894,14 +1046,25 @@ fn verify_decision_attestations(
     expected_body: &DecisionRelayBody,
 ) -> ProgramResult {
     let expected_message = decision_attestation_message(program_id, expected_body);
+    verify_attestation_threshold(instructions_sysvar_info, &expected_message)
+}
 
+/// Extracted from `verify_decision_attestations` so `emergency_refund`
+/// below can reuse the exact same scan-and-count logic over its own,
+/// differently-tagged message — the message-construction (and therefore
+/// what a signature actually commits to) is the only part that differs
+/// between the two attestation flows.
+fn verify_attestation_threshold(
+    instructions_sysvar_info: &AccountInfo,
+    expected_message: &[u8],
+) -> ProgramResult {
     let mut candidates: Vec<Pubkey> = Vec::with_capacity(ATTESTOR_PUBKEYS.len());
     for slot in 1..=ATTESTOR_PUBKEYS.len() {
         let ed25519_ix = match get_instruction_relative(-(slot as i64), instructions_sysvar_info) {
             Ok(ix) => ix,
             Err(_) => break, // fewer preceding instructions than attestor slots — nothing further to scan
         };
-        if let Some(signer) = parse_valid_ed25519_attestation(&ed25519_ix, &expected_message) {
+        if let Some(signer) = parse_valid_ed25519_attestation(&ed25519_ix, expected_message) {
             candidates.push(signer);
         }
     }
@@ -1259,5 +1422,77 @@ mod attestation_tests {
              data (u16::MAX) — accepting this would mean forged bytes placed anywhere in the instruction \
              data can masquerade as an attestation the runtime never actually verified"
         );
+    }
+
+    fn sample_refund_body() -> EmergencyRefundBody {
+        EmergencyRefundBody {
+            case_id: "CASE-ATTEST-TEST-1".to_string(),
+            claimant: Pubkey::new_unique(),
+            escrow_program: Pubkey::new_unique(),
+        }
+    }
+
+    /// The core defense emergency_refund_attestation_message's own doc
+    /// comment claims: a real settlement attestation must never be
+    /// replayable as an emergency-refund one. Proven here by
+    /// constructing a DecisionRelayBody and an EmergencyRefundBody that
+    /// agree on every field the two message types share (case_id,
+    /// claimant, escrow_program), then asserting the two resulting
+    /// messages are still different — the domain tag alone must be
+    /// doing real work, not incidentally distinct because of some other
+    /// field.
+    #[test]
+    fn emergency_refund_message_is_never_equal_to_a_settle_message_over_the_same_case() {
+        let program_id = Pubkey::new_unique();
+        let claimant = Pubkey::new_unique();
+        let escrow_program = Pubkey::new_unique();
+
+        let settle_body = DecisionRelayBody {
+            case_id: "CASE-SHARED-1".to_string(),
+            claimant,
+            respondent: Pubkey::new_unique(),
+            escrow_program,
+            claimant_share_bps: 10_000,
+            respondent_share_bps: 0,
+            decision_hash: [0u8; 32],
+        };
+        let refund_body = EmergencyRefundBody {
+            case_id: "CASE-SHARED-1".to_string(),
+            claimant,
+            escrow_program,
+        };
+
+        let settle_message = decision_attestation_message(&program_id, &settle_body);
+        let refund_message = emergency_refund_attestation_message(&program_id, &refund_body);
+
+        assert_ne!(
+            settle_message, refund_message,
+            "a real settlement attestation and an emergency-refund attestation over equivalent \
+             case/claimant/escrow_program fields must never produce the same signed message — \
+             otherwise a signature collected for one could be replayed as the other"
+        );
+    }
+
+    /// Same real-signature round-trip proof as
+    /// `parse_valid_ed25519_attestation_accepts_real_signature_matching_message`
+    /// above, over the emergency-refund message construction specifically —
+    /// confirms the new message type is itself a valid, well-formed
+    /// byte string a real Ed25519 signature can be verified against, not
+    /// just distinct from the settle one.
+    #[test]
+    fn emergency_refund_attestation_accepts_real_signature_matching_message() {
+        let mut csprng = OsRng;
+        let signing_key = SigningKey::generate(&mut csprng);
+        let verifying_key_bytes = signing_key.verifying_key().to_bytes();
+
+        let program_id = Pubkey::new_unique();
+        let body = sample_refund_body();
+        let message = emergency_refund_attestation_message(&program_id, &body);
+        let signature = signing_key.sign(&message).to_bytes();
+
+        let ix = new_ed25519_instruction_with_signature(&message, &signature, &verifying_key_bytes);
+
+        let result = parse_valid_ed25519_attestation(&ix, &message);
+        assert_eq!(result, Some(Pubkey::new_from_array(verifying_key_bytes)));
     }
 }

@@ -14,6 +14,88 @@ export type Escrow = {
   },
   "instructions": [
     {
+      "name": "emergencyRefund",
+      "docs": [
+        "The governed escape hatch for a deposit that is stuck: no",
+        "decision ever reached (case genuinely UNDETERMINED), or one was",
+        "reached but delivery/settlement never completed. Mirrors EVM's",
+        "`Escrow.sol emergencyRefund()` exactly: same `onlyDecisionRelay`-",
+        "equivalent boundary (only the designated `adjudicator` authority",
+        "— decision-relay's escrow_authority PDA in production — may call",
+        "this; `decision-relay::emergency_refund` independently verifies",
+        "the same M-of-N attestor threshold before ever reaching here, so",
+        "there is no unilateral-withdrawal path distinct from the one",
+        "`settle` already has), same real on-chain timeout gate (elapsed",
+        "since the ORIGINAL deposit, never reset by anything), same",
+        "always-100%-to-claimant payout (the party whose funds these are,",
+        "in this domain's REFUND_FULL vocabulary). Safe by construction:",
+        "`initialize_case` requires the claimant to be the depositing",
+        "signer, so there is no respondent-or-third-party-funded case",
+        "this could misdirect."
+      ],
+      "discriminator": [
+        188,
+        73,
+        52,
+        195,
+        137,
+        70,
+        180,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "adjudicator",
+          "signer": true
+        },
+        {
+          "name": "case",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "case.case_id",
+                "account": "case"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "claimant",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initializeCase",
       "docs": [
         "Claimant opens a case and deposits the disputed amount (lamports)",
@@ -80,6 +162,57 @@ export type Escrow = {
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "initializeConfig",
+      "docs": [
+        "One-time, program-wide setup for the emergency-refund timeout",
+        "config singleton. Must run once before any `emergency_refund`",
+        "call; `initialize_case` does not depend on it (deposits work",
+        "identically with or without it — this only gates the escape",
+        "hatch, never the normal deposit/settle path)."
+      ],
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "raiseDispute",
@@ -193,6 +326,63 @@ export type Escrow = {
           "type": "u16"
         }
       ]
+    },
+    {
+      "name": "updateEmergencyRefundTimeout",
+      "docs": [
+        "Updates the timeout for all FUTURE emergency_refund eligibility",
+        "checks. Only the config's own recorded authority may call this —",
+        "deliberately not `decisionRelay`/the escrow_authority PDA, since",
+        "that would let the same M-of-N attestor set that authorizes a",
+        "refund also shorten its own waiting period; kept as a genuinely",
+        "separate authority key. Already-eligible or already-elapsed",
+        "waits for existing deposits are computed live against",
+        "`deposited_at` at emergency_refund time, so a change here applies",
+        "retroactively to every not-yet-refunded deposit, not just future",
+        "ones — this is a deliberate difference from EVM, where an",
+        "immutable per-contract timeout can never do that."
+      ],
+      "discriminator": [
+        99,
+        191,
+        226,
+        229,
+        200,
+        235,
+        196,
+        79
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "newTimeoutSeconds",
+          "type": "i64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -207,6 +397,19 @@ export type Escrow = {
         162,
         154,
         176
+      ]
+    },
+    {
+      "name": "config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
       ]
     }
   ],
@@ -245,6 +448,16 @@ export type Escrow = {
       "code": 6006,
       "name": "partyMismatch",
       "msg": "claimant/respondent accounts do not match the case"
+    },
+    {
+      "code": 6007,
+      "name": "invalidTimeout",
+      "msg": "emergency refund timeout must be greater than zero"
+    },
+    {
+      "code": 6008,
+      "name": "timeoutNotElapsed",
+      "msg": "emergency refund timeout has not yet elapsed since deposit"
     }
   ],
   "types": [
@@ -284,6 +497,17 @@ export type Escrow = {
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "depositedAt",
+            "docs": [
+              "Unix timestamp of `initialize_case`'s own execution — the ORIGINAL",
+              "deposit time, never reset by anything (a `raise_dispute` call, a",
+              "failed settle attempt, none of it moves this). `emergency_refund`'s",
+              "only timeout check is against this field, exactly mirroring",
+              "EVM's `Deposit.depositedAt`."
+            ],
+            "type": "i64"
           }
         ]
       }
@@ -301,6 +525,33 @@ export type Escrow = {
           },
           {
             "name": "settled"
+          },
+          {
+            "name": "refunded"
+          }
+        ]
+      }
+    },
+    {
+      "name": "config",
+      "docs": [
+        "Program-wide singleton — see `initialize_config`'s doc comment for",
+        "why this exists instead of a compiled-in constant."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "emergencyRefundTimeoutSeconds",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }

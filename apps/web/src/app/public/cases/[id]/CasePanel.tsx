@@ -45,6 +45,7 @@ export function CasePanel({
   const [submittingEvidence, setSubmittingEvidence] = useState(false);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [evidenceNote, setEvidenceNote] = useState<string | null>(null);
+  const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(new Set());
 
   const [appealReason, setAppealReason] = useState("");
   const [filingAppeal, setFilingAppeal] = useState(false);
@@ -354,7 +355,29 @@ export function CasePanel({
                   {e.mimeType} file, open
                 </a>
               ) : (
-                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{e.storageRef.slice(0, 400)}</p>
+                <>
+                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+                    {expandedEvidenceIds.has(e.id) || e.storageRef.length <= 400
+                      ? e.storageRef
+                      : `${e.storageRef.slice(0, 400)}…`}
+                  </p>
+                  {e.storageRef.length > 400 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedEvidenceIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(e.id)) next.delete(e.id);
+                          else next.add(e.id);
+                          return next;
+                        })
+                      }
+                      className="text-sm text-seal-500 underline hover:text-seal-600 dark:text-seal-400"
+                    >
+                      {expandedEvidenceIds.has(e.id) ? "Show less" : "Show more"}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           ))}

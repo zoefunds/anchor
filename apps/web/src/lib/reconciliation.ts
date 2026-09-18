@@ -390,7 +390,7 @@ async function checkSolanaDispatchedButStale(
   const program = getEscrowProgram(connection, keypairWallet(Keypair.generate()), escrowProgramId.toBase58());
   const casePda = deriveCasePda(escrowProgramId, cs.escrowId);
 
-  let status: "active" | "disputed" | "settled" | null;
+  let status: "active" | "disputed" | "settled" | "refunded" | null;
   try {
     status = await fetchCaseStatus(program, casePda);
   } catch (err) {

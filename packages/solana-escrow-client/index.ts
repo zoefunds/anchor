@@ -16,6 +16,7 @@ export type { Escrow };
 export const ESCROW_IDL = escrowIdl as unknown as Escrow;
 
 const CASE_SEED_PREFIX = Buffer.from("case");
+const CONFIG_SEED_PREFIX = Buffer.from("config");
 
 /** Minimal anchor.Wallet implementation over a raw Keypair — sufficient for building/simulating/signing instructions from a script or server process; never suitable for a real user's wallet (see deposit-execution.ts's own doc comment on that boundary). */
 export function keypairWallet(keypair: Keypair): Wallet {
@@ -57,15 +58,74 @@ export function deriveCasePda(programId: PublicKey, onChainCaseId: string): Publ
   return pda;
 }
 
-/** The escrow program's own source of truth for whether a case has actually settled on-chain — see chains/solana/programs/escrow/src/lib.rs's CaseStatus enum (Active/Disputed/Settled). Returns null if the case account doesn't exist (never deposited into). */
+/** The program-wide emergency-refund-timeout config singleton — one per deployed escrow program, not per case. */
+export function deriveConfigPda(programId: PublicKey): PublicKey {
+  const [pda] = PublicKey.findProgramAddressSync([CONFIG_SEED_PREFIX], programId);
+  return pda;
+}
+
+/**
+ * One-time setup, required before any `emergency_refund` can succeed
+ * (escrow's own `initialize_config` doc comment). `authority` becomes
+ * the only signer `update_emergency_refund_timeout` will ever accept —
+ * deliberately a separate key from the deploy authority is fine, but it
+ * must be kept, not lost, since there is no recovery path for a lost
+ * config authority short of a fresh escrow deployment.
+ */
+export async function buildInitializeConfigInstruction(params: {
+  program: Program<Escrow>;
+  authority: PublicKey;
+}): Promise<{ instruction: TransactionInstruction; configPda: PublicKey }> {
+  const configPda = deriveConfigPda(params.program.programId);
+  const instruction = await params.program.methods
+    .initializeConfig()
+    .accounts({ authority: params.authority })
+    .instruction();
+  return { instruction, configPda };
+}
+
+/** Changes the timeout for every not-yet-refunded deposit immediately (see update_emergency_refund_timeout's own doc comment for why this differs from EVM's per-contract-immutable value). */
+export async function buildUpdateEmergencyRefundTimeoutInstruction(params: {
+  program: Program<Escrow>;
+  authority: PublicKey;
+  newTimeoutSeconds: bigint;
+}): Promise<TransactionInstruction> {
+  return params.program.methods
+    .updateEmergencyRefundTimeout(new BN(params.newTimeoutSeconds.toString()))
+    .accounts({ authority: params.authority })
+    .instruction();
+}
+
+/** Reads the config singleton directly — null if `initialize_config` has never been called on this program deployment. */
+export async function fetchEmergencyRefundConfig(
+  program: Program<Escrow>,
+  configPda: PublicKey
+): Promise<{ authority: PublicKey; emergencyRefundTimeoutSeconds: bigint } | null> {
+  const account = await program.account.config.fetchNullable(configPda);
+  if (!account) return null;
+  return {
+    authority: account.authority,
+    emergencyRefundTimeoutSeconds: BigInt(account.emergencyRefundTimeoutSeconds.toString()),
+  };
+}
+
+/** Reads a case's own deposited_at (unix seconds) directly — the same field emergency_refund's on-chain timeout check reads, so a caller can compute local eligibility before ever submitting a transaction. Null if the case account doesn't exist. */
+export async function fetchCaseDepositedAt(program: Program<Escrow>, casePda: PublicKey): Promise<bigint | null> {
+  const account = await program.account.case.fetchNullable(casePda);
+  if (!account) return null;
+  return BigInt(account.depositedAt.toString());
+}
+
+/** The escrow program's own source of truth for whether a case has actually settled on-chain — see chains/solana/programs/escrow/src/lib.rs's CaseStatus enum (Active/Disputed/Settled/Refunded). Returns null if the case account doesn't exist (never deposited into). */
 export async function fetchCaseStatus(
   program: Program<Escrow>,
   casePda: PublicKey
-): Promise<"active" | "disputed" | "settled" | null> {
+): Promise<"active" | "disputed" | "settled" | "refunded" | null> {
   const account = await program.account.case.fetchNullable(casePda);
   if (!account) return null;
-  const status = account.status as unknown as { active?: object; disputed?: object; settled?: object };
+  const status = account.status as unknown as { active?: object; disputed?: object; settled?: object; refunded?: object };
   if ("settled" in status) return "settled";
+  if ("refunded" in status) return "refunded";
   if ("disputed" in status) return "disputed";
   return "active";
 }

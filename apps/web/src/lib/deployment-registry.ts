@@ -53,9 +53,10 @@ export const ACTIVE_SEPOLIA_TOPOLOGY = {
   validatorAnnounce: "0x198A6ec048C665d7E4dc2b40Cb2c715Db1cEC6F5" as Address,
   ism: "0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0" as Address,
   decisionRelay: "0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834" as Address,
-  escrow: "0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD" as Address,
+  escrow: "0x8634d8131dE3F16A33125266A2301DcBb72F30d7" as Address,
   trustedSenderAddress: "0x7401c129EDfc26E68FE19309fE461eb3Db1058Eb" as Address,
   attestorThreshold: 2,
+  emergencyRefundTimeoutSeconds: 3600,
 } as const;
 
 // Retired addresses — kept here ONLY as a labelled historical record so
@@ -86,6 +87,12 @@ export const RETIRED_SEPOLIA_ADDRESSES = {
   // stuck.
   decisionRelayPhase2PreAuditFix: "0x2d5E63ea1F83f6BF5a438c354454b100904896EE" as Address,
   escrowPhase2PreAuditFix: "0x891C38cd2E4a92b0ae9b63b55bd2aa6883381A5d" as Address,
+  // 2026-09-18: retired only to shorten the immutable
+  // emergencyRefundTimeoutSeconds from 30 days to 1 hour. Same
+  // decisionRelay as the active pair, so if this one has an
+  // unsettled deposit it must be reached via ITS OWN 30-day
+  // emergencyRefund() window, not the new escrow's 1-hour one.
+  escrowPreOneHourTimeout: "0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD" as Address,
 } as const;
 
 // Mirrors chains/hyperlane-validator/deployment.json's validators array.

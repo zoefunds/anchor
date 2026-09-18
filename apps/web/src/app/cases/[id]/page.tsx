@@ -124,6 +124,7 @@ export default function CaseDetailPage() {
   const [appealReason, setAppealReason] = useState("");
   const [appealing, setAppealing] = useState(false);
   const [correctType, setCorrectType] = useState<string>("");
+  const [expandedEvidenceIds, setExpandedEvidenceIds] = useState<Set<string>>(new Set());
 
   const [isOwner, setIsOwner] = useState(false);
   const [restricted, setRestricted] = useState(false);
@@ -786,9 +787,29 @@ export default function CaseDetailPage() {
                     {e.mimeType} file, open
                   </a>
                 ) : (
-                  <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                    {e.storageRef.slice(0, 400)}
-                  </p>
+                  <>
+                    <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                      {expandedEvidenceIds.has(e.id) || e.storageRef.length <= 400
+                        ? e.storageRef
+                        : `${e.storageRef.slice(0, 400)}…`}
+                    </p>
+                    {e.storageRef.length > 400 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedEvidenceIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(e.id)) next.delete(e.id);
+                            else next.add(e.id);
+                            return next;
+                          })
+                        }
+                        className="mt-1 text-sm text-seal-500 underline hover:text-seal-600 dark:text-seal-400"
+                      >
+                        {expandedEvidenceIds.has(e.id) ? "Show less" : "Show more"}
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>

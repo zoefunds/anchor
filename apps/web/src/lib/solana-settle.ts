@@ -23,6 +23,14 @@ import {
 import { confirmTransactionBounded } from "@/lib/solana-confirm";
 
 const DECISION_RELAY_ATTESTED_SETTLE_VARIANT = 2; // see DecisionRelayInstruction enum's Borsh discriminant order
+const DECISION_RELAY_EMERGENCY_REFUND_VARIANT = 4; // Init=0, DispatchCaseOriginate=1, AttestedSettle=2, InitReplayGuard=3, EmergencyRefund=4
+
+export interface SolanaEmergencyRefundParams {
+  decisionRelayProgramId: string; // base58
+  caseId: string;
+  claimant: string; // base58
+  escrowProgram: string; // base58
+}
 
 export interface SolanaAttestedSettleParams {
   decisionRelayProgramId: string; // base58
@@ -121,6 +129,48 @@ export function decisionAttestationMessage(params: SolanaAttestedSettleParams): 
     claimantShareBps,
     respondentShareBps,
     params.decisionHash,
+  ]);
+}
+
+/**
+ * The exact bytes decision-relay's `emergency_refund_attestation_message`
+ * Rust function recomputes and compares against — mirrors
+ * decisionAttestationMessage above exactly except for the domain tag
+ * (never interchangeable with a real settlement attestation, by design
+ * — see that Rust function's own doc comment) and the fields committed
+ * to (no shares, no decision_hash: an emergency refund is never a real
+ * adjudicated outcome).
+ */
+export function emergencyRefundAttestationMessage(params: SolanaEmergencyRefundParams): Buffer {
+  const tag = Buffer.from("ANCHOR_SOLANA_EMERGENCY_REFUND_V1", "utf-8");
+  const genesisHash = new PublicKey(TESTNET_GENESIS_HASH).toBuffer();
+  const programId = new PublicKey(params.decisionRelayProgramId).toBuffer();
+  const caseIdBytes = Buffer.from(params.caseId, "utf-8");
+  const caseIdLen = Buffer.alloc(4);
+  caseIdLen.writeUInt32LE(caseIdBytes.length);
+
+  return Buffer.concat([
+    tag,
+    genesisHash,
+    programId,
+    caseIdLen,
+    caseIdBytes,
+    new PublicKey(params.claimant).toBuffer(),
+    new PublicKey(params.escrowProgram).toBuffer(),
+  ]);
+}
+
+/** Matches decision-relay's `EmergencyRefundBody` Borsh layout exactly. */
+function encodeEmergencyRefundBody(params: SolanaEmergencyRefundParams): Buffer {
+  const caseIdBytes = Buffer.from(params.caseId, "utf-8");
+  const caseIdLen = Buffer.alloc(4);
+  caseIdLen.writeUInt32LE(caseIdBytes.length);
+
+  return Buffer.concat([
+    caseIdLen,
+    caseIdBytes,
+    new PublicKey(params.claimant).toBuffer(),
+    new PublicKey(params.escrowProgram).toBuffer(),
   ]);
 }
 
@@ -522,6 +572,111 @@ export async function submitAttestedSettle(
     payerKey: payer.publicKey,
     recentBlockhash: blockhash,
     instructions: [...ed25519Instructions, attestedSettleIx],
+  }).compileToV0Message(lookupTableAccounts);
+
+  const tx = new VersionedTransaction(messageV0);
+  tx.sign([payer]);
+
+  const signature = await connection.sendTransaction(tx);
+  await confirmTransactionBounded({ connection, signature, lastValidBlockHeight });
+  return { signature };
+}
+
+/**
+ * The Solana counterpart of submitAttestedSettle, for the governed
+ * escape hatch instead of a real settlement — see decision-relay's
+ * `emergency_refund` doc comment. Same M-of-N Ed25519 instruction
+ * pattern, same threshold requirement, same lookup-table handling; the
+ * two real differences are the message tag (emergencyRefundAttestationMessage,
+ * never interchangeable with a settlement attestation) and the target
+ * instruction's account list (case, config, claimant — no respondent,
+ * since a refund always pays 100% to the claimant and escrow's own
+ * `emergency_refund` independently re-checks the on-chain timeout
+ * against `Case.deposited_at`; no timeout check happens here or in
+ * decision-relay).
+ */
+export async function submitEmergencyRefund(
+  params: SolanaEmergencyRefundParams,
+  rpcUrl: string,
+  externalAttestations: ExternalSolanaAttestation[] = []
+): Promise<{ signature: string }> {
+  const connection = new Connection(rpcUrl, "confirmed");
+  await assertConnectedToExpectedSolanaCluster(connection);
+  const attestor = getAttestorKeypair();
+  const payer = getRelayPayerKeypair();
+
+  const message = emergencyRefundAttestationMessage(params);
+
+  const validExternalAttestations = validateExternalAttestations(externalAttestations, attestor.publicKey.toBytes());
+
+  const ed25519Instructions = [
+    Ed25519Program.createInstructionWithPrivateKey({ privateKey: attestor.secretKey, message }),
+    ...validExternalAttestations.map((ext) =>
+      Ed25519Program.createInstructionWithPublicKey({
+        publicKey: ext.publicKey,
+        message,
+        signature: ext.signature,
+      })
+    ),
+  ];
+
+  const totalSignatureCount = 1 + validExternalAttestations.length;
+  if (totalSignatureCount < ATTESTOR_THRESHOLD) {
+    throw new InsufficientSolanaAttestationsError(`0x${message.toString("hex")}`, totalSignatureCount, ATTESTOR_THRESHOLD);
+  }
+
+  const programId = new PublicKey(params.decisionRelayProgramId);
+  const [storagePda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("decision_relay"), Buffer.from("-"), Buffer.from("storage")],
+    programId
+  );
+  const [escrowAuthorityPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("decision_relay"), Buffer.from("-"), Buffer.from("escrow_authority")],
+    programId
+  );
+  const escrowProgramId = new PublicKey(params.escrowProgram);
+  const [casePda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("case"), Buffer.from(params.caseId, "utf-8")],
+    escrowProgramId
+  );
+  const [configPda] = PublicKey.findProgramAddressSync([Buffer.from("config")], escrowProgramId);
+
+  const instructionData = Buffer.concat([
+    Buffer.from([DECISION_RELAY_EMERGENCY_REFUND_VARIANT]),
+    encodeEmergencyRefundBody(params),
+  ]);
+
+  const emergencyRefundIx = new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isSigner: false, isWritable: false },
+      { pubkey: storagePda, isSigner: false, isWritable: false },
+      { pubkey: escrowProgramId, isSigner: false, isWritable: false },
+      { pubkey: casePda, isSigner: false, isWritable: true },
+      { pubkey: configPda, isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(params.claimant), isSigner: false, isWritable: true },
+      { pubkey: escrowAuthorityPda, isSigner: false, isWritable: false },
+    ],
+    data: instructionData,
+  });
+
+  const lookupTableAccounts: AddressLookupTableAccount[] = [];
+  if (DECISION_RELAY_LOOKUP_TABLE) {
+    const lookupTableAddress = new PublicKey(DECISION_RELAY_LOOKUP_TABLE);
+    await ensureLookupTableHasAddresses(connection, payer, lookupTableAddress, [
+      new PublicKey(params.claimant),
+      casePda,
+      configPda,
+    ]);
+    const lookupTable = await connection.getAddressLookupTable(lookupTableAddress);
+    if (lookupTable.value) lookupTableAccounts.push(lookupTable.value);
+  }
+
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const messageV0 = new TransactionMessage({
+    payerKey: payer.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [...ed25519Instructions, emergencyRefundIx],
   }).compileToV0Message(lookupTableAccounts);
 
   const tx = new VersionedTransaction(messageV0);
