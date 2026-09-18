@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-13T22:15:11.215Z",
+  "generatedAt": "2026-09-18T12:20:43.300Z",
   "generatedBy": "scripts/generate-deployment-manifest.ts",
   "network": {
     "chain": "sepolia",

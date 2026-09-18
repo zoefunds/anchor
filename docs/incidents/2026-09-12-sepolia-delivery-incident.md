@@ -243,3 +243,22 @@ further.
   agent-backed integration test harness) — not started, explicitly
   out of scope for this submission round.
 - **`verify-checkpoint-quorum.ts`'s known gaps** — unchanged, unaddressed.
+
+## 2026-09-18 update: the "ACTIVE, frozen for submission" escrow row above is now retired
+
+The Phase 2, second-deploy escrow (`0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD`)
+listed as **Active — frozen for submission, do not redeploy** in the table
+above was redeployed to shorten its immutable `emergencyRefundTimeoutSeconds`
+from 30 days to 1 hour — see `docs/incidents/2026-09-18-emergency-refund-recovery.md`
+for the full context (UNDETERMINED cases had no working recovery path on
+either chain until that pass). The freeze note above no longer holds; it is
+left as-written for the historical record of what was true on 2026-09-12/13.
+
+Current active escrow: `0x8634d8131dE3F16A33125266A2301DcBb72F30d7` (same
+DecisionRelay, `0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834`, reused as-is —
+see `apps/web/src/lib/deployment-registry.ts`'s `ACTIVE_SEPOLIA_TOPOLOGY`,
+always the live source of truth). The retired `0x5a7a2F33...` escrow is NOT
+pure history: if it holds any unsettled deposit, that deposit can only ever
+be reached through ITS OWN 30-day `emergencyRefund()` window, not the new
+escrow's 1-hour one — see `RETIRED_SEPOLIA_ADDRESSES.escrowPreOneHourTimeout`'s
+own doc comment.

@@ -586,7 +586,7 @@ None of these Fly apps auto-deploy from `main` — see "Known gaps" #10.
 |---|---|---|
 | `DecisionRelay` (current) | `0x56bf62F9F4C2C316D956F9C35DD1B15BE5ae9834` | Receives decisions, gates settlement on M-of-N attestation + multisig ISM |
 | Multisig ISM (`StaticMerkleRootMultisigIsm`) | `0xd916b90858B8bF7Cc7E111D3C7923ab4Fe0FCcf0` | Real 2-of-3 validator-checkpoint verification |
-| Escrow (current) | `0x5a7a2F3553f147a6D2BE4b23CB36D693e12e98bD` | The canonical Sepolia escrow new dispatches settle through. Org-configurable settlement integrations now let any org register its own escrow contract via Settings → Settlement integrations, so this is the one `ACTIVE_SEPOLIA_TOPOLOGY` (below) resolves to, not the only one that exists in the database. |
+| Escrow (current) | `0x8634d8131dE3F16A33125266A2301DcBb72F30d7` | The canonical Sepolia escrow new dispatches settle through. 1-hour `emergencyRefundTimeoutSeconds` (redeployed 2026-09-18, was 30 days on the prior escrow — see `docs/incidents/2026-09-18-emergency-refund-recovery.md`). Org-configurable settlement integrations now let any org register its own escrow contract via Settings → Settlement integrations, so this is the one `ACTIVE_SEPOLIA_TOPOLOGY` (below) resolves to, not the only one that exists in the database. |
 | `AuditAnchor` | `0x642C8f4De6302D06fC0620efE571dFd69DF94CEA` | External audit-chain checkpointing (not independently re-verified live this pass — see `AUDIT_ANCHOR_CONTRACT_ADDRESS` in `apps/web/.env.example`) |
 | Governance Safe | `0xc200534F7Debf2816C085c5a156AbD686FA19f4C` | Deployed 2-of-2 Safe — **not currently `DecisionRelay`'s owner**, see "Known gaps" #7 |
 | Hyperlane Mailbox | `0x345E7246631ceb0300427caB75eacA10c326BB09` | Anchor's own (migrated off the canonical shared Sepolia Mailbox on 2026-09-07 after finding its hooks disconnected — see `docs/mainnet-readiness-runbook.md`) |
@@ -606,9 +606,11 @@ including the two this README's table pointed at before this pass
 — retired 2026-09-13, and still holding a real, unrecoverable-until-timeout
 stuck deposit; see `docs/incidents/2026-09-12-sepolia-delivery-incident.md`.
 `apps/web/deployment-manifest.json` is a point-in-time snapshot
-(last regenerated 2026-09-13) confirming the current `DecisionRelay`
-address and its owner/attestor state — verified directly against it and
-against live case data for this pass, not assumed.
+(last regenerated 2026-09-18, re-verified live on-chain — no drift from the
+2026-09-13 snapshot: `DecisionRelay`, its owner, attestor set, and the Safe
+are all unchanged) confirming the current `DecisionRelay` address and its
+owner/attestor state — verified directly against it and against live case
+data for this pass, not assumed.
 
 **Attestor addresses (EVM, 2-of-3, fully automated as of 2026-09-07)**:
 `0x3261CEF8Ca14FCc9EF1Cd584209D7c3b7f578b70` (backend-held,

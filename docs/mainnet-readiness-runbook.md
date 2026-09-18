@@ -326,9 +326,11 @@ mainnet-relevant action, run it deliberately):
 
 **Status: old validator2 (Fly `anc-hor-validator2`, machine
 `e82d16e1a331e8`) stopped 2026-09-06, not deleted. Rollback window: not
-yet defined — propose 14 days from stop date
-(2026-09-20), matching this project's existing `emergencyRefundTimeoutSeconds`
-order of magnitude for "long enough to notice a problem."**
+yet defined — propose 14 days from stop date (2026-09-20), independent of
+`emergencyRefundTimeoutSeconds` (that value now varies per escrow — 1 hour
+on the current Sepolia escrow, still 30 days on the retired one holding a
+stuck deposit — and was never really the right thing to size this against;
+14 days is just "long enough to notice a validator-decommission problem").**
 
 Before deletion (after the rollback window, with explicit sign-off):
 1. Snapshot required evidence: final `checkpoint_latest_index.json`
