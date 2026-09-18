@@ -188,30 +188,40 @@ pub mod escrow {
     /// One-time migration for a Case account created before `deposited_at`
     /// existed on this struct (every case deposited before this program's
     /// 2026-09-18 upgrade — see docs/incidents/ for the finding). Those
-    /// accounts are still allocated at the OLD `Case::MAX_SIZE` (8 bytes
-    /// short of the current one), which means Anchor's typed
-    /// `Account<'info, Case>` can't even deserialize them anymore — Borsh
-    /// fails outright on a too-short buffer before any instruction body
-    /// or `realloc` constraint gets a chance to run. `emergency_refund`
-    /// would fail on every pre-upgrade case for that reason alone,
-    /// independent of whether the real timeout had elapsed. This
-    /// instruction works around that by taking `case` as a raw,
-    /// PDA-verified `UncheckedAccount` instead: extends the account's
-    /// lamports and length by exactly 8 bytes, then appends
-    /// `deposited_at` as the new trailing field — every other field's
-    /// byte offset is unchanged since `deposited_at` was added at the
-    /// END of the struct, so this never touches claimant/respondent/
-    /// adjudicator/amount/status/bump. `deposited_at` should be set to
-    /// the real, independently-known deposit time (this program has no
-    /// way to recover the original transaction's own timestamp after
-    /// the fact) — the backend passes CaseSettlement.depositConfirmedAt
-    /// from Postgres, the closest real record of when the deposit
-    /// actually happened. Guarded by the same config-authority key as
-    /// `update_emergency_refund_timeout` (never decisionRelay's
-    /// escrow_authority PDA — same separation-of-authority reasoning as
-    /// that instruction), and only runs once per account: an account
-    /// already at the current size is rejected rather than silently
-    /// overwriting a `deposited_at` some earlier migration already set.
+    /// accounts can't even be loaded through Anchor's typed
+    /// `Account<'info, Case>` anymore — Borsh fails outright on a
+    /// too-short buffer before any instruction body or `realloc`
+    /// constraint gets a chance to run — so `emergency_refund` would fail
+    /// on every pre-upgrade case for that reason alone, independent of
+    /// whether the real timeout had elapsed. This instruction works
+    /// around that by taking `case` as a raw, PDA-verified
+    /// `UncheckedAccount` and writing `deposited_at` at its REAL byte
+    /// offset — immediately after `bump`, i.e. `8 (disc) + 4 + case_id
+    /// bytes + 96 (three pubkeys) + 8 (amount) + 1 (status) + 1 (bump)` —
+    /// computed from the case_id length actually stored in this
+    /// account's own data, NOT from the buffer's physical length. Every
+    /// Case account (old and new) was allocated with
+    /// `space = Case::MAX_SIZE`, which reserves room for the WORST-CASE
+    /// `MAX_CASE_ID_LEN`-byte case_id regardless of the actual case_id's
+    /// length — so for any case_id shorter than that max, the account's
+    /// physical buffer is already padded well past where Borsh's
+    /// sequential deserialization actually stops reading. A first,
+    /// broken version of this instruction wrote `deposited_at` to the
+    /// tail of the physical buffer instead of this real offset — caught
+    /// and fixed before it reached mainnet, but already run once against
+    /// two real Devnet cases (Case-2, CASE-RELAY-2), which is why this
+    /// only requires the target 8 bytes to be currently zero rather than
+    /// requiring the buffer to still be at the old, pre-realloc size —
+    /// this must also be able to CORRECT an account this same
+    /// instruction already (wrongly) extended once.
+    /// `deposited_at` should be set to the real, independently-known
+    /// deposit time (this program has no way to recover the original
+    /// transaction's own timestamp after the fact) — the backend passes
+    /// CaseSettlement.depositConfirmedAt from Postgres, the closest real
+    /// record of when the deposit actually happened. Guarded by the same
+    /// config-authority key as `update_emergency_refund_timeout` (never
+    /// decisionRelay's escrow_authority PDA — same separation-of-authority
+    /// reasoning as that instruction).
     pub fn migrate_case_deposited_at(
         ctx: Context<MigrateCaseDepositedAt>,
         case_id: String,
@@ -225,27 +235,46 @@ pub mod escrow {
         require_keys_eq!(case_info.key(), expected_case_key, EscrowError::Unauthorized);
         require_keys_eq!(*case_info.owner, crate::ID, EscrowError::Unauthorized);
 
-        let old_len = case_info.data_len();
-        require!(old_len == Case::MAX_SIZE - 8, EscrowError::AlreadyMigrated);
+        // Real offset of the deposited_at field, derived from THIS
+        // account's own stored case_id length (read from the account
+        // data itself, never assumed) — not from the physical buffer
+        // size, which is always Case::MAX_SIZE regardless of this
+        // case's actual case_id length. Layout: 8 (disc) + 4 (case_id
+        // len prefix) + case_id bytes + 32*3 (claimant/respondent/
+        // adjudicator) + 8 (amount_lamports) + 1 (status) + 1 (bump).
+        let stored_case_id_len = {
+            let data = case_info.try_borrow_data()?;
+            require!(data.len() >= 12, EscrowError::AlreadyMigrated);
+            u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize
+        };
+        require!(stored_case_id_len == case_id.len(), EscrowError::Unauthorized);
+        let deposited_at_offset = 8 + 4 + stored_case_id_len + 32 * 3 + 8 + 1 + 1;
+        let required_len = deposited_at_offset + 8;
 
-        let new_len = Case::MAX_SIZE;
-        let rent = Rent::get()?;
-        let new_minimum_balance = rent.minimum_balance(new_len);
-        let additional_rent = new_minimum_balance.saturating_sub(case_info.lamports());
-        if additional_rent > 0 {
-            anchor_lang::solana_program::program::invoke(
-                &system_instruction::transfer(&ctx.accounts.authority.key(), &case_info.key(), additional_rent),
-                &[
-                    ctx.accounts.authority.to_account_info(),
-                    case_info.clone(),
-                    ctx.accounts.system_program.to_account_info(),
-                ],
-            )?;
+        let current_len = case_info.data_len();
+        if current_len < required_len {
+            let rent = Rent::get()?;
+            let new_minimum_balance = rent.minimum_balance(required_len);
+            let additional_rent = new_minimum_balance.saturating_sub(case_info.lamports());
+            if additional_rent > 0 {
+                anchor_lang::solana_program::program::invoke(
+                    &system_instruction::transfer(&ctx.accounts.authority.key(), &case_info.key(), additional_rent),
+                    &[
+                        ctx.accounts.authority.to_account_info(),
+                        case_info.clone(),
+                        ctx.accounts.system_program.to_account_info(),
+                    ],
+                )?;
+            }
+            case_info.realloc(required_len, false)?;
         }
-        case_info.realloc(new_len, false)?;
 
         let mut data = case_info.try_borrow_mut_data()?;
-        data[old_len..new_len].copy_from_slice(&deposited_at.to_le_bytes());
+        require!(
+            data[deposited_at_offset..deposited_at_offset + 8] == [0u8; 8],
+            EscrowError::AlreadyMigrated
+        );
+        data[deposited_at_offset..deposited_at_offset + 8].copy_from_slice(&deposited_at.to_le_bytes());
 
         Ok(())
     }
