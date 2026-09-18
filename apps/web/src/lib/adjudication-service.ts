@@ -1059,6 +1059,43 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
     const message = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
     console.error(`adjudication job failed for case ${caseId}:`, message);
+
+    // Real bug found 2026-09-18 (case cmu756hy7000x9q20ejrjzy5m): a failed
+    // re-adjudication during an APPEAL used to fall straight through to
+    // the plain UNDETERMINED handling below, discarding a perfectly
+    // real, already-recorded ACCEPTED decision from BEFORE the appeal —
+    // and by this point in the appeal branch, genlayer.appealCase() has
+    // already succeeded on-chain (appeal_count incremented,
+    // MAX_APPEALS=1 spent), so there is no way to ever appeal this
+    // contract again regardless of what this job does. The appeal
+    // attempt failing doesn't mean "nobody could decide" (which is what
+    // UNDETERMINED communicates) — it means the ORIGINAL decision was
+    // never actually superseded by a new one, so it's the real, final
+    // outcome. Recover it here rather than erasing it: same terminal
+    // status and settlement dispatch a SUCCESSFUL appeal re-adjudication
+    // already gets (see the FINALIZED branch above), just keyed to the
+    // pre-appeal decision instead of a new one.
+    if (isAppeal) {
+      const priorDecision = await withDbRetry(() =>
+        prisma.decision.findFirst({ where: { caseId: kase.id }, orderBy: { createdAt: "desc" } })
+      );
+      if (priorDecision && priorDecision.consensus === "ACCEPTED") {
+        await withDbRetry(() => prisma.case.update({ where: { id: kase.id }, data: { status: "FINALIZED" } }));
+        dispatchWebhookEvent({
+          organizationId: kase.organizationId,
+          event: "case.status_changed",
+          data: {
+            caseId: kase.id,
+            status: "FINALIZED",
+            note: "appeal re-adjudication failed; the pre-appeal decision stands as final since the on-chain appeal was already consumed",
+            error: message,
+          },
+        });
+        await dispatchSettlementForDecision(kase, priorDecision);
+        throw err; // still let the Job queue record the failure
+      }
+    }
+
     // Retried too: if THIS write also hits a transient DB error and
     // throws, the case is left stuck in ADJUDICATING forever with no
     // automatic recovery path (adjudicate's own API guard only accepts
