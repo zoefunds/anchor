@@ -24,7 +24,18 @@ import { verifyManifestHash } from "@/lib/manifest-signature";
 // in production the moment a real boot enforced flags.length === 0. No
 // on-chain values changed, only how this one known, permanent fact is
 // classified.
-const EXPECTED_EVM_MANIFEST_HASH = "1d30ea75bb419419fa746b0350835ab8ba1ab6936cc422227b3c2e5158e4f06c";
+// 2026-09-18: updated after regenerating deployment-manifest.json purely
+// to refresh its generatedAt timestamp and re-verify live on-chain state
+// (no address/attestor/governance values actually changed — see
+// docs/incidents/2026-09-18-emergency-refund-recovery.md). Missing this
+// update in the same commit as that regeneration is exactly the failure
+// mode this file's own doc comment above warns about: it crash-looped
+// anc-hor-worker in production (every boot failing closed on
+// verifyManifestHash()), silently blocking every adjudication job queued
+// after that deploy with no visible error on the case itself — it just
+// sat in ADJUDICATING forever since nothing was left running to process
+// the job.
+const EXPECTED_EVM_MANIFEST_HASH = "c95b1b9d1c40d2a47549788eb8997a0b2da4ca4ff384edec77f8e00d384c6717";
 const EXPECTED_SOLANA_MANIFEST_HASH = "4e82dd6c5a4e2bf430151c731f3b1af37d73e5e7afc3e14c2f4a71f614e1f671";
 
 // Phase 1 (signer/settlement/delivery reliability), item 1's "expected
