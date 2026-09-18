@@ -82,13 +82,18 @@ export const SAMPLE_EVIDENCE_CONTENT: Record<string, string> = {
     "return a JSON array of exactly 10 objects, each with: title (non-empty string), url " +
     "(non-empty string), points (non-negative integer). Output must be valid JSON with no " +
     "extra commentary.",
-  delivery_payload: JSON.stringify(
-    Array.from({ length: 10 }, (_, i) => ({
-      title: `Show HN: sample delivery item #${i + 1}`,
-      url: `https://example.com/item/${i + 1}`,
-      points: 300 - i * 12,
-    }))
-  ),
+  delivery_payload: JSON.stringify([
+    { title: "Show HN: I built a tiny Postgres replacement in Rust for embedded use", url: "https://news.ycombinator.com/item?id=41823156", points: 412 },
+    { title: "The Byzantine Generals Problem, twenty years later", url: "https://news.ycombinator.com/item?id=41822980", points: 287 },
+    { title: "Why we moved off Kubernetes after three years", url: "https://news.ycombinator.com/item?id=41823301", points: 356 },
+    { title: "Ask HN: How do you structure a monorepo at 50 engineers?", url: "https://news.ycombinator.com/item?id=41822844", points: 198 },
+    { title: "A visual guide to TCP congestion control algorithms", url: "https://news.ycombinator.com/item?id=41823512", points: 267 },
+    { title: "Show HN: Self-hosted alternative to Notion, written in Elixir", url: "https://news.ycombinator.com/item?id=41822711", points: 331 },
+    { title: "The economics of running a solo SaaS in 2026", url: "https://news.ycombinator.com/item?id=41823088", points: 175 },
+    { title: "Reverse engineering a 1980s calculator's floating point unit", url: "https://news.ycombinator.com/item?id=41822955", points: 224 },
+    { title: "Why static site generators are having a resurgence", url: "https://news.ycombinator.com/item?id=41823420", points: 143 },
+    { title: "Ask HN: Best resources for learning distributed systems from scratch?", url: "https://news.ycombinator.com/item?id=41822677", points: 259 },
+  ]),
   milestone_spec:
     "Milestone 2 of 3 (\"Payment integration\"): implement Stripe Checkout for the subscription " +
     "flow, covering monthly and annual plans, a working webhook handler that marks orders paid, " +
