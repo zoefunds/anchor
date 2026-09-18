@@ -902,7 +902,7 @@ export async function runAdjudicationJob(caseId: string, isAppeal = false): Prom
       // file evidence is stored as a private Cloudinary reference (see
       // lib/storage.ts), so resolve it into a freshly signed URL right
       // here rather than sending GenVM a reference it can't fetch.
-      const value = e.extractedText ?? resolveEvidenceUri(e.storageRef, GENLAYER_EVIDENCE_URL_TTL_SECONDS);
+      const value = e.extractedText ?? resolveEvidenceUri(e.storageRef, GENLAYER_EVIDENCE_URL_TTL_SECONDS, e.mimeType);
       // Redact common structured PII (emails, phone numbers, SSNs, card
       // numbers) out of free-text party statements before they reach
       // GenLayer — see lib/pii-redaction.ts for why this applies only to

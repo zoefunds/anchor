@@ -59,6 +59,13 @@ ERROR_EXPECTED = "[EXPECTED]"  # business-logic error, deterministic, exact matc
 ERROR_LLM = "[LLM_ERROR]"  # LLM misbehavior, always disagree, forces rotation
 ERROR_TRANSIENT = "[TRANSIENT]"  # network/upstream hiccup fetching file evidence
 ERROR_EXTERNAL = "[EXTERNAL]"  # file evidence URL itself is bad (4xx)
+# How many times a single leader/validator run retries its OWN
+# gl.nondet.exec_prompt call after a raw SDK-level crash (empty/malformed
+# LLM completion) before giving up and raising ERROR_LLM. Deliberately
+# small and local to one node's own attempt - this is not the same thing
+# as GenVM's cross-node leader rotation, which still applies independently
+# on top of this if every retry here is exhausted.
+EXEC_PROMPT_MAX_ATTEMPTS = 2
 
 # File evidence (images/PDFs uploaded to Cloudinary by Anchor's backend)
 # arrives in evidence_json as a plain public URL string, same field as
@@ -473,15 +480,50 @@ class Adjudicator(gl.contract.Contract):
             # once outside consensus.
             text_evidence, images = _resolve_evidence(evidence)
             prompt = policy["prompt"](text_evidence) + _shared_json_shape(reason_codes)
-            # `images` must be passed as the plural `images=` list kwarg
-            # even in JSON response mode - the runtime's singular `image=`
-            # overload in its type stubs is a silent no-op in practice.
-            if images:
-                raw = gl.nondet.exec_prompt(prompt, response_format="json", images=images)
-            else:
-                raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            parsed = _parse_json_block(raw) if isinstance(raw, str) else raw
-            return _coerce_decision_fields(parsed, reason_codes)
+
+            # Real bug found on a live appeal re-run: `gl.nondet.exec_prompt`
+            # with `response_format="json"` decodes the model's raw output
+            # ITSELF, internally, before ever returning to this function -
+            # when the underlying LLM call returns an empty or malformed
+            # completion (a transient provider hiccup, not anything our own
+            # evidence/prompt caused), that internal decode raises
+            # `genlayer.nondet.NondetException` with a raw Python traceback,
+            # completely bypassing `_parse_json_block`'s existing lenient
+            # cleanup below (which only ever runs `if isinstance(raw, str)`
+            # - it can't help against a call that never returns a string at
+            # all). Uncaught, this crashes the whole leader attempt as an
+            # unclassified exception instead of the domain's own
+            # `ERROR_LLM` ("LLM misbehavior, always disagree, forces
+            # rotation" - see this file's error-code constants), which is
+            # exactly the category `_handle_leader_error` already knows how
+            # to handle gracefully. A small retry loop first, since this
+            # class of failure is typically a one-off transient hiccup, not
+            # something the exact same prompt will reliably repeat.
+            last_exc = None
+            for attempt in range(EXEC_PROMPT_MAX_ATTEMPTS):
+                try:
+                    # `images` must be passed as the plural `images=` list
+                    # kwarg even in JSON response mode - the runtime's
+                    # singular `image=` overload in its type stubs is a
+                    # silent no-op in practice.
+                    if images:
+                        raw = gl.nondet.exec_prompt(prompt, response_format="json", images=images)
+                    else:
+                        raw = gl.nondet.exec_prompt(prompt, response_format="json")
+                    parsed = _parse_json_block(raw) if isinstance(raw, str) else raw
+                    return _coerce_decision_fields(parsed, reason_codes)
+                except gl.vm.UserError:
+                    # Already one of our own classified errors (e.g. from
+                    # _parse_json_block/_coerce_decision_fields below) -
+                    # never retry a genuine business-logic/malformed-output
+                    # classification, only the raw SDK-level crash above.
+                    raise
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+            raise gl.vm.UserError(
+                f"{ERROR_LLM} exec_prompt failed after {EXEC_PROMPT_MAX_ATTEMPTS} attempts: {last_exc}"
+            )
 
         def validator_fn(leaders_res: gl.vm.Result) -> bool:
             if not isinstance(leaders_res, gl.vm.Return):

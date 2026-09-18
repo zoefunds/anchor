@@ -41,7 +41,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     ...kase,
     evidence: kase.evidence.map((e) => ({
       ...e,
-      storageRef: resolveEvidenceUri(e.storageRef, DASHBOARD_EVIDENCE_URL_TTL_SECONDS),
+      storageRef: resolveEvidenceUri(e.storageRef, DASHBOARD_EVIDENCE_URL_TTL_SECONDS, e.mimeType),
     })),
     // Back-compat single-decision field the dashboard already reads —
     // always the most recent of the case's decision history.

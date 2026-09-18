@@ -141,6 +141,26 @@ export async function deleteEvidenceFile(storageRef: string): Promise<void> {
   }
 }
 
+// Real bug found 2026-09-18: `publicId` (anchor-evidence/<caseId>/<contentHash>,
+// see uploadEvidenceFile above) has never carried a file extension, so a
+// URL built without an explicit `format` never ends in one either — e.g.
+// `https://res.cloudinary.com/.../anchor-evidence/<case>/<hash>`, no
+// `.jpg`/`.png` at all. genlayer/contracts/adjudicator.py's `_is_image_url`
+// gates the ENTIRE "actually fetch this and hand the model a real image"
+// path on `lowered.endswith(IMAGE_EXTENSIONS)` — with no extension, every
+// piece of image evidence silently fell through to the generic
+// "just confirm the URL is reachable" file branch instead, meaning no
+// image evidence was ever genuinely visually evaluated by the contract,
+// regardless of upload success. Fixed by deriving the real extension from
+// the Evidence row's own stored `mimeType` and passing it as Cloudinary's
+// `format` option, so the signed URL this returns actually ends with it.
+const MIME_TYPE_TO_IMAGE_EXTENSION: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
 /**
  * Resolves an Evidence.storageRef into a freshly signed, time-limited
  * Cloudinary URL — the only way to actually fetch an `authenticated`
@@ -153,12 +173,20 @@ export async function deleteEvidenceFile(storageRef: string): Promise<void> {
  * dashboard/public-page view (that URL only needs to survive one page
  * load, not sit around in browser history as a standing credential —
  * exactly the property permanently-public URLs didn't have).
+ *
+ * `mimeType` (the Evidence row's own stored value) is required to produce
+ * a URL search image evidence is actually recognized from — see the
+ * MIME_TYPE_TO_IMAGE_EXTENSION comment above. Omit only for non-image
+ * evidence (PDFs) or legacy rows with no stored mimeType, where no
+ * extension-sniffing consumer exists.
  */
-export function resolveEvidenceUri(storageRef: string, expiresInSeconds: number): string {
+export function resolveEvidenceUri(storageRef: string, expiresInSeconds: number, mimeType?: string | null): string {
   if (!storageRef.startsWith(EVIDENCE_URI_PREFIX)) return storageRef;
   const rest = storageRef.slice(EVIDENCE_URI_PREFIX.length);
   const [resourceType, ...publicIdParts] = rest.split(":");
   const publicId = publicIdParts.join(":");
+
+  const format = mimeType ? MIME_TYPE_TO_IMAGE_EXTENSION[mimeType] : undefined;
 
   const client = getClient();
   return client.url(publicId, {
@@ -167,5 +195,6 @@ export function resolveEvidenceUri(storageRef: string, expiresInSeconds: number)
     sign_url: true,
     secure: true,
     expires_at: Math.floor(Date.now() / 1000) + expiresInSeconds,
+    ...(format ? { format } : {}),
   });
 }

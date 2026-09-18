@@ -131,7 +131,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     evidence: kase.evidence.map((e) => ({
       id: e.id,
       type: e.type,
-      storageRef: resolveEvidenceUri(e.storageRef, PUBLIC_EVIDENCE_URL_TTL_SECONDS),
+      storageRef: resolveEvidenceUri(e.storageRef, PUBLIC_EVIDENCE_URL_TTL_SECONDS, e.mimeType),
       mimeType: e.mimeType,
       createdAt: e.createdAt,
     })),
