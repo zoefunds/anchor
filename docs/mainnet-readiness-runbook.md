@@ -291,7 +291,7 @@ output that passed through this session:
 - The deployer private key used for the new ISM/DecisionRelay/Escrow
   redeploys (address `0xf171c23607b892797Eb5eb4e52fc668f924Df0A3` — also
   the new validator2's own key, reused as a deployer).
-- validator2-new's IAM access key (`REDACTED_AWS_ACCESS_KEY_ID`) and secret.
+- validator2-new's IAM access key (`<redacted — see incident record; rotate before treating as safe>`) and secret.
 
 Rotation plan (do not execute silently — each step below is a real
 mainnet-relevant action, run it deliberately):
@@ -304,7 +304,7 @@ mainnet-relevant action, run it deliberately):
 4. Verify: new address appears in `getAnnouncedStorageLocations`, and
    `checkpoint_latest_index.json` starts advancing under the new key's
    signature (spot-check by re-running `verify-deployment.ts`).
-5. Rotate the IAM access key (`REDACTED_AWS_ACCESS_KEY_ID`) via the AWS
+5. Rotate the IAM access key (`<redacted — see incident record; rotate before treating as safe>`) via the AWS
    console for the `anchor-hyperlane-validator2-new` IAM user — create a
    new key pair, update the running container's
    `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, verify S3 writes still
