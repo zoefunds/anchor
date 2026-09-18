@@ -92,10 +92,18 @@ SIG1=$(sign_digest "$ATTESTOR1_PK")
 SIG2=$(sign_digest "$ATTESTOR2_PK")
 
 set +e
-cast send "$DECISION_RELAY_ADDR" "emergencyRefund(address,bytes32,bytes32,bytes32,bytes[])" \
+PRETIMEOUT_OUT=$(cast send "$DECISION_RELAY_ADDR" "emergencyRefund(address,bytes32,bytes32,bytes32,bytes[])" \
   "$ESCROW_ADDR" "$CASE_ID" "$ESCROW_ID" "$PROOF_HASH" "[$SIG1,$SIG2]" \
-  --private-key "$RELAY_PRIVATE_KEY" --rpc-url "$RPC_URL" 2>&1 | grep -q "TimeoutNotElapsed\|revert" && echo "  ok: rejected pre-timeout as expected" || echo "  WARNING: pre-timeout call did not revert as expected — check manually"
+  --private-key "$RELAY_PRIVATE_KEY" --rpc-url "$RPC_URL" 2>&1)
+PRETIMEOUT_EXIT=$?
 set -e
+if [ "$PRETIMEOUT_EXIT" -ne 0 ]; then
+  echo "  ok: rejected pre-timeout as expected (cast exited non-zero, i.e. reverted)"
+else
+  echo "  FAILED: pre-timeout call succeeded when it should have reverted with TimeoutNotElapsed — real bug, aborting"
+  echo "$PRETIMEOUT_OUT"
+  exit 1
+fi
 
 echo
 echo "6. Waiting ${TIMEOUT_SECONDS}s for the timeout to elapse"
