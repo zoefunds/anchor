@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { StatusStamp } from "@/components/StatusStamp";
 import { EmailVerificationBanner } from "@/components/EmailVerificationBanner";
 import { Walkthrough } from "@/components/Walkthrough";
@@ -66,7 +67,10 @@ interface PolicySummary {
 }
 
 export default function CasesPage() {
+  const router = useRouter();
   const [cases, setCases] = useState<CaseSummary[]>([]);
+  const [creatingSandbox, setCreatingSandbox] = useState(false);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [policies, setPolicies] = useState<PolicySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -191,6 +195,28 @@ export default function CasesPage() {
 
   const selectedPolicy = policies.find((p) => p.id === policyId);
 
+  // One-click sandbox: a real onboarding gap ("still complex for a
+  // first-time user... a one-click sandbox case with prefilled evidence
+  // would let people test the full verdict flow without creating their
+  // own synthetic dispute or handling private party links") — this
+  // creates a fully-prefilled case (see api/cases/sandbox/route.ts) and
+  // takes the caller straight to it, already sitting in
+  // EVIDENCE_COLLECTION with every required exhibit filed, ready for a
+  // single "Submit for adjudication" click on the case page.
+  async function handleCreateSandbox() {
+    setCreatingSandbox(true);
+    setSandboxError(null);
+    try {
+      const res = await fetch("/api/cases/sandbox", { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to create sandbox case");
+      router.push(`/cases/${body.case.id}`);
+    } catch (err) {
+      setSandboxError(err instanceof Error ? err.message : String(err));
+      setCreatingSandbox(false);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-5xl px-8 py-16">
       <EmailVerificationBanner />
@@ -203,6 +229,15 @@ export default function CasesPage() {
             </h1>
           </div>
           <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={handleCreateSandbox}
+              disabled={creatingSandbox}
+              className="btn-secondary"
+              title="Creates a fully prefilled test case — no real parties, no party links to hand out — so you can watch a real adjudication verdict end to end."
+            >
+              {creatingSandbox ? "Creating sandbox case…" : "Try a sandbox case →"}
+            </button>
             <Walkthrough />
             <Link
               href="/settings/settlement-integrations"
@@ -212,6 +247,7 @@ export default function CasesPage() {
             </Link>
           </div>
         </div>
+        {sandboxError && <p className="mt-3 text-sm text-status-undetermined">{sandboxError}</p>}
       </header>
 
       {newPartyTokens && (

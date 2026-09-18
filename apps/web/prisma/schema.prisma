@@ -561,6 +561,14 @@ model Case {
   // convention on claimantRef/respondentRef alone.
   isCanary Boolean @default(false)
 
+  // One-click test case created via POST /api/cases/sandbox — prefilled
+  // claim/parties/evidence, org-visible (unlike isCanary's synthetic
+  // probes, which are never shown), so a new user can see a real
+  // adjudication verdict without creating their own dispute or handling
+  // any party links. Never affects billing/risk scoring (the sandbox
+  // route skips both entirely) and is purely a display/filtering marker.
+  isSandbox Boolean @default(false)
+
   // Real recovery path for a case GenLayer genuinely couldn't decide:
   // before this existed, UNDETERMINED was a dead end — POST
   // /api/cases/:id/adjudicate hard-requires EVIDENCE_COLLECTION, so a

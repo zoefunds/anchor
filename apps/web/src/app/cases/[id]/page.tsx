@@ -72,6 +72,7 @@ interface CaseDetail {
   decision: Decision | null;
   canAppeal: boolean;
   reopenedFromUndeterminedAt?: string | null;
+  isSandbox?: boolean;
 }
 
 interface PolicyDefinition {
@@ -546,6 +547,11 @@ export default function CaseDetailPage() {
       <BackLink />
 
       <header className="mt-8 border-b border-line pb-8 dark:border-line-dark">
+        {kase.isSandbox && (
+          <p className="mb-3 inline-block rounded border border-seal-500/40 bg-seal-500/5 px-2 py-1 font-mono text-[11px] text-seal-600 dark:border-seal-400/40 dark:text-seal-400">
+            SANDBOX — prefilled test case, no real parties or funds involved
+          </p>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="font-mono text-xs text-muted dark:text-muted-dark">{kase.id}</p>
           <div className="flex items-center gap-3">
