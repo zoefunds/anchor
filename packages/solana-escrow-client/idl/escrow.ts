@@ -215,6 +215,68 @@ export type Escrow = {
       "args": []
     },
     {
+      "name": "migrateCaseDepositedAt",
+      "docs": [
+        "One-time migration for a Case account created before `deposited_at`",
+        "existed on this struct. Extends the account by 8 bytes and appends",
+        "`deposited_at` as the new trailing field. See the Rust source",
+        "(programs/escrow/src/lib.rs) for the full rationale."
+      ],
+      "discriminator": [
+        178,
+        183,
+        15,
+        120,
+        229,
+        112,
+        244,
+        26
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "case",
+          "writable": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "caseId",
+          "type": "string"
+        },
+        {
+          "name": "depositedAt",
+          "type": "i64"
+        }
+      ]
+    },
+    {
       "name": "raiseDispute",
       "docs": [
         "Either party marks the case disputed — purely informational status",

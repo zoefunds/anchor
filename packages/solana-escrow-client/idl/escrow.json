@@ -9,24 +9,6 @@
   "instructions": [
     {
       "name": "emergency_refund",
-      "docs": [
-        "The governed escape hatch for a deposit that is stuck: no",
-        "decision ever reached (case genuinely UNDETERMINED), or one was",
-        "reached but delivery/settlement never completed. Mirrors EVM's",
-        "`Escrow.sol emergencyRefund()` exactly: same `onlyDecisionRelay`-",
-        "equivalent boundary (only the designated `adjudicator` authority",
-        "— decision-relay's escrow_authority PDA in production — may call",
-        "this; `decision-relay::emergency_refund` independently verifies",
-        "the same M-of-N attestor threshold before ever reaching here, so",
-        "there is no unilateral-withdrawal path distinct from the one",
-        "`settle` already has), same real on-chain timeout gate (elapsed",
-        "since the ORIGINAL deposit, never reset by anything), same",
-        "always-100%-to-claimant payout (the party whose funds these are,",
-        "in this domain's REFUND_FULL vocabulary). Safe by construction:",
-        "`initialize_case` requires the claimant to be the depositing",
-        "signer, so there is no respondent-or-third-party-funded case",
-        "this could misdirect."
-      ],
       "discriminator": [
         188,
         73,
@@ -207,6 +189,112 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "migrate_case_deposited_at",
+      "docs": [
+        "The governed escape hatch for a deposit that is stuck: no",
+        "decision ever reached (case genuinely UNDETERMINED), or one was",
+        "reached but delivery/settlement never completed. Mirrors EVM's",
+        "`Escrow.sol emergencyRefund()` exactly: same `onlyDecisionRelay`-",
+        "equivalent boundary (only the designated `adjudicator` authority",
+        "— decision-relay's escrow_authority PDA in production — may call",
+        "this; `decision-relay::emergency_refund` independently verifies",
+        "the same M-of-N attestor threshold before ever reaching here, so",
+        "there is no unilateral-withdrawal path distinct from the one",
+        "`settle` already has), same real on-chain timeout gate (elapsed",
+        "since the ORIGINAL deposit, never reset by anything), same",
+        "always-100%-to-claimant payout (the party whose funds these are,",
+        "in this domain's REFUND_FULL vocabulary). Safe by construction:",
+        "`initialize_case` requires the claimant to be the depositing",
+        "signer, so there is no respondent-or-third-party-funded case",
+        "this could misdirect.",
+        "One-time migration for a Case account created before `deposited_at`",
+        "existed on this struct (every case deposited before this program's",
+        "2026-09-18 upgrade — see docs/incidents/ for the finding). Those",
+        "accounts are still allocated at the OLD `Case::MAX_SIZE` (8 bytes",
+        "short of the current one), which means Anchor's typed",
+        "`Account<'info, Case>` can't even deserialize them anymore — Borsh",
+        "fails outright on a too-short buffer before any instruction body",
+        "or `realloc` constraint gets a chance to run. `emergency_refund`",
+        "would fail on every pre-upgrade case for that reason alone,",
+        "independent of whether the real timeout had elapsed. This",
+        "instruction works around that by taking `case` as a raw,",
+        "PDA-verified `UncheckedAccount` instead: extends the account's",
+        "lamports and length by exactly 8 bytes, then appends",
+        "`deposited_at` as the new trailing field — every other field's",
+        "byte offset is unchanged since `deposited_at` was added at the",
+        "END of the struct, so this never touches claimant/respondent/",
+        "adjudicator/amount/status/bump. `deposited_at` should be set to",
+        "the real, independently-known deposit time (this program has no",
+        "way to recover the original transaction's own timestamp after",
+        "the fact) — the backend passes CaseSettlement.depositConfirmedAt",
+        "from Postgres, the closest real record of when the deposit",
+        "actually happened. Guarded by the same config-authority key as",
+        "`update_emergency_refund_timeout` (never decisionRelay's",
+        "escrow_authority PDA — same separation-of-authority reasoning as",
+        "that instruction), and only runs once per account: an account",
+        "already at the current size is rejected rather than silently",
+        "overwriting a `deposited_at` some earlier migration already set."
+      ],
+      "discriminator": [
+        178,
+        183,
+        15,
+        120,
+        229,
+        112,
+        244,
+        26
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "case",
+          "docs": [
+            "instruction body — raw bytes, not `Account<'info, Case>`, because",
+            "Anchor can't typed-deserialize a pre-migration (too-short) Case",
+            "account at all. See `migrate_case_deposited_at`'s own doc comment."
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "case_id",
+          "type": "string"
+        },
+        {
+          "name": "deposited_at",
+          "type": "i64"
+        }
+      ]
     },
     {
       "name": "raise_dispute",
@@ -452,6 +540,11 @@
       "code": 6008,
       "name": "TimeoutNotElapsed",
       "msg": "emergency refund timeout has not yet elapsed since deposit"
+    },
+    {
+      "code": 6009,
+      "name": "AlreadyMigrated",
+      "msg": "this case account was already migrated to the current size"
     }
   ],
   "types": [

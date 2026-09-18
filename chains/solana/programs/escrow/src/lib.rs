@@ -185,6 +185,71 @@ pub mod escrow {
     /// `initialize_case` requires the claimant to be the depositing
     /// signer, so there is no respondent-or-third-party-funded case
     /// this could misdirect.
+    /// One-time migration for a Case account created before `deposited_at`
+    /// existed on this struct (every case deposited before this program's
+    /// 2026-09-18 upgrade — see docs/incidents/ for the finding). Those
+    /// accounts are still allocated at the OLD `Case::MAX_SIZE` (8 bytes
+    /// short of the current one), which means Anchor's typed
+    /// `Account<'info, Case>` can't even deserialize them anymore — Borsh
+    /// fails outright on a too-short buffer before any instruction body
+    /// or `realloc` constraint gets a chance to run. `emergency_refund`
+    /// would fail on every pre-upgrade case for that reason alone,
+    /// independent of whether the real timeout had elapsed. This
+    /// instruction works around that by taking `case` as a raw,
+    /// PDA-verified `UncheckedAccount` instead: extends the account's
+    /// lamports and length by exactly 8 bytes, then appends
+    /// `deposited_at` as the new trailing field — every other field's
+    /// byte offset is unchanged since `deposited_at` was added at the
+    /// END of the struct, so this never touches claimant/respondent/
+    /// adjudicator/amount/status/bump. `deposited_at` should be set to
+    /// the real, independently-known deposit time (this program has no
+    /// way to recover the original transaction's own timestamp after
+    /// the fact) — the backend passes CaseSettlement.depositConfirmedAt
+    /// from Postgres, the closest real record of when the deposit
+    /// actually happened. Guarded by the same config-authority key as
+    /// `update_emergency_refund_timeout` (never decisionRelay's
+    /// escrow_authority PDA — same separation-of-authority reasoning as
+    /// that instruction), and only runs once per account: an account
+    /// already at the current size is rejected rather than silently
+    /// overwriting a `deposited_at` some earlier migration already set.
+    pub fn migrate_case_deposited_at(
+        ctx: Context<MigrateCaseDepositedAt>,
+        case_id: String,
+        deposited_at: i64,
+    ) -> Result<()> {
+        require!(deposited_at > 0, EscrowError::InvalidTimeout);
+
+        let case_info = ctx.accounts.case.to_account_info();
+        let (expected_case_key, _bump) =
+            Pubkey::find_program_address(&[b"case", case_id.as_bytes()], ctx.program_id);
+        require_keys_eq!(case_info.key(), expected_case_key, EscrowError::Unauthorized);
+        require_keys_eq!(*case_info.owner, crate::ID, EscrowError::Unauthorized);
+
+        let old_len = case_info.data_len();
+        require!(old_len == Case::MAX_SIZE - 8, EscrowError::AlreadyMigrated);
+
+        let new_len = Case::MAX_SIZE;
+        let rent = Rent::get()?;
+        let new_minimum_balance = rent.minimum_balance(new_len);
+        let additional_rent = new_minimum_balance.saturating_sub(case_info.lamports());
+        if additional_rent > 0 {
+            anchor_lang::solana_program::program::invoke(
+                &system_instruction::transfer(&ctx.accounts.authority.key(), &case_info.key(), additional_rent),
+                &[
+                    ctx.accounts.authority.to_account_info(),
+                    case_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+        }
+        case_info.realloc(new_len, false)?;
+
+        let mut data = case_info.try_borrow_mut_data()?;
+        data[old_len..new_len].copy_from_slice(&deposited_at.to_le_bytes());
+
+        Ok(())
+    }
+
     pub fn emergency_refund(ctx: Context<EmergencyRefund>) -> Result<()> {
         let case = &ctx.accounts.case;
         require!(
@@ -331,6 +396,25 @@ pub struct UpdateConfig<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(case_id: String)]
+pub struct MigrateCaseDepositedAt<'info> {
+    #[account(mut, constraint = authority.key() == config.authority @ EscrowError::Unauthorized)]
+    pub authority: Signer<'info>,
+
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+
+    /// CHECK: PDA derivation and current owner are verified in the
+    /// instruction body — raw bytes, not `Account<'info, Case>`, because
+    /// Anchor can't typed-deserialize a pre-migration (too-short) Case
+    /// account at all. See `migrate_case_deposited_at`'s own doc comment.
+    #[account(mut)]
+    pub case: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct EmergencyRefund<'info> {
     // Same account type/pattern as Settle's `adjudicator` above — a bare
     // Signer, not seed-constrained here, because in production this is
@@ -370,4 +454,6 @@ pub enum EscrowError {
     InvalidTimeout,
     #[msg("emergency refund timeout has not yet elapsed since deposit")]
     TimeoutNotElapsed,
+    #[msg("this case account was already migrated to the current size")]
+    AlreadyMigrated,
 }

@@ -71,6 +71,7 @@ interface CaseDetail {
   evidence: Evidence[];
   decision: Decision | null;
   canAppeal: boolean;
+  reopenedFromUndeterminedAt?: string | null;
 }
 
 interface PolicyDefinition {
@@ -137,6 +138,8 @@ export default function CaseDetailPage() {
   const [selectedIntegrationId, setSelectedIntegrationId] = useState("");
   const [binding, setBinding] = useState(false);
   const [confirmingDeposit, setConfirmingDeposit] = useState(false);
+  const [reopening, setReopening] = useState(false);
+  const [reopenNote, setReopenNote] = useState<string | null>(null);
   const [escrowNote, setEscrowNote] = useState<string | null>(null);
 
   const [partyTokens, setPartyTokens] = useState<{ claimant?: string; respondent?: string }>({});
@@ -246,6 +249,22 @@ export default function CaseDetailPage() {
       setEscrowNote(err instanceof Error ? err.message : String(err));
     } finally {
       setConfirmingDeposit(false);
+    }
+  }
+
+  async function reopenCase() {
+    if (!confirm("Send this case back to evidence collection for a fresh adjudication attempt? This one-time reopen can only be used once per case.")) return;
+    setReopening(true);
+    setReopenNote(null);
+    try {
+      const res = await fetch(`/api/cases/${id}/reopen`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "failed to reopen case");
+      await load();
+    } catch (err) {
+      setReopenNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReopening(false);
     }
   }
 
@@ -558,6 +577,28 @@ export default function CaseDetailPage() {
             {kase.status === "RE_ADJUDICATING" ? "Re-adjudicating (appeal)" : "Adjudicating"}, polling every 5s.
             Real consensus takes ~1–2 minutes.
           </p>
+        )}
+        {kase.status === "UNDETERMINED" && isOwner && (
+          <div className="mt-4 border-l-2 border-status-undetermined pl-4">
+            {kase.reopenedFromUndeterminedAt ? (
+              <p className="font-mono text-xs text-muted dark:text-muted-dark">
+                This case already used its one-time reopen (at {new Date(kase.reopenedFromUndeterminedAt).toLocaleString()}) and landed
+                UNDETERMINED again — resubmitting evidence won&apos;t reopen it a second time. If funds are stuck,
+                use emergency refund below instead.
+              </p>
+            ) : (
+              <>
+                <p className="font-mono text-xs text-muted dark:text-muted-dark">
+                  GenLayer couldn&apos;t reach a decision. You can send this case back to evidence collection for
+                  one fresh adjudication attempt — add or correct evidence first if that&apos;s why it failed.
+                </p>
+                <button className="btn-secondary mt-2" onClick={reopenCase} disabled={reopening}>
+                  {reopening ? "Reopening…" : "Reopen for adjudication (one-time)"}
+                </button>
+                {reopenNote && <p className="mt-2 font-mono text-xs text-status-undetermined">{reopenNote}</p>}
+              </>
+            )}
+          </div>
         )}
         {kase.contractAddress && (
           <p className="mt-4 font-mono text-[11px] text-muted dark:text-muted-dark">

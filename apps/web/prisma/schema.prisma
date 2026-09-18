@@ -561,6 +561,18 @@ model Case {
   // convention on claimantRef/respondentRef alone.
   isCanary Boolean @default(false)
 
+  // Real recovery path for a case GenLayer genuinely couldn't decide:
+  // before this existed, UNDETERMINED was a dead end — POST
+  // /api/cases/:id/adjudicate hard-requires EVIDENCE_COLLECTION, so a
+  // stuck case's only way forward was the emergency-refund escape hatch
+  // (100% to claimant, no real second verdict). Null means the one-time
+  // reopen hasn't been used yet; set (by POST /api/cases/:id/reopen,
+  // OWNER-only) the moment it is. Capped at exactly one use per case —
+  // deliberately not a counter — so a case that goes UNDETERMINED a
+  // second time after a real re-adjudication attempt still has to fall
+  // back to emergency-refund rather than looping forever.
+  reopenedFromUndeterminedAt DateTime?
+
   evidence   Evidence[]
   // One-to-many, not one-to-one: an appeal produces a fresh Decision
   // rather than overwriting the first, so the full history (original

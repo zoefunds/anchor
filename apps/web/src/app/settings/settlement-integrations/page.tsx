@@ -78,6 +78,13 @@ export default function SettlementIntegrationsPage() {
 
   function handleChainChange(next: string) {
     setChain(next);
+    // Real bug this fixes: these two fields used to survive a chain
+    // switch untouched, so autofilling Solana's addresses and then
+    // switching the dropdown to Sepolia left Solana's base58 program IDs
+    // sitting in the Sepolia form under a "Sepolia (EVM)" label — wrong
+    // address format for the newly-selected chain, not just stale.
+    setEscrowContractAddress("");
+    setDecisionRelayAddress("");
     if (next === "solanatestnet") {
       setAssetSymbol("SOL");
       setAssetDecimals(9);
