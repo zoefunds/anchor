@@ -45,9 +45,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // own updateMany guard: only succeeds if the case is still exactly
   // UNDETERMINED with no prior reopen, so two concurrent reopen requests
   // can't both pass the checks above and both flip the case.
+  //
+  // contractAddress is cleared here — real bug found alongside this
+  // route's first use: runAdjudicationJob's non-appeal branch reuses
+  // kase.contractAddress whenever it's already set (checking
+  // getDecision() first, to recover a decision an earlier attempt may
+  // have already reached — see that function's own comment). Left
+  // untouched, a reopened case's next /adjudicate call would hit that
+  // exact branch, find the OLD contract already reached a real DECIDED
+  // state (UNDETERMINED is a valid, real consensus outcome, not an
+  // error), and simply recover the SAME stale UNDETERMINED decision
+  // instead of ever genuinely re-adjudicating — silently defeating the
+  // entire point of reopening. Clearing it forces the next /adjudicate
+  // call down the "no contractAddress" branch, which deploys a genuinely
+  // fresh contract.
   const claimed = await prisma.case.updateMany({
     where: { id: kase.id, status: "UNDETERMINED", reopenedFromUndeterminedAt: null },
-    data: { status: "EVIDENCE_COLLECTION", reopenedFromUndeterminedAt: new Date() },
+    data: { status: "EVIDENCE_COLLECTION", reopenedFromUndeterminedAt: new Date(), contractAddress: null },
   });
   if (claimed.count === 0) {
     return NextResponse.json({ error: "case was already reopened or is no longer UNDETERMINED" }, { status: 409 });
