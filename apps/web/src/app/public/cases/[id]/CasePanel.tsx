@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { StatusStamp } from "@/components/StatusStamp";
-import { SAMPLE_SCENARIOS, getSampleEvidenceContent, type SampleScenarioId } from "@/lib/policies";
+import { SAMPLE_SCENARIOS, getSampleEvidenceContent, SAMPLE_APPEAL_REASON, type SampleScenarioId } from "@/lib/policies";
 import {
   PublicCase,
   setPayoutAddress,
@@ -255,6 +255,15 @@ export function CasePanel({
               <p className="field-label">File an appeal</p>
               {appealWindowOpen ? (
                 <form onSubmit={handleFileAppeal} className="mt-3 flex flex-col gap-3">
+                  <div className="flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setAppealReason(SAMPLE_APPEAL_REASON[sampleScenario])}
+                      className="font-mono text-[11px] text-seal-600 hover:underline dark:text-seal-400"
+                    >
+                      Fill sample content
+                    </button>
+                  </div>
                   <textarea
                     className="field-input"
                     placeholder="Reason for appeal (optional)"

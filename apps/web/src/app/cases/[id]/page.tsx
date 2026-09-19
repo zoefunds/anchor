@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { StatusStamp } from "@/components/StatusStamp";
 import { sepoliaTxUrl, genlayerTxUrl, genlayerAddressUrl, settlementTxUrl, settlementAddressUrl } from "@/lib/explorer-links";
-import { SAMPLE_SCENARIOS, getSampleEvidenceContent, type SampleScenarioId } from "@/lib/policies";
+import { SAMPLE_SCENARIOS, getSampleEvidenceContent, SAMPLE_APPEAL_REASON, type SampleScenarioId } from "@/lib/policies";
 
 const EXHIBIT_LETTERS = "ABCDEFGH";
 
@@ -777,7 +777,16 @@ export default function CaseDetailPage() {
             {kase.canAppeal && (
               <div className="mt-6 flex flex-col gap-4 border-t border-line pt-6 dark:border-line-dark">
                 <label className="flex flex-col gap-2">
-                  <span className="field-label">Reason for appeal (optional)</span>
+                  <div className="flex items-center justify-between">
+                    <span className="field-label">Reason for appeal (optional)</span>
+                    <button
+                      type="button"
+                      onClick={() => setAppealReason(SAMPLE_APPEAL_REASON[sampleScenario])}
+                      className="font-mono text-[11px] text-seal-600 hover:underline dark:text-seal-400"
+                    >
+                      Fill sample content
+                    </button>
+                  </div>
                   <textarea
                     className="field-input min-h-[80px] resize-y"
                     value={appealReason}

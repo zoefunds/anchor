@@ -212,6 +212,21 @@ export function getSampleEvidenceContent(scenario: SampleScenarioId, evidenceTyp
   return SAMPLE_SPEC_CONTENT[evidenceType] ?? SAMPLE_SCENARIO_CONTENT[scenario][evidenceType];
 }
 
+// Sample text for the "Reason for appeal" field, keyed the same way as
+// evidence content so a party appealing after an unfavorable verdict has
+// something concrete to file, not just an empty optional box.
+export const SAMPLE_APPEAL_REASON: Record<SampleScenarioId, string> = {
+  respondent_full_release:
+    "The verdict overlooked that the delivery met every requirement in the agreed spec. Requesting " +
+    "a fresh review of the delivery record against the spec.",
+  claimant_full_refund:
+    "The verdict didn't fully account for how far the delivery fell short of the agreed spec. " +
+    "Requesting a fresh review of the delivery record against the spec.",
+  split_partial:
+    "The verdict's split doesn't reflect the actual portion delivered versus outstanding. Requesting " +
+    "a fresh review of the delivery record against the spec.",
+};
+
 export function getPolicy(policyId: string): PolicyDefinition | undefined {
   return POLICIES[policyId];
 }
