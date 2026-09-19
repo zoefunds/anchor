@@ -93,6 +93,43 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `could not verify escrow contract on-chain: ${(err as Error).message}` }, { status: 502 });
   }
 
+  // Real gap found live: the check above only proves the escrow's OWN
+  // immutable decisionRelay() names this DecisionRelay (escrow ->
+  // relay) — it says nothing about whether DecisionRelay's own
+  // settlementTarget/directSettlementTarget mappings (relay -> escrow)
+  // currently point back at this escrow. Those can be correct at
+  // integration-CREATION time (settlement-integrations/route.ts now
+  // checks this too) and still drift afterward, or the integration row
+  // can simply predate that fix — either way, a case must never bind to
+  // an integration the live relay isn't actually wired to right now,
+  // since dispatch would refuse to pay out and a real deposit could sit
+  // in a contract the relay doesn't know about (exactly what happened
+  // live: a case bound to an existing-but-still-unwired integration and
+  // only found out at settlement-dispatch time). Re-checking here, at
+  // the moment a case is bound (not just when the integration was first
+  // created), means this can never happen again regardless of how old
+  // or how recently-drifted the integration is.
+  if (integration.chain !== "solanatestnet") {
+    const { HYPERLANE_DOMAIN } = await import("@anchor/hyperlane-relay");
+    const { assertSettlementTargetMatchesIntegration, assertDirectSettlementTargetMatchesIntegration, TargetBindingError } = await import("@/lib/escrow");
+    try {
+      await assertSettlementTargetMatchesIntegration({
+        decisionRelayAddress: kase.settlementContract as `0x${string}`,
+        originDomain: HYPERLANE_DOMAIN.sepolia,
+        expectedEscrowContractAddress: integration.escrowContractAddress as `0x${string}`,
+      });
+      await assertDirectSettlementTargetMatchesIntegration({
+        decisionRelayAddress: kase.settlementContract as `0x${string}`,
+        expectedEscrowContractAddress: integration.escrowContractAddress as `0x${string}`,
+      });
+    } catch (err) {
+      if (err instanceof TargetBindingError) {
+        return NextResponse.json({ error: err.message }, { status: 422 });
+      }
+      return NextResponse.json({ error: `could not verify DecisionRelay's settlement target on-chain: ${(err as Error).message}` }, { status: 502 });
+    }
+  }
+
   // Real bug fixed 2026-09-12: this used to call toAttoAmount
   // unconditionally for every non-Solana integration, hardcoding 18
   // decimals. Reads integration.assetDecimals (set per-integration at
