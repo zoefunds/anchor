@@ -164,7 +164,27 @@ export async function recheckRiskAssessmentForSettlement(caseId: string, velocit
     })
   );
 
-  if (result.action === "BLOCK" || result.action === "REQUIRE_REVIEW") {
+  if (result.action === "BLOCK") {
     throw new RiskGateBlockedError(result.action, result.reasons);
+  }
+
+  // Real bug found live: REQUIRE_REVIEW used to throw unconditionally
+  // here on every dispatch attempt, including retries after a human
+  // reviewer had already approved the case's CaseReview (created for
+  // this exact REQUIRE_REVIEW signal by maybeEscalateCase - see
+  // ReviewTrigger.FRAUD_RISK's doc comment in schema.prisma). This
+  // recomputes from the same historical dispute-count facts every
+  // time, which never change retroactively, so an approved review could
+  // never actually unblock dispatch - assertNoPendingReviewBlocksSettlement
+  // (escalation.ts), the function that DOES check CaseReview.status, was
+  // never even reached because this throw happens first. Checking for an
+  // approved review here closes that gap; BLOCK above is unaffected and
+  // always throws fail-closed, since nothing in escalation.ts resolves a
+  // BLOCK-level review.
+  if (result.action === "REQUIRE_REVIEW") {
+    const review = await prisma.caseReview.findUnique({ where: { caseId } });
+    if (review?.status !== "APPROVED") {
+      throw new RiskGateBlockedError(result.action, result.reasons);
+    }
   }
 }
