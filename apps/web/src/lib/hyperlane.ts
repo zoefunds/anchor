@@ -483,9 +483,23 @@ export async function dispatchDecisionForCase(
     if (!caseSettlement.integration.active) {
       throw new Error(`SettlementIntegration ${caseSettlement.integration.id} is not active — refusing to dispatch against a retired/disabled integration`);
     }
-    if (caseSettlement.status !== "DEPOSITED") {
+    // Real bug found live: MISMATCH_BLOCKED used to be a dead end — once
+    // set (below, on a genuine on-chain target/version mismatch at the
+    // time of that attempt), this exact check meant NO retry could ever
+    // get past it again, even after the underlying on-chain
+    // misconfiguration was fixed for real (e.g. a governance owner
+    // finally calling setDirectSettlementTarget). The status only ever
+    // transitions here FROM "DEPOSITED" (see the two catch blocks
+    // below) — the deposit itself was already verified real when that
+    // happened, so it's always safe to let a MISMATCH_BLOCKED case
+    // re-attempt the same checks that blocked it; if they still fail,
+    // it just gets set right back to MISMATCH_BLOCKED, exactly as
+    // before. It never was, and still isn't, a way to bypass either
+    // check itself.
+    if (caseSettlement.status !== "DEPOSITED" && caseSettlement.status !== "MISMATCH_BLOCKED") {
       throw new Error(`CaseSettlement ${caseSettlement.id} status is ${caseSettlement.status}, not DEPOSITED — refusing to dispatch`);
     }
+    const wasMismatchBlocked = caseSettlement.status === "MISMATCH_BLOCKED";
     const { assertEscrowDepositMatches, assertSettlementTargetMatchesIntegration, assertDirectSettlementTargetMatchesIntegration, TargetBindingError } = await import("@/lib/escrow");
     // The other real fix from the re-audit: prove the live
     // DecisionRelay actually points at the SAME escrow the app is
@@ -541,6 +555,15 @@ export async function dispatchDecisionForCase(
         await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { status: "MISMATCH_BLOCKED" } });
       }
       throw err;
+    }
+    // Both mismatch checks above just passed cleanly — if this case had
+    // been sitting in MISMATCH_BLOCKED from an earlier attempt, that's
+    // now stale: the on-chain state it was recorded against has since
+    // been corrected. Clear it back to DEPOSITED so the status reflects
+    // current reality (and so this doesn't keep reading as blocked to
+    // anyone looking at the case) before actually moving funds below.
+    if (wasMismatchBlocked) {
+      await prisma.caseSettlement.update({ where: { id: caseSettlement.id }, data: { status: "DEPOSITED" } });
     }
     // Incident recovery, Phase 2 (2026-09-13): the REAL settlement call
     // is now attestedSettle() — same-chain, authorized purely by M-of-N
