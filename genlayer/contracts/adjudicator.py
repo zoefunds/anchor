@@ -274,6 +274,17 @@ Shares are in basis points (bps), where 10000 bps = 100%. Use integers only,
 never decimals - e.g. a 65/35 split is claimant_share_bps=6500,
 respondent_share_bps=3500. claimant_share_bps + respondent_share_bps must
 equal 10000.
+
+For a PARTIAL outcome, if the evidence states an explicit, checkable
+quantity of what was completed versus what was agreed (e.g. "150 of 200
+units", "9 of 14 tests", "delivered on day 9 of a 10-day window" plus a
+described scope cut), compute the split as a direct proportion of that
+stated quantity, then round to the nearest 500 bps (5 percentage points).
+Do not estimate an impressionistic split ("mostly complete" -> roughly
+70/30) when an exact ratio is stated in the evidence - use the stated
+numbers themselves. This is required so that independent adjudication
+runs over the same evidence converge on the same split rather than each
+guessing a different approximate number.
 """
 
 
