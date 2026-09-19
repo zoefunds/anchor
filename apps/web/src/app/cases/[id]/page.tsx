@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { StatusStamp } from "@/components/StatusStamp";
 import { sepoliaTxUrl, genlayerTxUrl, genlayerAddressUrl, settlementTxUrl, settlementAddressUrl } from "@/lib/explorer-links";
-import { SAMPLE_EVIDENCE_CONTENT } from "@/lib/policies";
+import { SAMPLE_SCENARIOS, getSampleEvidenceContent, type SampleScenarioId } from "@/lib/policies";
 
 const EXHIBIT_LETTERS = "ABCDEFGH";
 
@@ -119,6 +119,7 @@ export default function CaseDetailPage() {
 
   const [evidenceType, setEvidenceType] = useState<string>("");
   const [content, setContent] = useState("");
+  const [sampleScenario, setSampleScenario] = useState<SampleScenarioId>(SAMPLE_SCENARIOS[0].id);
   const [submitting, setSubmitting] = useState(false);
   const [adjudicating, setAdjudicating] = useState(false);
   const [evidenceMode, setEvidenceMode] = useState<"text" | "file">("text");
@@ -897,13 +898,29 @@ export default function CaseDetailPage() {
                     ))}
                   </select>
                 </label>
+                <div className="flex flex-col gap-2">
+                  <span className="field-label">Sample scenario</span>
+                  <div className="flex flex-wrap gap-1 font-mono text-[11px]">
+                    {SAMPLE_SCENARIOS.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        title={s.description}
+                        onClick={() => setSampleScenario(s.id)}
+                        className={`border px-2 py-1 ${sampleScenario === s.id ? "border-seal-500 text-seal-500 dark:text-seal-400" : "border-line text-muted dark:border-line-dark dark:text-muted-dark"}`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <label className="flex flex-col gap-2">
                   <div className="flex items-center justify-between">
                     <span className="field-label">Content</span>
-                    {SAMPLE_EVIDENCE_CONTENT[evidenceType] && (
+                    {getSampleEvidenceContent(sampleScenario, evidenceType) && (
                       <button
                         type="button"
-                        onClick={() => setContent(SAMPLE_EVIDENCE_CONTENT[evidenceType])}
+                        onClick={() => setContent(getSampleEvidenceContent(sampleScenario, evidenceType) ?? "")}
                         className="font-mono text-[11px] text-seal-600 hover:underline dark:text-seal-400"
                       >
                         Fill sample content
