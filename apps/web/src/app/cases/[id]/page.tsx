@@ -1329,7 +1329,17 @@ function SettlementPanel({
   const solanaAttestationCount = kase.settlementChain === "solanatestnet" ? d?.pendingSolanaAttestations?.length ?? 0 : null;
   const solanaQuorumCollected = solanaAttestationCount !== null && solanaAttestationCount >= 2;
   const failed = Boolean(d?.relayError) && !dispatched && !solanaQuorumCollected;
-  const relayInFlight = Boolean(d?.relayClaimedAt) && !dispatched;
+  // Must mirror adjudication-service.ts's RELAY_CLAIM_TTL_MS (5 minutes) —
+  // relayClaimedAt is set once per dispatch attempt and only ever cleared
+  // on a "reconciled:onchain" outcome, never on the ordinary "still
+  // waiting on attestor signatures" path. Treating any non-null
+  // relayClaimedAt as "in flight" forever meant this stayed stuck on
+  // "settlement relay in flight" long after the claim's own TTL had
+  // expired and the backend was actually idle, ready to be re-dispatched
+  // by another sync click — misleading anyone waiting on it into
+  // thinking a process was still running when nothing was.
+  const RELAY_CLAIM_TTL_MS = 5 * 60 * 1000;
+  const relayInFlight = Boolean(d?.relayClaimedAt) && !dispatched && Date.now() - new Date(d!.relayClaimedAt!).getTime() < RELAY_CLAIM_TTL_MS;
 
   return (
     <section className="mt-10">
