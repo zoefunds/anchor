@@ -225,7 +225,7 @@ export async function executeSolanaDeposit(params: {
   // Lazy import: keeps this module loadable (e.g. by testnet-canary.ts's
   // sepolia-only path) in any deployment whose build context doesn't
   // include the packages/solana-escrow-client workspace package.
-  const { getEscrowProgram, keypairWallet, buildInitializeCaseInstruction } = await import("@anchor/solana-escrow-client");
+  const { getEscrowProgram, keypairWallet, buildInitializeCaseInstruction, deriveCasePda, fetchCaseStatus } = await import("@anchor/solana-escrow-client");
 
   const depositor = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(params.depositorSecretKeyJson)));
   if (depositor.publicKey.toBase58() !== cs.claimantAddress) {
@@ -241,42 +241,60 @@ export async function executeSolanaDeposit(params: {
   const amountLamports = BigInt(cs.expectedAmountAtto);
 
   const program = getEscrowProgram(connection, keypairWallet(depositor), escrowProgramId);
-  const { instruction, casePda } = await buildInitializeCaseInstruction({
-    program,
-    claimant: depositor.publicKey,
-    onChainCaseId: cs.escrowId,
-    respondent: respondentPubkey,
-    adjudicator: adjudicatorPda,
-    amountLamports,
-  });
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  const messageV0 = new TransactionMessage({
-    payerKey: depositor.publicKey,
-    recentBlockhash: blockhash,
-    instructions: [instruction],
-  }).compileToV0Message();
-  const tx = new VersionedTransaction(messageV0);
-  tx.sign([depositor]);
+  // Real failure, observed live: `initialize_case` uses Anchor's `init`
+  // (not `init_if_needed`), so the case PDA can only ever be allocated
+  // once. A prior call that actually landed on-chain but whose
+  // confirmation step then failed (RPC hiccup, timeout — the same class
+  // of issue as the 2026-09-12 Sepolia incident) leaves
+  // CaseSettlement.status never advanced past its pre-deposit state, so
+  // a retry re-enters this function, rebuilds the identical
+  // `initialize_case` instruction, and hits `Allocate: account ...
+  // already in use` at simulation time. Checking on-chain state first —
+  // rather than trusting the DB status alone — means a retry after a
+  // confirmation-step failure recovers the already-landed deposit
+  // instead of repeating a doomed re-init.
+  const casePdaPrecheck = deriveCasePda(program.programId, cs.escrowId);
+  const existingStatus = await fetchCaseStatus(program, casePdaPrecheck);
+  let txSignature: string | null = null;
+  if (existingStatus === null) {
+    const { instruction } = await buildInitializeCaseInstruction({
+      program,
+      claimant: depositor.publicKey,
+      onChainCaseId: cs.escrowId,
+      respondent: respondentPubkey,
+      adjudicator: adjudicatorPda,
+      amountLamports,
+    });
 
-  // Simulate first — surface a program error before ever broadcasting.
-  const simResult = await connection.simulateTransaction(tx, { sigVerify: false });
-  if (simResult.value.err) {
-    throw new DepositExecutionError(`initialize_case simulation failed: ${JSON.stringify(simResult.value.err)} — logs: ${(simResult.value.logs ?? []).join("\n")}`);
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+    const messageV0 = new TransactionMessage({
+      payerKey: depositor.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [instruction],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(messageV0);
+    tx.sign([depositor]);
+
+    // Simulate first — surface a program error before ever broadcasting.
+    const simResult = await connection.simulateTransaction(tx, { sigVerify: false });
+    if (simResult.value.err) {
+      throw new DepositExecutionError(`initialize_case simulation failed: ${JSON.stringify(simResult.value.err)} — logs: ${(simResult.value.logs ?? []).join("\n")}`);
+    }
+
+    txSignature = await connection.sendTransaction(tx, { skipPreflight: false });
+    // Real incident, 2026-09-12: connection.confirmTransaction's websocket
+    // subscription hung indefinitely (40+ minutes, no error, no progress)
+    // against the public api.testnet.solana.com RPC — a known class of bug
+    // where a free/public RPC never pushes the subscription notification.
+    // Uses the same shared bounded-polling helper as solana-settle.ts —
+    // see lib/solana-confirm.ts's own header for why this must never be a
+    // second, independently-drifting copy of this logic.
+    await confirmTransactionBounded({ connection, signature: txSignature, lastValidBlockHeight }).catch((err) => {
+      throw err instanceof Error ? new DepositExecutionError(err.message) : err;
+    });
+    await prisma.caseSettlement.update({ where: { id: cs.id }, data: { depositTxHash: txSignature } });
   }
-
-  const txSignature = await connection.sendTransaction(tx, { skipPreflight: false });
-  // Real incident, 2026-09-12: connection.confirmTransaction's websocket
-  // subscription hung indefinitely (40+ minutes, no error, no progress)
-  // against the public api.testnet.solana.com RPC — a known class of bug
-  // where a free/public RPC never pushes the subscription notification.
-  // Uses the same shared bounded-polling helper as solana-settle.ts —
-  // see lib/solana-confirm.ts's own header for why this must never be a
-  // second, independently-drifting copy of this logic.
-  await confirmTransactionBounded({ connection, signature: txSignature, lastValidBlockHeight }).catch((err) => {
-    throw err instanceof Error ? new DepositExecutionError(err.message) : err;
-  });
-  await prisma.caseSettlement.update({ where: { id: cs.id }, data: { depositTxHash: txSignature } });
 
   // Never trust the confirmed signature alone — re-read the escrow's
   // own Case PDA via the existing, already-audited verification path.
@@ -294,16 +312,20 @@ export async function executeSolanaDeposit(params: {
   });
   await prisma.caseSettlement.update({ where: { id: cs.id }, data: { status: "DEPOSITED", depositConfirmedAt: new Date() } });
 
-  void casePda; // derived for the caller's own logging if desired; verification above is PDA-address-independent (checkAndConfirmSolanaDeposit re-derives it itself)
+  // txSignature is null when the on-chain precheck above found the case
+  // already initialized from a prior attempt whose own signature was
+  // never persisted (it failed after broadcast, before the DB write) —
+  // cs.depositTxHash is the only remaining record of it, if any.
+  const finalTxSignature = txSignature ?? cs.depositTxHash ?? "";
 
   return {
     chain: "solanatestnet",
     asset: cs.integration.assetSymbol,
     amountAtomic: confirmed.depositedAmountLamports.toString(),
     escrowId: cs.escrowId,
-    txHash: txSignature,
+    txHash: finalTxSignature,
     confirmationState: "confirmed",
-    explorerUrl: solanaTxUrl(txSignature),
+    explorerUrl: solanaTxUrl(finalTxSignature),
   };
 }
 

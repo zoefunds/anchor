@@ -9,7 +9,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import type { Wallet } from "@coral-xyz/anchor";
-import { getEscrowProgram, buildInitializeCaseInstruction } from "@anchor/solana-escrow-client";
+import { getEscrowProgram, buildInitializeCaseInstruction, deriveCasePda, fetchCaseStatus } from "@anchor/solana-escrow-client";
 import { confirmTransactionBounded } from "@/lib/solana-confirm";
 import { WalletMultiButton } from "@/lib/wallet-solana";
 import type { PublicSettlement } from "../usePublicCase";
@@ -60,6 +60,24 @@ export function SolanaDeposit({ settlement }: { settlement: PublicSettlement }) 
     setIsSubmitting(true);
     try {
       const program = getEscrowProgram(connection, readonlyWallet, settlement.escrowContractAddress);
+
+      // A retry after a prior attempt landed on-chain but this tab never
+      // saw confirmation succeed (network blip, RPC timeout) would
+      // otherwise resend `initialize_case` against a PDA the program
+      // already allocated (Anchor's `init` fails on an existing
+      // account) - "Allocate: account ... already in use". Checking
+      // on-chain state first means clicking Deposit again after that
+      // failure just picks up the already-landed deposit instead of
+      // repeating a doomed re-init.
+      const casePdaPrecheck = deriveCasePda(program.programId, settlement.escrowId);
+      const existingStatus = await fetchCaseStatus(program, casePdaPrecheck);
+      if (existingStatus !== null) {
+        setIsSubmitting(false);
+        setIsConfirming(false);
+        setIsConfirmed(true);
+        return;
+      }
+
       const escrowAuthorityPda = deriveEscrowAuthorityPda(settlement.decisionRelayProgramId);
       const { instruction } = await buildInitializeCaseInstruction({
         program,
