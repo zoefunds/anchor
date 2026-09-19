@@ -106,6 +106,42 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `could not verify escrow contract on-chain: ${(err as Error).message}` }, { status: 502 });
     }
 
+    // Real gap found live 2026-09-19: assertEscrowBoundToDecisionRelay
+    // above only checks the escrow's own immutable decisionRelay()
+    // pointer (escrow -> relay) — it says nothing about whether
+    // DecisionRelay's OWN settlementTarget/directSettlementTarget
+    // mappings (relay -> escrow) have actually been pointed at this
+    // escrow yet. Those are two separately-governed values: an escrow
+    // redeploy correctly names its relay at construction time, but the
+    // relay's owner has to separately call setSettlementTarget /
+    // setDirectSettlementTarget for that new escrow to ever actually
+    // receive a settlement. A real case got bound to an integration and
+    // accepted a real deposit here before that second step ever
+    // happened, and dispatch only caught the drift much later
+    // (MISMATCH_BLOCKED, lib/escrow.ts's own dispatch-time check) - by
+    // which point funds already sat in an escrow the relay didn't know
+    // about. Running the exact same live on-chain checks dispatch uses,
+    // here, at registration time, closes that gap at the point a case
+    // could first be bound rather than after a deposit is accepted.
+    const { HYPERLANE_DOMAIN } = await import("@anchor/hyperlane-relay");
+    const { assertSettlementTargetMatchesIntegration, assertDirectSettlementTargetMatchesIntegration, TargetBindingError } = await import("@/lib/escrow");
+    try {
+      await assertSettlementTargetMatchesIntegration({
+        decisionRelayAddress: relayAddress,
+        originDomain: HYPERLANE_DOMAIN.sepolia,
+        expectedEscrowContractAddress: normalizedEscrow,
+      });
+      await assertDirectSettlementTargetMatchesIntegration({
+        decisionRelayAddress: relayAddress,
+        expectedEscrowContractAddress: normalizedEscrow,
+      });
+    } catch (err) {
+      if (err instanceof TargetBindingError) {
+        return NextResponse.json({ error: err.message }, { status: 422 });
+      }
+      return NextResponse.json({ error: `could not verify DecisionRelay's settlement target on-chain: ${(err as Error).message}` }, { status: 502 });
+    }
+
     // Priority 2: the escrow's real ABI shape is established here, once,
     // from the contract's own live behavior — never assumed. An address
     // whose deposits() doesn't match a known shape is rejected outright
