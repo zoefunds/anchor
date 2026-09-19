@@ -176,6 +176,15 @@ const SAMPLE_SCENARIO_CONTENT: Record<SampleScenarioId, Record<string, string>> 
       "delayed. We don't dispute the claimant's account.",
   },
   split_partial: {
+    // Exactly 7 of the 10 spec-required items, each one individually
+    // complete (title/url/points all present) - a clean, unambiguous 70%
+    // completion rather than a mix of complete and malformed rows. The
+    // old version left 3 rows in place but missing "points", which reads
+    // as "data is broken" (SPEC_NOT_MET / DATA_MALFORMED) rather than
+    // "70% delivered" to an adjudicator, and independent LLM runs split
+    // on which framing applied - the real cause of this scenario
+    // consistently landing UNDETERMINED (outcome-level disagreement, not
+    // just a share-percentage mismatch).
     delivery_payload: JSON.stringify([
       { title: "Show HN: I built a tiny Postgres replacement in Rust for embedded use", url: "https://news.ycombinator.com/item?id=41823156", points: 412 },
       { title: "The Byzantine Generals Problem, twenty years later", url: "https://news.ycombinator.com/item?id=41822980", points: 287 },
@@ -184,9 +193,6 @@ const SAMPLE_SCENARIO_CONTENT: Record<SampleScenarioId, Record<string, string>> 
       { title: "A visual guide to TCP congestion control algorithms", url: "https://news.ycombinator.com/item?id=41823512", points: 267 },
       { title: "Show HN: Self-hosted alternative to Notion, written in Elixir", url: "https://news.ycombinator.com/item?id=41822711", points: 331 },
       { title: "The economics of running a solo SaaS in 2026", url: "https://news.ycombinator.com/item?id=41823088", points: 175 },
-      { title: "Reverse engineering a 1980s calculator's floating point unit", url: "https://news.ycombinator.com/item?id=41822955" },
-      { title: "Why static site generators are having a resurgence", url: "https://news.ycombinator.com/item?id=41823420" },
-      { title: "Ask HN: Best resources for learning distributed systems from scratch?", url: "https://news.ycombinator.com/item?id=41822677" },
     ]),
     deliverable:
       "PR #142 merged: Stripe Checkout implemented and working for monthly plans; annual-plan " +
@@ -197,14 +203,20 @@ const SAMPLE_SCENARIO_CONTENT: Record<SampleScenarioId, Record<string, string>> 
       "Warehouse receiving log #R-8827, dated the 14th: 150 of the 200 units contracted under " +
       "PO #4471 arrived on schedule; the remaining 50 units are confirmed in transit with the " +
       "vendor's carrier, expected within 5 days.",
+    // Deliberately domain-neutral (no "units"/"order"/"carrier") - this
+    // pair is shared across all three policies (agent_data_task,
+    // escrow_release, invoice_dispute), and wording tied to one policy's
+    // domain contradicted the other two policies' spec/delivery fields
+    // when this same text reached them, reading as inconsistent evidence
+    // rather than a clean partial-completion case.
     claimant_statement:
-      "Part of the order arrived on time and in good condition, but a meaningful portion — about a " +
-      "quarter of what we paid for — is still outstanding. Requesting payment reflect only what was " +
-      "actually delivered.",
+      "Part of what was agreed arrived on time and in good condition, but a meaningful portion — " +
+      "about 30% of what we're paying for — is still outstanding. Requesting payment reflect only " +
+      "what was actually completed.",
     respondent_statement:
-      "We delivered the large majority of the order on schedule. The remaining portion is a short, " +
-      "carrier-side delay already in transit, not a failure to perform — requesting payment " +
-      "reflecting substantial completion, with the balance to follow once the remainder arrives.",
+      "We delivered the large majority of what was agreed — around 70% — on schedule. The remaining " +
+      "portion is a short, already-in-progress delay, not a failure to perform — requesting payment " +
+      "reflecting substantial completion, with the balance to follow once the remainder is done.",
   },
 };
 
