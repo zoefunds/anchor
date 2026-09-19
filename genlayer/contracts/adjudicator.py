@@ -62,10 +62,29 @@ ERROR_EXTERNAL = "[EXTERNAL]"  # file evidence URL itself is bad (4xx)
 # How many times a single leader/validator run retries its OWN
 # gl.nondet.exec_prompt call after a raw SDK-level crash (empty/malformed
 # LLM completion) before giving up and raising ERROR_LLM. Deliberately
-# small and local to one node's own attempt - this is not the same thing
-# as GenVM's cross-node leader rotation, which still applies independently
-# on top of this if every retry here is exhausted.
-EXEC_PROMPT_MAX_ATTEMPTS = 2
+# local to one node's own attempt - this is not the same thing as GenVM's
+# cross-node leader rotation, which still applies independently on top of
+# this if every retry here is exhausted. Raised from 2 to 4 after appeal
+# re-runs (which carry more accumulated evidence - the original exhibits
+# plus any appeal-window corrections - and so a larger prompt than the
+# first-pass adjudication of the same case) were observed failing this
+# retry budget consistently rather than as an occasional one-off hiccup.
+EXEC_PROMPT_MAX_ATTEMPTS = 4
+
+# Hard cap on how many characters of any single evidence field are
+# interpolated into the prompt. Text evidence (especially PDF-extracted
+# text - see apps/web/src/lib/pdf-extract.ts, capped at 50,000 chars per
+# file on the backend) is otherwise passed through uncapped; an appeal
+# that accumulates multiple such fields (original exhibits plus
+# appeal-window corrections) can build a prompt large enough to trip a
+# provider-side truncation or empty completion, which surfaces here as
+# `[LLM_ERROR] exec_prompt failed ...: invalid JSON: Expecting value:
+# line 1 column 1 (char 0)` - the SDK's own internal JSON decode of a
+# genuinely empty response, not a malformed one. Truncating per-field
+# keeps every field represented (never dropped) while bounding total
+# prompt size regardless of how many oversized exhibits a case
+# accumulates across appeal rounds.
+MAX_EVIDENCE_FIELD_CHARS = 12_000
 
 # File evidence (images/PDFs uploaded to Cloudinary by Anchor's backend)
 # arrives in evidence_json as a plain public URL string, same field as
@@ -101,6 +120,9 @@ def _injection_defense_preamble() -> str:
 
 def _evidence_field(label: str, value) -> str:
     text = str(value)
+    if len(text) > MAX_EVIDENCE_FIELD_CHARS:
+        omitted = len(text) - MAX_EVIDENCE_FIELD_CHARS
+        text = text[:MAX_EVIDENCE_FIELD_CHARS] + f"\n[... {omitted} more characters truncated ...]"
     return f"<<<{label}>>>\n{text}\n<<<END {label}>>>"
 
 
